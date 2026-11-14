@@ -69,6 +69,11 @@ ing, yr, yrs, hgb = np.ing, np.yr, np.yrs, np.hgb
 
 PARENT_NAME = hgb.PARENT_NAME
 FAMILY = 'q2024p-j2-cx'
+# brief 12: fixed work (harness/compose4_replay, REPLAY_FIXED_WORK): name -> (per-seed targets, cap s). n480: per agent
+# the most turns EVERY stock arm of the twelve j2 records with seeds 1 and 2 (cxay12 b1-b4, V1 b1-b4, cxaycis,
+# cxaing, cxayc2s, cxayc2t2) completed by 480 s (cx-20261114d/scratch/nchoice); seed 1 121 turns, 6 session rolls,
+# seed 2 129 turns, 4 rolls. The cap: four replay arms at the cap still enter inside n3j2_gate's LAST_ARM_ENTRY_S.
+FIXED_WORK = {'n480': ('1=15,17,14,17,18,14,12,14/2=18,15,16,17,15,16,16,16', 640)}
 # flag -> (VARIANTS key, allowed values, default); the order is the settings line's
 FLAGS = (
     ('FLASH_S5_SMALL_PIECE_BATCH', 'small_piece_batch', ('0', '1'), '0'),
@@ -88,11 +93,53 @@ FLAGS = (
     ('FLASH_S5_DECODE_TIMELINE', 'decode_timeline', ('0', '1'), '0'),         # log-only stamp (decode_timeline, 13 Nov)
     ('REPLAY_REPLY_TEXT', 'replay_reply_text', ('model', 'seeded'), 'model'),  # harness only: compose4_replay (brief 11)
     ('QUIET_SPLIT_CONTROL', 'quiet_split_control', ('0', '1'), '0'),     # harness only: the tail read (brief 11 C)
+    ('REPLAY_FIXED_WORK', 'replay_fixed_work', ('0',) + tuple(sorted(FIXED_WORK)), '0'),   # harness only (brief 12)
+    ('REPLAY_SEED_ORDER', 'replay_seed_order', ('plain', 'swap', 'alternate'), 'plain'),   # harness only (brief 12)
 )
 # harness flags: not on the engine's settings line and not in its env asserts; the draft exports them (when not default)
-HARNESS_FLAGS = ('REPLAY_REPLY_TEXT', 'QUIET_SPLIT_CONTROL')
+HARNESS_FLAGS = ('REPLAY_REPLY_TEXT', 'QUIET_SPLIT_CONTROL', 'REPLAY_FIXED_WORK', 'REPLAY_SEED_ORDER')
 REPLY_TEXT_EXPORT = ('export REPLAY_REPLY_TEXT=seeded  # brief 11 B.1: compose4_replay puts a seeded synthetic reply '
                      'text in the history (every python started below)\n')
+FIXED_WORK_EXPORT = ('export REPLAY_FIXED_WORK=%s REPLAY_FIXED_CAP_S=%s  # brief 12: every agent sends until the '
+                     'last has completed its target turns; the cap is a guard (an arm at it is INC)\n')
+SEED_ORDER_EXPORT = ('export REPLAY_SEED_ORDER=%s  # brief 12: harness/fixed_work_packet sets the seed of each replay '
+                     'pair (n3j2_packet.configure, the mechanism rule)\n')
+# alternate: the cohort's blocks carry the two orders in turn, so each seed runs stock first and engine first
+SEED_ORDER_OF = dict(plain={}, swap={}, alternate=dict(b2='swap', b4='swap'))
+SEED_PACKET_TAIL = ('\n# brief 12 (q2024p-j2-cx): REPLAY_SEED_ORDER sets the seed each replay pair carries (harness/fixed_work_packet;\n'
+                    '# plain, the default, is j2\'s dict unchanged). The draft exports it.\n'
+                    'import fixed_work_packet as _fwp\n'
+                    'configure = _fwp.wrap_env(configure)\n')
+# the mechanism rule's 480 s literals and its seed of a label, asked of harness/fixed_work_packet (env-gated) instead
+RULE_PATCH = (
+    ('import native43_engine_death_h as death\n',
+     'import native43_engine_death_h as death\nimport fixed_work_packet as _fwp  # brief 12: fixed work, seed order\n'),
+    ("and row['t'] <= 480 and row['seconds'] >= row['ttft']",
+     "and row['t'] <= _fwp.send_limit_s() and row['seconds'] >= row['ttft']"),
+    ("dict(table.REPLAY, SEED=1 + int(label[-1]))", "dict(table.REPLAY, SEED=_fwp.expected_seed(label))"),
+    ("arm['wall_start_s'] <= arm['replay_start_s'] < arm['replay_start_s'] + 480 <= arm['replay_end_s'] <= arm['wall_end_s']",
+     "arm['wall_start_s'] <= arm['replay_start_s'] < arm['replay_end_s'] <= arm['wall_end_s'] and _fwp.replay_window_ok(arm)"),
+)
+
+
+def seed_order_of(flag, variant):
+    """The block's own seed order (plain or swap) under the cohort's REPLAY_SEED_ORDER."""
+    if flag == 'alternate':
+        return SEED_ORDER_OF['alternate'].get(variant, 'plain')
+    return flag
+
+
+def packet_edits_on(flags):
+    """The seed-order tail and the rule patch go in only when fixed work or a seed order is set."""
+    return flags['REPLAY_FIXED_WORK'] != '0' or flags['REPLAY_SEED_ORDER'] != 'plain'
+
+
+def rule_patch(text):
+    for old, new in RULE_PATCH:
+        text = hgb.once(text, old, new)
+    return text
+
+
 QUIET_SPLIT_EXPORT = ('export QUIET_SPLIT_CONTROL=1  # brief 11 C: the tail runs the quiet-SPLIT control '
                       '(e3_quiet_split_box), a read\n')
 # brief 11 C: the quiet-SPLIT control as a tail READ (never the queue verdict; the core grade is written before it), on a
@@ -187,9 +234,10 @@ NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
                       'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline',
-                      'test_replay_reply_text', 'test_quiet_split_box')
+                      'test_replay_reply_text', 'test_quiet_split_box', 'test_replay_fixed_work',
+                      'test_fixed_work_packet', 'test_q2024p_j2_long_reader')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
-                    'tools/q2024p_j2_cx_reader.py')
+                    'tools/q2024p_j2_cx_reader.py', 'tools/q2024p_j2_long_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
 PACKET_TAIL = ('\n# composition branch (q2024p-j2-cx): FLASH_S5_DECODE_GROUPS sets the n3 selection\'s decode_merge\n'
                '# (harness/n3_decode_groups; chunk, the default, is j2\'s table unchanged). The draft exports it.\n'
@@ -234,6 +282,9 @@ def parse_flags(pairs):
         raise SystemExit('refused: FLASH_S5_DECODE_SAMPLE_FAST=1 is blocked (Codex engine review 13 Nov: more than '
                          'WIDTH - K ties at the K-th value truncate the support without a fallback); no reviewed fix '
                          'is on the line')
+    if flags['REPLAY_FIXED_WORK'] != '0' and flags['REPLAY_REPLY_TEXT'] != 'seeded':
+        raise SystemExit('refused: REPLAY_FIXED_WORK=%s needs REPLAY_REPLY_TEXT=seeded (the first N turns are the same '
+                         'work on both engines only then)' % flags['REPLAY_FIXED_WORK'])
     if flags['FLASH_S5_CONTROL_INWAIT'] == '1':
         for key, safe in CONTROL_INWAIT_UNTESTED:
             if flags[key] != safe:
@@ -331,6 +382,14 @@ def queues(variant):
             if v['quiet_split_control'] == '1':
                 text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'], DRAFT_EXPORT % v['decode_groups'] + QUIET_SPLIT_EXPORT)
                 text = hgb.once(text, QUIET_SPLIT_ANCHOR, QUIET_SPLIT_ANCHOR + QUIET_SPLIT_STEP)
+            assert not any(n in text for n in ('REPLAY_FIXED_WORK', 'REPLAY_SEED_ORDER', 'fixed_work_packet')), \
+                'the parent draft names fixed work or a seed order already'
+            if v['replay_fixed_work'] != '0':
+                text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'],
+                                DRAFT_EXPORT % v['decode_groups'] + FIXED_WORK_EXPORT % FIXED_WORK[v['replay_fixed_work']])
+            if v['replay_seed_order'] != 'plain':
+                text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'], DRAFT_EXPORT % v['decode_groups'] +
+                                SEED_ORDER_EXPORT % seed_order_of(v['replay_seed_order'], variant))
         result[rel] = text
     return result
 
@@ -351,7 +410,9 @@ def copy_delta(b, commit, bundle):
                  'patches/s5_engine/native_measurement.py', 'harness/test_decode_timeline.py',
                  'harness/decode_timeline_fixture_leaves.json', 'harness/decode_timeline_parent_ast.json',
                  'harness/receipt_lines.py', 'harness/compose4_replay.py', 'harness/test_replay_reply_text.py',
-                 'harness/e3_quiet_split_box.py', 'harness/test_quiet_split_box.py'):
+                 'harness/e3_quiet_split_box.py', 'harness/test_quiet_split_box.py',
+                 'harness/e3_compose4_box.py', 'harness/fixed_work_packet.py', 'harness/test_fixed_work_packet.py',
+                 'harness/test_replay_fixed_work.py', 'harness/test_q2024p_j2_long_reader.py'):
         assert name in copied, name
     return copied
 
@@ -402,6 +463,10 @@ def prepare(commit, variant, out, flags, tag=''):
     assert box.read_text().count(GUARD_INSTALL_NEW % observer) == 1, 'the guard binding does not declare observer=' + observer
     packet = bundle / 'n3j2_packet.py'
     packet.write_text(packet.read_text() + PACKET_TAIL)
+    if packet_edits_on(flags):          # brief 12: off, the packet and the rule are the earlier bundle's bytes
+        packet.write_text(packet.read_text() + SEED_PACKET_TAIL)
+        rule = bundle / 'tools/n3j2_junction_rule.py'
+        rule.write_text(rule_patch(rule.read_text()))
     for rel, text in queues(variant).items():
         (bundle / rel).write_text(text)
         subprocess.run(['bash', '-n', str(bundle / rel)], check=True)

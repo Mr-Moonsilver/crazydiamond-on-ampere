@@ -75,6 +75,8 @@ def _load(name, rel):
 
 np = _load('q2024p_j2_np_reader', 'q2024p_j2_np_reader.py')
 dmp = _load('q2024p_j2_dmp_reader', 'q2024p_j2_dmp_reader.py')
+lr = _load('q2024p_j2_long_reader', 'q2024p_j2_long_reader.py')
+PAIRS = (('0', 'sp.g2-live-0', 'n3.g2-live-0'), ('1', 'sp.g2-live-1', 'n3.g2-live-1'))
 yr, hgb, ing = np.yr, np.hgb, np.ing
 
 DEFAULTS = {
@@ -84,7 +86,7 @@ DEFAULTS = {
     'FLASH_S5_DECODE_LIVENESS': '0', 'FLASH_S5_CONTROL_INWAIT': '0', 'FLASH_S5_CONTROL_O3_INWAIT': '0',
     'FLASH_S5_DECODE_SAMPLE_FAST': '0',
     'FLASH_S5_DECODE_ANATOMY': '0', 'FLASH_S5_DECODE_TIMELINE': '0', 'REPLAY_REPLY_TEXT': 'model',
-    'QUIET_SPLIT_CONTROL': '0'}
+    'QUIET_SPLIT_CONTROL': '0', 'REPLAY_FIXED_WORK': '0', 'REPLAY_SEED_ORDER': 'plain'}
 NP_KEYS = (('batch', 'FLASH_S5_SMALL_PIECE_BATCH'), ('settle', 'FLASH_S5_YIELD_REENTRY_SETTLE'),
            ('y1', 'FLASH_S5_YIELD_NO_APPEND_OWNER'), ('y2', 'FLASH_S5_YIELD_WINDOW'),
            ('ingress', 'FLASH_S5_INGRESS_INCREMENTAL'))
@@ -464,6 +466,15 @@ def collect(root, label, flags, cost_ratio=WORK_COST_RATIO):
     result['identity_compose'], notes = compose_notes(root, label, flags, dview)
     result['compose_notes'] = notes + notes_extra + ['dmp-' + n for n in dview['notes']]
     result['completed'] = done
+    result['time_to_turns'] = time_to_turns(root, loaded)
+    result['compose_notes'].extend(result['time_to_turns']['notes'])
+    fixed_on = flags.get('REPLAY_FIXED_WORK', '0') != '0'
+    for name, arm in loaded.items():          # brief 12: the replay's own record of fixed work against the flag
+        fw = ((arm or {}).get('replay_summary') or {}).get('fixed_work')
+        if arm is not None and fixed_on and fw is None:
+            result['compose_notes'].append('fixed-work-missing-%s-%s' % (label, name))
+        elif arm is not None and not fixed_on and fw is not None:
+            result['compose_notes'].append('fixed-work-unexpected-%s-%s' % (label, name))
     if all(type(v) is int for v in done.values()) and sum(done[n] for n in SP_ARMS):
         result['R'] = round(sum(done[n] for n in N3_ARMS) / sum(done[n] for n in SP_ARMS), 4)
     else:
@@ -486,6 +497,73 @@ def collect(root, label, flags, cost_ratio=WORK_COST_RATIO):
         if w is not None and done.get(name) is not None and w['turns_completed'] != done[name]:
             result['compose_notes'].append('work-completed-differs-%s-%s' % (label, name))
     return result
+
+
+def pair_time(sp, n3, window, targets):
+    """One pair's time to the same turns (the long reader's walk): window = the arm's DURATION, or under fixed work
+    every agent's K capped at its target N_a with no window (both arms completed the first N_a turns)."""
+    agents = lr.agents_of(sp, n3, window)
+    short = []
+    for a in agents:
+        if targets is not None:
+            n = targets[a['agent']]
+            a['target'] = n
+            if a['K'] < n:
+                short.append(a['agent'])
+            a['K'] = min(a['K'], n)
+            a['sp'], a['n3'] = a['sp'][:a['K']], a['n3'][:a['K']]
+    stock = sum(targets) if targets is not None else sum(len(a['sp_completed']) for a in agents)
+    matched = sum(a['K'] for a in agents)
+    return dict(whole=lr.ratio(agents, 0, window), from_180=lr.ratio(agents, lr.FROM_S, window), matched_turns=matched,
+                stock_turns=stock, coverage=round(matched / stock, 4) if stock else None,
+                diverged=[a['agent'] for a in agents if a['diverged_at'] is not None and
+                          (targets is None or a['diverged_at'] <= targets[a['agent']])],
+                short_of_target=short, agents=len(agents))
+
+
+def time_to_turns(root, loaded):
+    """R_t per block (brief 12): stock time over engine time to the same matched turns, per pair and pooled over the
+    block's two pairs (16 agent streams); whole arm and from 180 s; coverage = matched turns / the stock arm's
+    completed turns (fixed work: / the sum of the targets). Fixed work is read from each arm's own
+    replay_summary.fixed_work (both arms of a pair must carry the same targets)."""
+    root, pairs, notes = Path(root), {}, []
+    for index, sp_name, n3_name in PAIRS:
+        paths = [root / ('arm-%s.json.turns.jsonl' % n) for n in (sp_name, n3_name)]
+        if not all(p.is_file() or Path(str(p) + '.zst').is_file() for p in paths):
+            pairs[index] = None
+            continue
+        (hs, sp), (hn, n3) = lr.load(paths[0]), lr.load(paths[1])
+        cs, cn = (hs or {}).get('replay_config') or {}, (hn or {}).get('replay_config') or {}
+        if cs.get('DURATION') != cn.get('DURATION') or cs.get('SEED') != cn.get('SEED') or not cs.get('DURATION'):
+            notes.append('time-pair-config-differs-%s' % index)
+            pairs[index] = None
+            continue
+        fw = [((loaded.get(n) or {}).get('replay_summary') or {}).get('fixed_work') for n in (sp_name, n3_name)]
+        if fw[0] is None and fw[1] is None:
+            targets, window = None, float(cs['DURATION'])
+        elif fw[0] is not None and fw[1] is not None and fw[0].get('targets') == fw[1].get('targets'):
+            targets, window = list(fw[0]['targets']), math.inf
+            for name, f in zip((sp_name, n3_name), fw):
+                if f.get('cap_hit') is not False:
+                    notes.append('fixed-work-cap-hit-%s' % name)
+        else:
+            notes.append('fixed-work-differs-%s' % index)
+            pairs[index] = None
+            continue
+        read = pair_time(sp, n3, window, targets)
+        read.update(seed=cs['SEED'], fixed_work=targets is not None,
+                    end_s={n: (f or {}).get('end_s') for n, f in zip((sp_name, n3_name), fw)})
+        if read['short_of_target']:
+            notes.append('fixed-work-short-%s:%s' % (index, ','.join(map(str, read['short_of_target']))))
+        pairs[index] = read
+    reads = [r for r in pairs.values() if r is not None]
+    block = None
+    if len(reads) == len(PAIRS):
+        block = dict(whole=lr.pool(reads, 'whole'), from_180=lr.pool(reads, 'from_180'),
+                     coverage=round(sum(r['matched_turns'] for r in reads) / sum(r['stock_turns'] for r in reads), 4),
+                     diverged_streams=sum(len(r['diverged']) for r in reads),
+                     fixed_work=all(r['fixed_work'] for r in reads))
+    return dict(pairs=pairs, block=block, notes=notes)
 
 
 def journal(root, name):
@@ -613,12 +691,27 @@ def work_cohort(results, turn_work=None):
                 blocks_without_R_w=[k for k, v in rw.items() if v is None])
 
 
+def time_cohort(results):
+    """R_t per block and G_t (geometric mean), whole and from 180 s; sd of ln R_t (n - 1); coverage per block."""
+    out = {}
+    for key in ('whole', 'from_180'):
+        per = {r['label']: ((r.get('time_to_turns') or {}).get('block') or {}).get(key, {}).get('R') for r in results}
+        vals = [v for v in per.values() if v]
+        out[key] = dict(R_t=per, G_t=lr.geo(vals), sd_ln_R_t=_sd([math.log(v) for v in vals]), blocks=len(vals))
+    out['coverage'] = {r['label']: ((r.get('time_to_turns') or {}).get('block') or {}).get('coverage') for r in results}
+    out['diverged_streams'] = {r['label']: ((r.get('time_to_turns') or {}).get('block') or {}).get('diverged_streams')
+                               for r in results}
+    out['fixed_work'] = {r['label']: ((r.get('time_to_turns') or {}).get('block') or {}).get('fixed_work') for r in results}
+    out['blocks_without_R_t'] = [k for k, v in out['whole']['R_t'].items() if not v]
+    return out
+
+
 def cohort_line(results, turn_work=None):
     rs = [r['R'] for r in results if r['R']]
     missing = [r['label'] for r in results if not r['R']]
     g = round(math.exp(sum(math.log(x) for x in rs) / len(rs)), 4) if rs else None
     return dict(R={r['label']: r['R'] for r in results}, G=g, blocks_with_R=len(rs), blocks_without_R=missing,
-                work=work_cohort(results, turn_work))
+                work=work_cohort(results, turn_work), time=time_cohort(results))
 
 
 def inwait_lines(name, arm):
@@ -737,6 +830,16 @@ def render(results, full=False, turn_work=None):
                          'frac=%.3f errors=%d' % (name, w['seed'], w['turns_completed'], len(w['open']), w['open_rows'],
                                                   w['open_rows_W'], w['rows_W'], w['out_W'], w['work_W'],
                                                   w['frac_turns'], w['errors']))
+        tt = r.get('time_to_turns') or {}
+        for index, pr in sorted((tt.get('pairs') or {}).items()):
+            if pr is None:
+                lines.append('  time pair %s - (no pair read)' % index)
+                continue
+            lines.append('  time pair %s seed=%s fixed_work=%s R_t whole=%s from_180=%s matched=%d/%d coverage=%s '
+                         'diverged=%s short=%s end_s=%s' % (index, pr['seed'], pr['fixed_work'], pr['whole']['R'],
+                                                             pr['from_180']['R'], pr['matched_turns'], pr['stock_turns'],
+                                                             pr['coverage'], pr['diverged'], pr['short_of_target'],
+                                                             np.fmt(pr['end_s'])))
         qs = r.get('quiet_split')
         if qs is not None:
             lines.append('  quiet-split %s%s (decode only on SPLIT, no native work, decode_merge=always)' % (
@@ -748,6 +851,13 @@ def render(results, full=False, turn_work=None):
         if r['compose_notes']:
             lines.append('  NOTES %s' % np.fmt(sorted(set(r['compose_notes']))))
     c = cohort_line(results, turn_work)
+    t = c['time']
+    lines.append('== time to the same turns R_t (stock time / engine time, 16 agent streams a block; the fixed-work '
+                 'draft\'s primary) whole R_t=%s G_t=%s sd_ln_R_t=%s; from 180 s R_t=%s G_t=%s sd_ln_R_t=%s' % (
+                     np.fmt(t['whole']['R_t']), t['whole']['G_t'], t['whole']['sd_ln_R_t'], np.fmt(t['from_180']['R_t']),
+                     t['from_180']['G_t'], t['from_180']['sd_ln_R_t']))
+    lines.append('   coverage(matched / stock completed or targets)=%s diverged_streams=%s fixed_work=%s without=%s' % (
+        np.fmt(t['coverage']), np.fmt(t['diverged_streams']), np.fmt(t['fixed_work']), np.fmt(t['blocks_without_R_t'])))
     lines.append('== cohort (descriptive) R=%s G=%s blocks_with_R=%d without=%s' % (
         np.fmt(c['R']), c['G'], c['blocks_with_R'], np.fmt(c['blocks_without_R'])))
     w = c['work']

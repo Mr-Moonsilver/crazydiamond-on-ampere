@@ -274,7 +274,7 @@ class NameOnly(unittest.TestCase):
 class Queues(unittest.TestCase):
     """On the hub the builder's queue edits for a non-default flag set; in a bundle the bundle's own built texts."""
 
-    def check_texts(self, texts, flags, name):
+    def check_texts(self, texts, flags, name, variant=None):
         settings = [t for r, t in texts.items() if r.endswith('_settings.sh')]
         self.assertEqual(len(settings), 1)
         settings = settings[0]
@@ -300,6 +300,16 @@ class Queues(unittest.TestCase):
                 self.assertEqual(text.count(cx.QUIET_SPLIT_EXPORT), int(quiet), rel)
                 self.assertEqual(text.count('e3_quiet_split_box'), int(quiet) * (
                     cx.QUIET_SPLIT_EXPORT.count('e3_quiet_split_box') + cx.QUIET_SPLIT_STEP.count('e3_quiet_split_box')), rel)
+                # brief 12: fixed work and the block's seed order, each exported once when set, before any python
+                fixed = flags.get('REPLAY_FIXED_WORK', '0')
+                want = '' if fixed == '0' else cx.FIXED_WORK_EXPORT % cx.FIXED_WORK[fixed]
+                self.assertEqual(text.count('REPLAY_FIXED_WORK'), int(fixed != '0'), rel)
+                order = flags.get('REPLAY_SEED_ORDER', 'plain')
+                self.assertEqual(text.count('REPLAY_SEED_ORDER'), int(order != 'plain'), rel)
+                for line in [want] + ([cx.SEED_ORDER_EXPORT % cx.seed_order_of(order, variant)] if order != 'plain' and variant else []):
+                    if line:
+                        self.assertEqual(text.count(line), 1, rel)
+                        self.assertLess(text.index(line), text.index('python3'), rel)
         self.assertEqual(drafts, 1)
         self.assertTrue(any(name in t for t in texts.values()))
         # lever A x Y1 precondition: every turn lever A fuses (at most its MAX_NEW rows past the turn start) has at most
@@ -325,11 +335,21 @@ class Queues(unittest.TestCase):
                     got = re.findall(r'^export %s=(\S+) ' % f[0], texts['runs/' + stem + '.draft.sh'], re.M)
                     self.assertLessEqual(len(got), 1, f[0])
                     flags[f[0]] = got[0] if got else f[3]
+                    if f[0] == 'REPLAY_FIXED_WORK' and got:       # brief 12: the export names the spec, the flag its name
+                        flags[f[0]] = {v[0]: k for k, v in cx.FIXED_WORK.items()}[got[0]]
+                    if f[0] == 'REPLAY_SEED_ORDER' and got == ['plain']:   # only alternate exports plain (b1, b3)
+                        flags[f[0]] = 'alternate'
                     continue
                 got = re.findall(r'\b%s=(\S+) ' % f[0], settings)
                 self.assertLessEqual(len(set(got)), 1, f[0])
                 flags[f[0]] = got[0] if got else None
-            self.check_texts(texts, flags, cx.name_of(variant, tag))
+            self.check_texts(texts, flags, cx.name_of(variant, tag), variant)
+            # brief 12: the seed-order tail and the mechanism-rule patch exactly when fixed work or a seed order is set
+            on = cx.packet_edits_on(flags)
+            self.assertEqual((HERE / 'n3j2_packet.py').read_text().count(cx.SEED_PACKET_TAIL), int(on))
+            rule_text = (HERE / 'tools' / 'n3j2_junction_rule.py').read_text()
+            for old, new in cx.RULE_PATCH:
+                self.assertEqual((rule_text.count(old), rule_text.count(new)), (0, 1) if on else (1, 0), new)
             # brief 11: the built box binds the guard with the observer the settings line launches
             box = (HERE / 'n3j2_box.py').read_text()
             want = cx.GUARD_INSTALL_NEW % cx.OBSERVER_OF[flags['FLASH_S5_DECODE_LIVENESS']]
@@ -415,6 +435,68 @@ class Queues(unittest.TestCase):
             self.assertEqual(seeded[rel].replace(cx.REPLY_TEXT_EXPORT, ''), plain[rel])
             head = seeded[rel].partition(cx.REPLY_TEXT_EXPORT)[0]
             self.assertEqual(head.partition(cx.dmp.DRAFT_ANCHOR)[2], cx.DRAFT_EXPORT % 'chunk')   # nothing runs between
+
+    def test_fixed_work_and_seed_order_options(self):
+        """Brief 12: REPLAY_FIXED_WORK (0|n480, needs seeded reply text) and REPLAY_SEED_ORDER (plain|swap|alternate)
+        are harness flags: each exports one line after the decode-group export and before any python; alternate gives
+        b2 and b4 swap, b1, b3 and the dry block plain; the defaults leave every queue text as it was and the packet and
+        rule untouched (packet_edits_on False)."""
+        flags = cx.parse_flags([])
+        self.assertEqual((flags['REPLAY_FIXED_WORK'], flags['REPLAY_SEED_ORDER']), ('0', 'plain'))
+        self.assertFalse(cx.packet_edits_on(flags))
+        for bad in (['REPLAY_FIXED_WORK=n480'], ['REPLAY_FIXED_WORK=n480', 'REPLAY_REPLY_TEXT=model'],
+                    ['REPLAY_FIXED_WORK=15'], ['REPLAY_SEED_ORDER=reverse']):
+            with self.assertRaises(SystemExit, msg=bad):
+                cx.parse_flags(bad)
+        self.assertTrue(cx.packet_edits_on(cx.parse_flags(['REPLAY_SEED_ORDER=swap'])))
+        self.assertTrue(cx.packet_edits_on(cx.parse_flags(['REPLAY_FIXED_WORK=n480', 'REPLAY_REPLY_TEXT=seeded'])))
+        for name in ('REPLAY_FIXED_WORK', 'REPLAY_SEED_ORDER'):
+            self.assertIn(name, cx.HARNESS_FLAGS)
+            self.assertNotIn(name, reader.COMPOSE_ENVS)
+        self.assertEqual((reader.DEFAULTS['REPLAY_FIXED_WORK'], reader.DEFAULTS['REPLAY_SEED_ORDER']), ('0', 'plain'))
+        self.assertEqual([cx.seed_order_of('alternate', v) for v in cx.BLOCKS + (cx.DRY,)],
+                         ['plain', 'swap', 'plain', 'swap', 'plain'])
+        self.assertEqual({cx.seed_order_of('swap', v) for v in cx.BLOCKS}, {'swap'})
+        spec, cap = cx.FIXED_WORK['n480']
+        self.assertEqual(spec, '1=15,17,14,17,18,14,12,14/2=18,15,16,17,15,16,16,16')
+        self.assertEqual(cap, 640)
+        for suite in ('test_replay_fixed_work', 'test_fixed_work_packet', 'test_q2024p_j2_long_reader'):
+            self.assertIn(suite, cx.SUITES)
+        self.assertIn('tools/q2024p_j2_long_reader.py', cx.TOOLS)
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        saved = dict(cx.CONFIG)
+        got = {}
+        try:
+            for key, pairs in (('plain', ['REPLAY_REPLY_TEXT=seeded']),
+                               ('fixed', ['REPLAY_REPLY_TEXT=seeded', 'REPLAY_FIXED_WORK=n480']),
+                               ('alt', ['REPLAY_REPLY_TEXT=seeded', 'REPLAY_FIXED_WORK=n480', 'REPLAY_SEED_ORDER=alternate'])):
+                cx.configure(cx.parse_flags(pairs), 'zw')
+                got[key] = {v: cx.queues(v) for v in ('b1', 'b2')}
+        finally:
+            cx.CONFIG.update(saved)
+        fixed_line = cx.FIXED_WORK_EXPORT % (spec, cap)
+        self.assertIn('export REPLAY_FIXED_WORK=%s REPLAY_FIXED_CAP_S=640 ' % spec, fixed_line)
+        for v in ('b1', 'b2'):
+            plain = got['plain'][v]
+            self.assertFalse(any(n in t for t in plain.values() for n in ('REPLAY_FIXED', 'REPLAY_SEED_ORDER', 'fixed_work_packet')))
+            for rel in plain:
+                fixed, alt = got['fixed'][v][rel], got['alt'][v][rel]
+                if not rel.endswith('.draft.sh'):
+                    self.assertEqual((fixed, alt), (plain[rel], plain[rel]), rel)
+                    continue
+                order_line = cx.SEED_ORDER_EXPORT % ('plain' if v == 'b1' else 'swap')
+                self.assertEqual(fixed.replace(fixed_line, ''), plain[rel])
+                self.assertEqual(alt.replace(order_line, ''), fixed)
+                head = alt.partition(cx.dmp.DRAFT_ANCHOR)[2]
+                self.assertTrue(head.startswith(cx.DRAFT_EXPORT % 'chunk' + order_line + fixed_line + cx.REPLY_TEXT_EXPORT), head[:400])
+                import subprocess
+                import tempfile
+                with tempfile.NamedTemporaryFile('w', suffix='.sh') as f:
+                    f.write(alt)
+                    f.flush()
+                    self.assertEqual(subprocess.run(['bash', '-n', f.name]).returncode, 0)
 
     def test_quiet_split_option(self):
         """Brief 11 C: QUIET_SPLIT_CONTROL=1 exports the gate once after the decode-group export and puts the quiet-SPLIT
@@ -1227,6 +1309,114 @@ class Reader(unittest.TestCase):
         self.assertEqual(reader.flags_of([], d / 'cohort.json'), flags)
         with self.assertRaises(ValueError):
             reader.flags_of(['FLASH_S5_TAIL_CUT_BACK=1'])
+
+
+def time_packet(root, speed=2.0, targets=None, per_agent=6, seeds=(1, 2), cap_hit=False, drop=None):
+    """A packet dir with the four replay journals: every agent's turns 10 s apart on stock, ``speed`` x faster on n3;
+    with ``targets`` each arm's record carries replay_summary.fixed_work (the turns run to per_agent either way)."""
+    root.mkdir()
+    for (index, sp_name, n3_name), seed in zip(reader.PAIRS, seeds):
+        for name, step in ((sp_name, 10.0), (n3_name, 10.0 / speed)):
+            rows = []
+            for agent in range(2):
+                prompt = 1000
+                for k in range(per_agent):
+                    if drop == (name, agent, k):
+                        continue
+                    t = k * step + agent * step / 10
+                    rows.append(dict(agent=agent, session=1, kind='fresh' if k == 0 else 'append', t=t, ttft=step / 4,
+                                     seconds=step * 0.9, prompt_tokens=prompt, completion_tokens=50, reply_target=50 + k,
+                                     arrivals_ms=[int((t + step / 4) * 1000)], complete=True))
+                    prompt += 500
+            head = dict(header=True, label=name, replay_start_s=1.0, replay_config=dict(DURATION=480.0, SEED=seed))
+            (root / ('arm-%s.json.turns.jsonl' % name)).write_text(''.join(json.dumps(r) + '\n' for r in [head] + rows))
+            summary = {}
+            if targets is not None:
+                summary['fixed_work'] = dict(targets=list(targets), cap_s=640.0, cap_hit=cap_hit, all_reached=not cap_hit,
+                                             end_s=50.0, reached_s=[40.0, 50.0])
+            (root / ('arm-%s.json' % name)).write_text(json.dumps(dict(label=name, replay_summary=summary)))
+    return root
+
+
+class TimeToTurns(unittest.TestCase):
+    """Brief 12: R_t (the long reader's time to the same turns) per pair, per block (16 streams) and per cohort."""
+
+    def loaded(self, root):
+        return {n: json.loads((root / ('arm-%s.json' % n)).read_text()) for n in reader.SP_ARMS + reader.N3_ARMS}
+
+    def test_engine_twice_as_fast_reads_two(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = time_packet(Path(tmp) / 'p')
+            got = reader.time_to_turns(root, self.loaded(root))
+        self.assertEqual(got['notes'], [])
+        self.assertAlmostEqual(got['block']['whole']['R'], 2.0, places=4)
+        self.assertEqual(got['block']['coverage'], 1.0)
+        self.assertFalse(got['block']['fixed_work'])
+        self.assertEqual([got['pairs'][i]['seed'] for i in ('0', '1')], [1, 2])
+
+    def test_fixed_work_caps_k_at_the_target(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = time_packet(Path(tmp) / 'p', speed=2.0, targets=[3, 5])
+            got = reader.time_to_turns(root, self.loaded(root))
+            pr = got['pairs']['0']
+            self.assertTrue(got['block']['fixed_work'])
+            self.assertEqual((pr['matched_turns'], pr['stock_turns'], pr['coverage']), (8, 8, 1.0))
+            # stock: agent 0 ends turn 3 at 2*10 + 9 = 29, agent 1 turn 5 at 40 + 1 + 9 = 50; n3 at half the step
+            self.assertAlmostEqual(pr['whole']['sp_s'], 29.0 + 50.0, places=3)
+            self.assertAlmostEqual(pr['whole']['n3_s'], 14.5 + 25.0, places=3)
+            root2 = time_packet(Path(tmp) / 'q', targets=[3, 5], cap_hit=True)
+            self.assertIn('fixed-work-cap-hit-sp.g2-live-0', reader.time_to_turns(root2, self.loaded(root2))['notes'])
+            root3 = time_packet(Path(tmp) / 'r', targets=[3, 5], drop=('n3.g2-live-1', 1, 2))
+            got3 = reader.time_to_turns(root3, self.loaded(root3))
+            self.assertIn('fixed-work-short-1:1', got3['notes'])
+            self.assertLess(got3['block']['coverage'], 1.0)
+
+    def test_a_missing_journal_or_a_seed_mismatch_gives_no_block(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = time_packet(Path(tmp) / 'p')
+            (root / 'arm-n3.g2-live-1.json.turns.jsonl').rename(root / 'moved')
+            got = reader.time_to_turns(root, self.loaded(root))
+            self.assertIsNone(got['block'])
+            self.assertIsNone(got['pairs']['1'])
+            root2 = time_packet(Path(tmp) / 'q')
+            path = root2 / 'arm-n3.g2-live-0.json.turns.jsonl'
+            lines = path.read_text().splitlines()
+            head = json.loads(lines[0]); head['replay_config']['SEED'] = 2
+            path.write_text('\n'.join([json.dumps(head)] + lines[1:]) + '\n')
+            got2 = reader.time_to_turns(root2, self.loaded(root2))
+            self.assertIn('time-pair-config-differs-0', got2['notes'])
+            self.assertIsNone(got2['block'])
+
+    def test_cohort_line(self):
+        blocks = [dict(label='b%d' % i, time_to_turns=dict(block=dict(whole=dict(R=r), from_180=dict(R=r - 0.02),
+                                                                      coverage=1.0, diverged_streams=0, fixed_work=True)))
+                  for i, r in ((1, 1.10), (2, 1.12), (3, 1.08), (4, 1.11))]
+        c = reader.time_cohort(blocks + [dict(label='b5', time_to_turns=dict(block=None))])
+        self.assertAlmostEqual(c['whole']['G_t'], (1.10 * 1.12 * 1.08 * 1.11) ** 0.25, places=5)
+        self.assertEqual(c['whole']['blocks'], 4)
+        self.assertEqual(c['blocks_without_R_t'], ['b5'])
+        logs = [math.log(x) for x in (1.10, 1.12, 1.08, 1.11)]
+        mean = sum(logs) / 4
+        self.assertEqual(c['whole']['sd_ln_R_t'], round(math.sqrt(sum((v - mean) ** 2 for v in logs) / 3), 4))
+
+    def test_k_not_capped_is_caught(self):
+        """Mutant: the target cap dropped, a fixed-work pair reads the whole prefix (the review's 480 s statistic)."""
+        import tempfile
+        source = inspect.getsource(reader.pair_time)
+        old = "            a['K'] = min(a['K'], n)\n"
+        self.assertEqual(source.count(old), 1)
+        space = dict(reader.__dict__)
+        exec(compile(source.replace(old, ''), 'pair_time_mutant', 'exec'), space)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = time_packet(Path(tmp) / 'p', targets=[3, 5])
+            _h, sp = reader.lr.load(root / 'arm-sp.g2-live-0.json.turns.jsonl')
+            _h, n3 = reader.lr.load(root / 'arm-n3.g2-live-0.json.turns.jsonl')
+        good = reader.pair_time(sp, n3, math.inf, [3, 5])
+        bad = space['pair_time'](sp, n3, math.inf, [3, 5])
+        self.assertNotEqual((good['matched_turns'], good['whole']), (bad['matched_turns'], bad['whole']))
 
 
 if __name__ == '__main__':
