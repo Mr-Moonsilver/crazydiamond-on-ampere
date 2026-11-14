@@ -112,12 +112,12 @@ QUIET_SPLIT_STEP = '''  # brief 11 C: the quiet-SPLIT control (e3_quiet_split_bo
     elif [[ $n != "$N0" ]] || [[ $ENGINE_CRASHED != 0 ]] || host_crash_detected || ! health_ok; then
       read_step quiet-split 2 'NOT_RUN: engine crashed, unhealthy or auto-restarted; no restart attempted'
     else
-      engine_watched entry-quiet-split timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
+      engine_watched entry-quiet-split timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \\
         --control-timeout-s 60 --timeout-s "$IDLE_TIMEOUT_S" --out "$Q/entry-quiet-split.json" > "$Q/entry-quiet-split.log" 2>&1
       _qs_rc=$?; read_step entry-quiet-split "$_qs_rc" 'typed all-rank FULL, resumed, idle, workers empty; lease taken'
       if [[ $_qs_rc == 0 ]]; then
-        engine_watched quiet-split timeout --signal=TERM --kill-after=30s 360s python3 "$H/e3_quiet_split_box.py" \
-          --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --stages 8,4,1 --hold-s 25 \
+        engine_watched quiet-split timeout --signal=TERM --kill-after=30s 360s python3 "$H/e3_quiet_split_box.py" \\
+          --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --stages 8,4,1 --hold-s 25 \\
           --decode-merge always --control-timeout-s 60 --out "$Q/quiet-split.json" > "$Q/quiet-split.log" 2>&1
         read_step quiet-split "$?" 'quiet-SPLIT control: 8, 4, 1 live decoders on split, no native work, decode_merge=always, 25 s each'
       else

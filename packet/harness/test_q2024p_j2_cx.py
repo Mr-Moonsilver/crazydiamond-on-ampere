@@ -298,7 +298,8 @@ class Queues(unittest.TestCase):
                 quiet = flags.get('QUIET_SPLIT_CONTROL') == '1'
                 self.assertEqual(text.count(cx.QUIET_SPLIT_STEP), int(quiet), rel)
                 self.assertEqual(text.count(cx.QUIET_SPLIT_EXPORT), int(quiet), rel)
-                self.assertEqual(text.count('e3_quiet_split_box'), 2 * int(quiet), rel)
+                self.assertEqual(text.count('e3_quiet_split_box'), int(quiet) * (
+                    cx.QUIET_SPLIT_EXPORT.count('e3_quiet_split_box') + cx.QUIET_SPLIT_STEP.count('e3_quiet_split_box')), rel)
         self.assertEqual(drafts, 1)
         self.assertTrue(any(name in t for t in texts.values()))
         # lever A x Y1 precondition: every turn lever A fuses (at most its MAX_NEW rows past the turn start) has at most
@@ -465,6 +466,9 @@ class Queues(unittest.TestCase):
             self.assertEqual(order, sorted(order))
             self.assertLess(text.index('record compose5 '), at)            # the core grade is written before it
             self.assertLess(text.index(cx.QUIET_SPLIT_EXPORT), text.index('python3'))
+            # the long command lines keep their bash continuations (a Python string escape once folded them)
+            self.assertEqual(cx.QUIET_SPLIT_STEP.count(' \\\n'), 3)
+            self.assertIn('"$H/e3_quiet_split_box.py" \\\n', text)
             import subprocess
             import tempfile
             with tempfile.NamedTemporaryFile('w', suffix='.sh') as f:
