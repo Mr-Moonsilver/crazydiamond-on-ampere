@@ -1272,6 +1272,12 @@ YIELD_WINDOW_ENV = 'FLASH_S5_YIELD_WINDOW'                       # yield-rules Y
 YIELD_WINDOW_MAX_APPENDS = 4        # the owner's starvation bound: appends per window, the first included (sim: ~free)
 YIELD_WINDOW_RECEIPT_LIMIT = 4096
 YIELD_WINDOW_GAP_BUCKETS_MS = (100, 250, 500, 1000, 2000)
+# lever-2 per-step brief (14 Nov 2026), FLASH_S5_YIELD_WINDOW_FIX, default 0, needs FLASH_S5_YIELD_WINDOW=1: the window's
+# staged append is re-checked at its begin with the pause auto-arm restores right after (its own PAUSED_ALL bracket
+# refused every staged append on the box: windows == appends in six records); a staged append still not takeable
+# leaves the per-bulk lookup memo once, so the next chunk boundary may take it instead of the bulk's end.
+YIELD_WINDOW_FIX_ENV = 'FLASH_S5_YIELD_WINDOW_FIX'
+_OWN_PAUSE = object()              # sentinel: read the scheduler's own pause state (every caller but the fixed begin)
 # append-pieces lever A (lead 12 Nov 2026): FLASH_S5_APPEND_NO_BLOCK_STOP, default 0.  An append (at most this many prefill
 # rows past the turn's cached start: the table's FLASH_S5_APPEND_YIELD_MAX_NEW) runs a native piece through the next Mamba
 # block boundary instead of stopping there; every other stock stop stays.  Off: _aligned_split and commit are the parent's.
@@ -1746,6 +1752,15 @@ class PrefillAdmissionController:
         if y2 not in ('0', '1'):
             raise E3ContractError(YIELD_WINDOW_ENV + ' must be 0 or 1')
         self.yield_window = y2 == '1'
+        fix = os.environ.get(YIELD_WINDOW_FIX_ENV, '0')
+        if fix not in ('0', '1'):
+            raise E3ContractError(YIELD_WINDOW_FIX_ENV + ' must be 0 or 1')
+        if fix == '1' and not self.yield_window:
+            raise E3ContractError(YIELD_WINDOW_FIX_ENV + '=1 needs ' + YIELD_WINDOW_ENV + '=1')
+        self.yield_window_fix = fix == '1'
+        # begins: staged appends re-checked; own_pause_passed: refused by the scheduler's pause, passed with the restored
+        # one; still_refused: refused either way (next-left); reoffered: memo entries dropped once per request per bulk
+        self.yield_window_fix_counts = dict(begins=0, own_pause_passed=0, still_refused=0, reoffered=0)
         self.yield_window_max = YIELD_WINDOW_MAX_APPENDS
         self.yield_window_counts = dict(windows=0, appends=0, reentries_avoided=0, tail_full_handbacks=0,
                                         per_window={}, ends={}, gap_ms=dict(n=0, total=0.0, max=0.0, buckets={}),
@@ -2007,10 +2022,10 @@ class PrefillAdmissionController:
         except Exception:
             counts['errors'] += 1
 
-    def _environment_refuses(self, scheduler):
+    def _environment_refuses(self, scheduler, pause_state=_OWN_PAUSE):
         if getattr(scheduler, 'connector', None) is not None:
             return True
-        pause = getattr(scheduler, '_pause_state', None)
+        pause = getattr(scheduler, '_pause_state', None) if pause_state is _OWN_PAUSE else pause_state
         if pause is not None and getattr(pause, 'name', 'UNPAUSED') != 'UNPAUSED':
             return True
         config = getattr(scheduler, 'vllm_config', None)
@@ -2484,7 +2499,7 @@ class PrefillAdmissionController:
         except Exception:
             self.yield_receipts['errors'] += 1
 
-    def _append_yield_gate(self, scheduler, decode_counts):
+    def _append_yield_gate(self, scheduler, decode_counts, pause_state=_OWN_PAUSE):
         """The rules on the engine, before any request is read."""
         config = self.append_yield
         if config is None or not config.enabled:
@@ -2499,14 +2514,18 @@ class PrefillAdmissionController:
         if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):
             self._yield_refuse('decode-cover')
             return False
-        if self._environment_refuses(scheduler):
+        if self._environment_refuses(scheduler, pause_state):
             self._yield_refuse('environment')
             return False
         return True
 
-    def append_yield_still_held(self, scheduler, request, decode_counts=None):
-        """The drain's re-check: the selected request is still takeable.  No lookup; the admission does its own."""
-        return (self._append_yield_gate(scheduler, decode_counts)
+    def append_yield_still_held(self, scheduler, request, decode_counts=None, pause_state=_OWN_PAUSE):
+        """The drain's re-check: the selected request is still takeable.  No lookup; the admission does its own.
+
+        ``pause_state``: only the fixed window begin (FLASH_S5_YIELD_WINDOW_FIX) passes one, the pause auto-arm restores
+        right after its own PAUSED_ALL bracket; every other caller reads the scheduler's own.
+        """
+        return (self._append_yield_gate(scheduler, decode_counts, pause_state)
                 and self._append_yield_eligible(scheduler, request, getattr(scheduler, 'requests', None)))
 
     def append_yield_candidate(self, scheduler, bulk, decode_counts=None, exclude=(), seen=None):
@@ -2737,6 +2756,8 @@ class PrefillAdmissionController:
                 w, max_appends=self.yield_window_max, per_window=dict(w['per_window']), ends=dict(w['ends']),
                 gap_ms=dict(w['gap_ms'], buckets=dict(w['gap_ms']['buckets'])), not_served=dict(w['not_served']),
                 gap_by_path={k: dict(v) for k, v in w['gap_by_path'].items()})
+        if self.yield_window_fix:               # the window-begin fix: present only with its flag on
+            result.setdefault('queue_policy', {})['yield_window_fix'] = dict(self.yield_window_fix_counts)
         return result
 
     def _next_transaction(self, request, start, chunk_end):

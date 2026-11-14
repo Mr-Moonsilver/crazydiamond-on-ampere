@@ -67,6 +67,7 @@ class Flags(unittest.TestCase):
                       ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'], ['FLASH_S5_CONTROL_INWAIT=1'],
                       ['FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1'], ['FLASH_S5_DECODE_ANATOMY=1'],
                       ['FLASH_S5_DECODE_TIMELINE=1'], ['FLASH_S5_DECODE_OVERLAP_SMS=42'], ['FLASH_S5_DECODE_OVERLAP_SMS=48'],
+                      ['FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_YIELD_WINDOW_FIX=1'],
                       ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'],
                       ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'],
                       ['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1']):
@@ -98,6 +99,12 @@ class Flags(unittest.TestCase):
         off, on = cx.parse_flags(ay12t), cx.parse_flags(ay12t + ['FLASH_S5_DECODE_OVERLAP_SMS=42'])
         self.assertEqual(sorted(k for k in off if off[k] != on[k]), ['FLASH_S5_DECODE_OVERLAP_SMS'])
         self.assertEqual(off['FLASH_S5_DECODE_OVERLAP_SMS'], '0')
+        # lever-2 per-step (14 Nov): l3off / l3fix / l3fx42, each one flag from the next
+        fix = cx.parse_flags(ay12t + ['FLASH_S5_YIELD_WINDOW_FIX=1'])
+        fx42 = cx.parse_flags(ay12t + ['FLASH_S5_YIELD_WINDOW_FIX=1', 'FLASH_S5_DECODE_OVERLAP_SMS=42'])
+        self.assertEqual(sorted(k for k in off if off[k] != fix[k]), ['FLASH_S5_YIELD_WINDOW_FIX'])
+        self.assertEqual(sorted(k for k in fix if fix[k] != fx42[k]), ['FLASH_S5_DECODE_OVERLAP_SMS'])
+        self.assertEqual(off['FLASH_S5_YIELD_WINDOW_FIX'], '0')
 
     def test_refusals(self):
         self.refuses(['FLASH_S5_YIELD_REENTRY_SETTLE=1', 'FLASH_S5_YIELD_WINDOW=1'])
@@ -129,6 +136,9 @@ class Flags(unittest.TestCase):
         for value in ('1', '24', '40', '41', '82', 'on'):     # lever 2: off or one of the two built widths
             self.refuses(['FLASH_S5_DECODE_OVERLAP_SMS=' + value])
         self.refuses(['FLASH_S5_DECODE_OVERLAP_SMS=42', 'QUIET_SPLIT_CONTROL=1'])
+        self.refuses(['FLASH_S5_YIELD_WINDOW_FIX=1'])                  # the fix needs its window
+        for value in ('2', 'on', ''):
+            self.refuses(['FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_YIELD_WINDOW_FIX=' + value])
         self.assertEqual(cx.parse_flags(['FLASH_S5_DECODE_OVERLAP_SMS=0', 'QUIET_SPLIT_CONTROL=1'])['QUIET_SPLIT_CONTROL'], '1')
         # scope 2 needs scope 1; its untested pairs are scope 1's (refused through CONTROL_INWAIT=1)
         self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=1'])
@@ -239,7 +249,8 @@ class Names(unittest.TestCase):
 
 COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
            'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_CONTROL_O3_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST',
-           'FLASH_S5_DECODE_ANATOMY', 'FLASH_S5_DECODE_TIMELINE', 'FLASH_S5_DECODE_OVERLAP_SMS')
+           'FLASH_S5_DECODE_ANATOMY', 'FLASH_S5_DECODE_TIMELINE', 'FLASH_S5_DECODE_OVERLAP_SMS',
+           'FLASH_S5_YIELD_WINDOW_FIX')
 QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
 
 
@@ -634,6 +645,37 @@ class Queues(unittest.TestCase):
                 self.assertEqual(a.replace('FLASH_S5_DECODE_OVERLAP_SMS=0', 'X').replace(
                     "'FLASH_S5_DECODE_OVERLAP_SMS') == '0'", 'Y'), b.replace('FLASH_S5_DECODE_OVERLAP_SMS=42', 'X').replace(
                     "'FLASH_S5_DECODE_OVERLAP_SMS') == '42'", 'Y'), rel)
+        finally:
+            cx.CONFIG.update(saved)
+
+    def test_yield_window_fix_flag_in_the_queues(self):
+        """Lever-2 per-step (14 Nov): the Y2 begin fix rides the settings line and the asserts after the soft split; its
+        two engine modules are bound and copied, its suite runs in the frozen CPU. l3off / l3fix differ in that value."""
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        ay12t = ['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1', 'FLASH_S5_YIELD_WINDOW=1',
+                 'FLASH_S5_DECODE_ANATOMY=1', 'FLASH_S5_DECODE_TIMELINE=1']
+        saved = dict(cx.CONFIG)
+        try:
+            texts = {}
+            for value in ('0', '1'):
+                flags = cx.parse_flags(ay12t + ['FLASH_S5_YIELD_WINDOW_FIX=' + value])
+                cx.configure(flags, 'zf')
+                texts[value] = cx.queues('b1')
+                self.check_texts(texts[value], flags, cx.name_of('b1', 'zf'))
+                settings = next(t for r, t in texts[value].items() if r.endswith('_settings.sh'))
+                self.assertIn('FLASH_S5_DECODE_OVERLAP_SMS=0 FLASH_S5_YIELD_WINDOW_FIX=%s ' % value, settings)
+                self.assertEqual(settings.count('FLASH_S5_YIELD_WINDOW_FIX'), 1)
+                self.assertEqual(settings.count('FLASH_S5_YIELD_WINDOW=1 '), 1)
+            for name in ('engine_driver', 'scheduler_hooks'):
+                self.assertIn(name, cx.ing.BOUND_MODULES)
+            self.assertIn('test_yield_window_fix', cx.SUITES)
+            for rel in texts['0']:
+                a, b = texts['0'][rel], texts['1'][rel]
+                self.assertEqual(a.replace('FLASH_S5_YIELD_WINDOW_FIX=0', 'X').replace(
+                    "'FLASH_S5_YIELD_WINDOW_FIX') == '0'", 'Y'), b.replace('FLASH_S5_YIELD_WINDOW_FIX=1', 'X').replace(
+                    "'FLASH_S5_YIELD_WINDOW_FIX') == '1'", 'Y'), rel)
         finally:
             cx.CONFIG.update(saved)
 

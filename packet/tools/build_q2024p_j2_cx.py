@@ -45,6 +45,11 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     hooked in native_startup before the bank). In the settings line and asserted; decode_overlap is a new overlay
     file and bound, native_startup and decode_probe (its module list) bound; suite test_decode_overlap in the frozen
     CPU. Refused with QUIET_SPLIT_CONTROL=1 (the control's rule reads a 24-SM split bank).
+  * FLASH_S5_YIELD_WINDOW_FIX (lever-2 per-step brief, claude/n3-lever2-split, 14 Nov; default 0 = off; needs
+    FLASH_S5_YIELD_WINDOW=1): the Y2 window's staged append is re-checked with the pause auto-arm restores after its
+    own PAUSED_ALL bracket, and a staged append still refused leaves the per-bulk lookup memo once (engine_driver,
+    scheduler_hooks; both already bound). In the settings line and asserted; suite test_yield_window_fix in the
+    frozen CPU.
 Refused flag sets: settle with the yield window (settle sits where the window hands off), a decode-group mode other than
 chunk without the liveness observer (the guard would be blind), verify settings without ingress, and CONTROL_INWAIT with
 any of settle, the small-piece batch, ingress, a decode-group mode other than chunk or the liveness observer (none of
@@ -98,6 +103,7 @@ FLAGS = (
     ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
     ('FLASH_S5_DECODE_TIMELINE', 'decode_timeline', ('0', '1'), '0'),         # log-only stamp (decode_timeline, 13 Nov)
     ('FLASH_S5_DECODE_OVERLAP_SMS', 'decode_overlap', ('0', '42', '48'), '0'),  # lever 2 soft split (decode_overlap, 14 Nov)
+    ('FLASH_S5_YIELD_WINDOW_FIX', 'yield_window_fix', ('0', '1'), '0'),       # Y2 begin re-check (lever-2 per-step, 14 Nov)
     ('REPLAY_REPLY_TEXT', 'replay_reply_text', ('model', 'seeded'), 'model'),  # harness only: compose4_replay (brief 11)
     ('QUIET_SPLIT_CONTROL', 'quiet_split_control', ('0', '1'), '0'),     # harness only: the tail read (brief 11 C)
     ('REPLAY_FIXED_WORK', 'replay_fixed_work', ('0',) + tuple(sorted(FIXED_WORK)), '0'),   # harness only (brief 12)
@@ -212,7 +218,8 @@ def minutes_of(flags):
 QUIET_SPLIT_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_DECODE_MERGE=1 ', 'FLASH_S5_LAZY_RECV=1 ',
                      'FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 ')
 EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
-         'decode_sample_fast', 'decode_anatomy', 'decode_timeline', 'decode_overlap')                                   # added on top of np's queues
+         'decode_sample_fast', 'decode_anatomy', 'decode_timeline', 'decode_overlap',
+         'yield_window_fix')                                   # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
 CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SMALL_PIECE_BATCH', '0'),
                            ('FLASH_S5_INGRESS_INCREMENTAL', '0'), ('FLASH_S5_DECODE_GROUPS', 'chunk'),
@@ -272,7 +279,8 @@ SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_st
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
                       'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline',
                       'test_replay_reply_text', 'test_quiet_split_box', 'test_replay_fixed_work',
-                      'test_fixed_work_packet', 'test_q2024p_j2_long_reader', 'test_decode_overlap')
+                      'test_fixed_work_packet', 'test_q2024p_j2_long_reader', 'test_decode_overlap',
+                      'test_yield_window_fix')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py', 'tools/q2024p_j2_long_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -325,6 +333,9 @@ def parse_flags(pairs):
     if flags['FLASH_S5_DECODE_OVERLAP_SMS'] != '0' and flags['QUIET_SPLIT_CONTROL'] == '1':
         raise SystemExit('refused: FLASH_S5_DECODE_OVERLAP_SMS=%s with QUIET_SPLIT_CONTROL=1 (the control and its rule '
                          'read a 24-SM split bank)' % flags['FLASH_S5_DECODE_OVERLAP_SMS'])
+    if flags['FLASH_S5_YIELD_WINDOW_FIX'] == '1' and flags['FLASH_S5_YIELD_WINDOW'] != '1':
+        raise SystemExit('refused: FLASH_S5_YIELD_WINDOW_FIX=1 needs FLASH_S5_YIELD_WINDOW=1 (it fixes the window\'s '
+                         'begin; the engine refuses it alone)')
     if flags['FLASH_S5_CONTROL_INWAIT'] == '1':
         for key, safe in CONTROL_INWAIT_UNTESTED:
             if flags[key] != safe:
@@ -455,7 +466,8 @@ def copy_delta(b, commit, bundle):
                  'harness/e3_compose4_box.py', 'harness/fixed_work_packet.py', 'harness/test_fixed_work_packet.py',
                  'harness/test_replay_fixed_work.py', 'harness/test_q2024p_j2_long_reader.py',
                  'patches/s5_engine/decode_overlap.py', 'patches/s5_engine/native_startup.py',
-                 'patches/s5_engine/decode_probe.py', 'harness/test_decode_overlap.py'):
+                 'patches/s5_engine/decode_probe.py', 'harness/test_decode_overlap.py',
+                 'patches/s5_engine/engine_driver.py', 'harness/test_yield_window_fix.py'):
         assert name in copied, name
     return copied
 

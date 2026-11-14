@@ -1344,6 +1344,7 @@ class NativeSegmentDriver:
         # a1-trunk: where the bulk's admitted work stood when each yield was selected.
         self.append_yield_arrivals = dict.fromkeys(YIELD_ARRIVALS, 0)
         self._yield_scan = None
+        self._yield_reoffered = None        # FLASH_S5_YIELD_WINDOW_FIX: (bulk key, request ids re-offered once)
         # Held-f: absent unless FLASH_S5_NATIVE_PROGRESS installed it.
         self.progress = None
         self._progress_origin = 'tick'
@@ -4420,9 +4421,14 @@ class NativeSegmentDriver:
         if w is None or y['phase'] != 'reenter' or w.get('next') is None:
             return False
         candidate, w['next'] = w['next'], None
+        fix = getattr(self.controller, 'yield_window_fix', False) is True
         try:
-            held = self.controller.append_yield_still_held(self.scheduler, candidate,
-                                                           getattr(getattr(self, 'auto_arm', None), 'decode_counts', None))
+            policy = getattr(self, 'auto_arm', None)
+            counts = getattr(policy, 'decode_counts', None)
+            if fix:
+                held = self._yield_window_fixed_held(candidate, policy, counts)
+            else:
+                held = self.controller.append_yield_still_held(self.scheduler, candidate, counts)
         except Exception:
             self.controller.yield_window_counts['errors'] += 1
             held = False
@@ -4430,6 +4436,8 @@ class NativeSegmentDriver:
             w['end'] = 'next-left'
             self.controller.yield_window_counts['next_left'] += 1      # night-pack fix 5: a staged candidate left
             self._yield_journal(y, 'window_next_left', route_generation=self.route_generation)
+            if fix:
+                self._yield_window_reoffer(y, candidate)
             return False
         w['path'] = w.get('offer_path')                                # night-pack fix 5: the path it begins after
         y['append'] = candidate
@@ -4447,6 +4455,45 @@ class NativeSegmentDriver:
         y['phase'] = 'append'
         self._yield_journal(y, 'window_append', index=w['appends'], tail_handback=w['tail'],
                             route_generation=self.route_generation)
+        return True
+
+    def _yield_window_fixed_held(self, candidate, policy, counts):
+        """FLASH_S5_YIELD_WINDOW_FIX: the staged append's re-check with the pause auto-arm restores after this arm.
+
+        The begin runs inside auto-arm's own PAUSED_ALL bracket (old_pause saved, PAUSED_ALL set, arm, begin, old_pause
+        restored), so the scheduler's pause always refused it. Every other gate and eligibility rule is unchanged, and an
+        engine or operator pause already in old_pause still refuses. Without a saved old_pause: the scheduler's own.
+        """
+        c = self.controller
+        n = c.yield_window_fix_counts
+        n['begins'] += 1
+        restored = getattr(policy, 'old_pause', None)
+        if restored is None:
+            held = c.append_yield_still_held(self.scheduler, candidate, counts)
+        else:
+            own = c._environment_refuses(self.scheduler)
+            held = c.append_yield_still_held(self.scheduler, candidate, counts, pause_state=restored)
+            if held and own:
+                n['own_pause_passed'] += 1
+        if not held:
+            n['still_refused'] += 1
+        return held
+
+    def _yield_window_reoffer(self, y, candidate):
+        """FLASH_S5_YIELD_WINDOW_FIX: a staged append not takeable at the begin leaves this bulk's lookup memo, once per
+        request per bulk, so the next chunk boundary's lookup may take it (else it waits for the bulk's end)."""
+        scan = self._yield_scan
+        uid = getattr(candidate, 'request_id', None)
+        if scan is None or scan[0] != y['key'] or uid not in scan[1]:
+            return False
+        done = self._yield_reoffered
+        if done is None or done[0] != y['key']:
+            done = self._yield_reoffered = (y['key'], set())
+        if uid in done[1]:
+            return False
+        done[1].add(uid)
+        scan[1].discard(uid)
+        self.controller.yield_window_fix_counts['reoffered'] += 1
         return True
 
     def _yield_window_admitted(self, y):
