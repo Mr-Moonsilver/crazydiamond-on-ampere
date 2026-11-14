@@ -516,9 +516,22 @@ class Queues(unittest.TestCase):
         self.assertIn('test_quiet_split_box', cx.SUITES)
         step = cx.QUIET_SPLIT_STEP
         self.assertNotIn('record ', step.replace('read_step', ''))
-        self.assertIn('--stages 8,4,1 --hold-s 25', step)
+        self.assertIn('--hold-s 25 --max-tokens 4096', step)
+        self.assertNotIn('--stages', step)                       # v2: the declared plan is the control's default
         self.assertIn('--decode-merge always', step)
         self.assertIn('(( SECONDS > LAST_TAIL_ENTRY_S ))', step)
+        # brief 13: the control's timeout is the active budget left after the end reserve and the kill-after, <= 900 s
+        self.assertIn('_qs_left=$(( $(native41_budget active) - SECONDS - 360 - 150 ))', step)
+        self.assertIn('timeout --signal=TERM --kill-after=150s "${_qs_to}s" python3', step)
+        self.assertIn('(( _qs_to < 450 ))', step)
+        self.assertEqual((cx.QUIET_SPLIT_MINUTES, cx.minutes_of({'QUIET_SPLIT_CONTROL': '1'}), cx.minutes_of({})),
+                         ((62, 93), (62, 93), (54, 81)))
+        self.assertIn('NOMINAL_S = 62 * 60  #', cx.QUIET_SPLIT_GATE)
+        self.assertTrue(cx.QUIET_SPLIT_GATE.endswith('\n') and cx.QUIET_SPLIT_HEADER.startswith(cx.dmp.J2_HEADER[:-1]))
+        if (HERE / 'n3j2_gate.py').is_file() and 'quiet-SPLIT control v2' in (HERE / 'n3j2_gate.py').read_text():
+            import n3j2_gate as gate                 # a quiet-split bundle: its gate is the edited one
+            self.assertEqual((gate.NOMINAL_S, gate.BOX_BUDGET_S), (3720, 5580))
+            self.assertEqual(int(gate.CAP * gate.END_S), 360)
         self.assertIn('[[ $ENGINE_CRASHED != 0 ]]', step)
         if (HERE / 'n3j2_packet.py').is_file():
             return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
@@ -544,7 +557,9 @@ class Queues(unittest.TestCase):
                 self.assertEqual(plain[rel], quiet[rel], rel)
                 continue
             text = quiet[rel]
-            self.assertEqual(text.replace(cx.QUIET_SPLIT_EXPORT, '').replace(cx.QUIET_SPLIT_STEP, ''), plain[rel])
+            self.assertEqual(text.count(cx.QUIET_SPLIT_HEADER), 1)
+            self.assertEqual(text.replace(cx.QUIET_SPLIT_EXPORT, '').replace(cx.QUIET_SPLIT_STEP, '')
+                             .replace(cx.QUIET_SPLIT_HEADER, cx.dmp.J2_HEADER), plain[rel])
             at = text.index(cx.QUIET_SPLIT_STEP)
             self.assertEqual(text.index(cx.QUIET_SPLIT_ANCHOR) + len(cx.QUIET_SPLIT_ANCHOR), at)
             after = text[at:]
@@ -553,7 +568,7 @@ class Queues(unittest.TestCase):
             self.assertLess(text.index('record compose5 '), at)            # the core grade is written before it
             self.assertLess(text.index(cx.QUIET_SPLIT_EXPORT), text.index('python3'))
             # the long command lines keep their bash continuations (a Python string escape once folded them)
-            self.assertEqual(cx.QUIET_SPLIT_STEP.count(' \\\n'), 3)
+            self.assertEqual(cx.QUIET_SPLIT_STEP.count(' \\\n'), 4)
             self.assertIn('"$H/e3_quiet_split_box.py" \\\n', text)
             import subprocess
             import tempfile

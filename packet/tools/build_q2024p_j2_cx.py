@@ -147,18 +147,27 @@ def rule_unpatch(text):
     return text
 
 
-QUIET_SPLIT_EXPORT = ('export QUIET_SPLIT_CONTROL=1  # brief 11 C: the tail runs the quiet-SPLIT control '
+QUIET_SPLIT_EXPORT = ('export QUIET_SPLIT_CONTROL=1  # brief 11 C, v2 brief 13: the tail runs the quiet-SPLIT control '
                       '(e3_quiet_split_box), a read\n')
-# brief 11 C: the quiet-SPLIT control as a tail READ (never the queue verdict; the core grade is written before it), on a
-# healthy engine inside LAST_TAIL_ENTRY_S (the tail arm's reserve, 1.5 x 519 s, holds it: about 3 x 35 s), after the
-# typed all-rank FULL entry that takes the manual lease (no auto-arm cycle, no native work). The tail-engine check,
-# instruments-end and end-full-idle follow it unchanged and are counted, so a control that leaves the engine off FULL
-# or changed its rank processes still fails the packet.
+# The quiet-SPLIT control (v2, brief 13) as a tail READ (never the queue verdict; the core grade is written before it), on
+# a healthy engine inside LAST_TAIL_ENTRY_S, after the typed all-rank FULL entry that takes the manual lease (no auto-arm
+# cycle, no native work). Seven stages (120k prompts at 8, 6, 4, 2, 1 live, then 72k at 4, 1), 25 s each, attn-meta on,
+# about 6.5 min nominal; its timeout is the active budget left after the end steps' reserve (360 s = n3j2_gate's
+# END_RESERVE_S) and the kill-after (150 s), at most 900 s, and the step is NOT_RUN under 450 s of it. The control handles
+# SIGTERM (the timeout's TERM): its cleanup restores typed FULL and records the split lease. The tail-engine check,
+# instruments-end and end-full-idle follow it unchanged and are counted, so a control that leaves the engine off FULL or
+# changed its rank processes still fails the packet.
+QUIET_SPLIT_MINUTES = (62, 93)        # brief 13: j2's 54/81 plus the control's ~8 min nominal (CAP 1.5 -> 93 hard)
+QUIET_SPLIT_GATE = ('NOMINAL_S = %d * 60  # brief 13: quiet-SPLIT control v2 in the tail (~6.5 min + entry); j2: 54\n'
+                    % QUIET_SPLIT_MINUTES[0])
+QUIET_SPLIT_HEADER = ('# n3j2: operator00:24 budget exception,54min nominal/81min hard; relative limits only. cx quiet-SPLIT '
+                      'control v2 (brief 13): %dmin nominal/%dmin hard from n3j2_gate.\n' % QUIET_SPLIT_MINUTES)
+QUIET_SPLIT_END_RESERVE_S, QUIET_SPLIT_KILL_AFTER_S, QUIET_SPLIT_MAX_S, QUIET_SPLIT_MIN_S = 360, 150, 900, 450
 QUIET_SPLIT_ANCHOR = ('  for _label in ; do\n'
                       '    alpha_next_arm tail "$_label"\n'
                       '  done\n')
-QUIET_SPLIT_STEP = '''  # brief 11 C: the quiet-SPLIT control (e3_quiet_split_box): 8, 4 and 1 live decoders on the split route, no native
-  # work, decode_merge=always, 25 s each. A read: never counted. Gated by the export above.
+QUIET_SPLIT_STEP = '''  # brief 13: the quiet-SPLIT control v2 (e3_quiet_split_box): 120k prompts at 8, 6, 4, 2, 1 live, 72k at 4, 1, on the
+  # split route, no native work, decode_merge=always, attn-meta on, 25 s each. A read: never counted. Gated by the export.
   if [[ ${QUIET_SPLIT_CONTROL:-0} == 1 ]]; then
     n=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null) || n=unknown
     if (( SECONDS > LAST_TAIL_ENTRY_S )); then
@@ -169,17 +178,29 @@ QUIET_SPLIT_STEP = '''  # brief 11 C: the quiet-SPLIT control (e3_quiet_split_bo
       engine_watched entry-quiet-split timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \\
         --control-timeout-s 60 --timeout-s "$IDLE_TIMEOUT_S" --out "$Q/entry-quiet-split.json" > "$Q/entry-quiet-split.log" 2>&1
       _qs_rc=$?; read_step entry-quiet-split "$_qs_rc" 'typed all-rank FULL, resumed, idle, workers empty; lease taken'
-      if [[ $_qs_rc == 0 ]]; then
-        engine_watched quiet-split timeout --signal=TERM --kill-after=30s 360s python3 "$H/e3_quiet_split_box.py" \\
-          --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --stages 8,4,1 --hold-s 25 \\
-          --decode-merge always --control-timeout-s 60 --out "$Q/quiet-split.json" > "$Q/quiet-split.log" 2>&1
-        read_step quiet-split "$?" 'quiet-SPLIT control: 8, 4, 1 live decoders on split, no native work, decode_merge=always, 25 s each'
-      else
+      # the active budget left after the end steps (n3j2_gate END_RESERVE_S 360 s) and the kill-after (150 s), at most 900 s
+      _qs_left=$(( $(native41_budget active) - SECONDS - %(end)d - %(kill)d )); _qs_to=$(( _qs_left < %(max)d ? _qs_left : %(max)d ))
+      if [[ $_qs_rc != 0 ]]; then
         read_step quiet-split 2 'NOT_RUN: quiet-split entry not a typed idle FULL'
+      elif (( _qs_to < %(min)d )); then
+        read_step quiet-split 2 "NOT_RUN: box budget, ${_qs_to}s left for the control < %(min)ds"
+      else
+        engine_watched quiet-split timeout --signal=TERM --kill-after=%(kill)ds "${_qs_to}s" python3 "$H/e3_quiet_split_box.py" \\
+          --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --hold-s 25 --max-tokens 4096 \\
+          --decode-merge always --control-timeout-s 60 --warm-timeout-s 420 --drain-timeout-s 150 \\
+          --out "$Q/quiet-split.json" > "$Q/quiet-split.log" 2>&1
+        read_step quiet-split "$?" "quiet-SPLIT control v2: 120k at 8,6,4,2,1 live, 72k at 4,1, attn-meta on, no native work, 25 s each (timeout ${_qs_to}s)"
       fi
     fi
   fi
-'''
+''' % dict(end=QUIET_SPLIT_END_RESERVE_S, kill=QUIET_SPLIT_KILL_AFTER_S, max=QUIET_SPLIT_MAX_S, min=QUIET_SPLIT_MIN_S)
+
+
+def minutes_of(flags):
+    """(nominal, hard) minutes of the packet: j2's 54/81, or 62/93 with the quiet-SPLIT control."""
+    return QUIET_SPLIT_MINUTES if flags.get('QUIET_SPLIT_CONTROL') == '1' else (54, 81)
+
+
 QUIET_SPLIT_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_DECODE_MERGE=1 ', 'FLASH_S5_LAZY_RECV=1 ',
                      'FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 ')
 EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
@@ -389,6 +410,7 @@ def queues(variant):
             if v['quiet_split_control'] == '1':
                 text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'], DRAFT_EXPORT % v['decode_groups'] + QUIET_SPLIT_EXPORT)
                 text = hgb.once(text, QUIET_SPLIT_ANCHOR, QUIET_SPLIT_ANCHOR + QUIET_SPLIT_STEP)
+                text = hgb.once(text, dmp.J2_HEADER, QUIET_SPLIT_HEADER)
             assert not any(n in text for n in ('REPLAY_FIXED_WORK', 'REPLAY_SEED_ORDER', 'fixed_work_packet')), \
                 'the parent draft names fixed work or a seed order already'
             if v['replay_fixed_work'] != '0':
@@ -470,6 +492,10 @@ def prepare(commit, variant, out, flags, tag=''):
     assert box.read_text().count(GUARD_INSTALL_NEW % observer) == 1, 'the guard binding does not declare observer=' + observer
     packet = bundle / 'n3j2_packet.py'
     packet.write_text(packet.read_text() + PACKET_TAIL)
+    nominal, hard = minutes_of(flags)
+    if flags['QUIET_SPLIT_CONTROL'] == '1':     # brief 13: the v2 control's minutes in the gate (draft, watchdog, waiter)
+        gate = bundle / 'n3j2_gate.py'
+        gate.write_text(hgb.once(gate.read_text(), dmp.GATE_OLD, QUIET_SPLIT_GATE))
     if packet_edits_on(flags):          # brief 12: off, the packet and the rule are the earlier bundle's bytes
         packet.write_text(packet.read_text() + SEED_PACKET_TAIL)
         rule = bundle / 'tools/n3j2_junction_rule.py'
@@ -503,7 +529,7 @@ def prepare(commit, variant, out, flags, tag=''):
                   runner_size=runner.stat().st_size, held=True, hardware_qualified=False, exploratory=True,
                   parent_manifest=hgb.PARENT_SHA, parent_runner_sha256=hgb.PARENT_RUNNER_SHA,
                   parent_overlay=hgb.PARENT_OVERLAY, source_changes=copied, cpu_suites=SUITES,
-                  hgb_modules=BOUND_MODULES, box_action=False, gpu_action=False)
+                  hgb_modules=BOUND_MODULES, nominal_minutes=nominal, hard_minutes=hard, box_action=False, gpu_action=False)
     b.dump(out / 'build.json', record)
     return record
 

@@ -16,6 +16,7 @@ _spec.loader.exec_module(nfin)
 yfin, fin, sha, dump = nfin.yfin, nfin.fin, nfin.sha, nfin.dump
 BRANCH = 'claude/n3-compose'
 NOMINAL_MIN, HARD_MIN = 54, 81          # j2's four arms at 480 s; the composition adds no arm
+QUIET_SPLIT_MINUTES = (62, 93)          # brief 13: the quiet-SPLIT control v2 in the tail (build_q2024p_j2_cx)
 
 CASES = dict(nfin.CASES)
 for _module in ('stage_overlap', 'native_overlap_control', 'decode_step'):
@@ -25,6 +26,15 @@ for _module in ('stage_overlap', 'native_overlap_control', 'decode_step'):
 for _suite in ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups', 'test_dmp_reader',
                'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_decode_step', 'test_decode_step_torch'):
     CASES['suite_%s_absent' % _suite] = yfin._suite_absent(_suite)
+
+
+def minutes_of(build):
+    """(nominal, hard) minutes: 62/93 for a build with the quiet-SPLIT control (its record says so), else j2's 54/81."""
+    quiet = build['flags'].get('QUIET_SPLIT_CONTROL') == '1'
+    want = QUIET_SPLIT_MINUTES if quiet else (NOMINAL_MIN, HARD_MIN)
+    recorded = (build.get('nominal_minutes'), build.get('hard_minutes'))
+    assert recorded in (want, (None, None)) and (recorded == want or not quiet), 'build minutes differ: %r' % (recorded,)
+    return want
 
 
 def main(argv=None):
@@ -42,9 +52,14 @@ def main(argv=None):
     precheck = json.loads((root / 'precheck/precheck.json').read_text())
     assert precheck['verdict'] == 'PASS' and precheck['cpu_record_sha256'] == sha(cpu_path)
     assert precheck['runner_sha256'] == build['runner_sha256'] == sha(build['runner'])
+    nominal, hard = minutes_of(build)
+    gate = (Path(build['bundle']) / 'n3j2_gate.py').read_text()
+    assert gate.count('NOMINAL_S = %d * 60' % nominal) == 1, 'bundle gate budget differs from the build record'
     yfin.CASES = CASES
     neg = yfin.negatives(build, cpu_path, root / 'cx-negatives')
+    fin.CAP_S = hard * 60                # the waiter cap: the gate's BOX_BUDGET_S (CAP 1.5 x nominal)
     moved = fin.transport(build, cpu_path, root / 'transport')
+    assert moved['waiter_cap_s'] == hard * 60
     comp = fin.compile_pass(build, moved, root / 'compile-proof.json')
     delivery = dict(schema='q2024p-j2-cx-delivery/1', state='READY_FOR_OWNER_GATE', exploratory=True,
                     family=build['family'], name=build['name'], variant=build['variant'], tag=build['tag'],
@@ -56,7 +71,7 @@ def main(argv=None):
                     precheck_sha256=sha(root / 'precheck/precheck.json'),
                     negatives_sha256=sha(root / 'cx-negatives/negatives.json'), negative_cases=len(CASES),
                     transport_sha256=sha(root / 'transport/transport.json'), compile_sha256=sha(root / 'compile-proof.json'),
-                    owner_command=moved['owner_command'], nominal_minutes=NOMINAL_MIN, hard_minutes=HARD_MIN,
+                    owner_command=moved['owner_command'], nominal_minutes=nominal, hard_minutes=hard,
                     hardware_qualified=False, box_action=False, gpu_action=False)
     dump(root / 'delivery.json', delivery)
     files = [root / 'build.json', cpu_path, root / 'precheck/precheck.json', root / 'cx-negatives/negatives.json',

@@ -409,7 +409,8 @@ def quiet_split(root):
         views = row.get('streams') or []
         p50 = sorted(v['window_gap_ms_p50'] for v in views if type(v.get('window_gap_ms_p50')) in (int, float))
         top = [v['window_gap_ms_max'] for v in views if type(v.get('window_gap_ms_max')) in (int, float)]
-        stages.append(dict(live=row.get('live'), wall_s=(row.get('window') or {}).get('wall_s'),
+        stages.append(dict(live=row.get('live'), prompt_tokens=row.get('prompt_tokens'), abort=row.get('abort'),
+                           wall_s=(row.get('window') or {}).get('wall_s'),
                            tokens_per_s=row.get('aggregate_tokens_per_s'), merge_steps=row.get('merge_steps'),
                            polls=row.get('polls'), gap_ms_p50_median=p50[len(p50) // 2] if p50 else None,
                            gap_ms_max=max(top) if top else None))
