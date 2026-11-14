@@ -7,6 +7,17 @@
   ceiling an append that would take the prompt over MAX_PROMPT_TOKENS rolls to a new session instead (READY: the cap's arithmetic).
 Each turn keeps its client-visible arrival times (ms from the arm's start), which the rule reader needs for decode beside a bulk. The text is agent_replay.text, unchanged.
 REQUEST_IDS in the replay config defaults to False; True adds per-turn request/SSE identity evidence only.
+
+Reply text (brief 11 B.1, 14 Nov 2026): REPLAY_REPLY_TEXT in the environment, read once by run().
+  model   (default; also unset or empty) the model's sampled reply text goes back into the history, as before: the
+          request sequence, the turn rows and the summary are byte-for-byte those of the earlier driver.
+  seeded  the history gets a seeded synthetic text of the turn's drawn reply length instead (agent_replay.text from a
+          NEW 'reply_text' stream, drawn once per turn before the request, so its position depends on the turn index
+          alone). Every prompt and every session roll then depends on the seed alone, on both engines, whatever the
+          model samples and whenever it completes. The start/append/reply/pause/text streams and the forced decode
+          length (min_tokens = max_tokens = reply) are unchanged. Turn rows carry reply_text='seeded'; the summary
+          carries reply_text='seeded'. The replay config is not changed (the j2 mechanism grade compares it with the
+          table). Any other value is refused before the first agent starts.
 """
 import json
 import os
@@ -21,6 +32,15 @@ import compose4_arms as T
 
 READ_TIMEOUT_S = 420.0            # one read; the arm's own timeout is 1500 s, so a dead engine shows as an error inside the arm
 FINISH_BOUND_S = 300.0            # how long after the end of the duration the turns still open may take; then the arm is called a hang
+REPLY_TEXT_ENV = 'REPLAY_REPLY_TEXT'
+REPLY_TEXT_MODES = ('model', 'seeded')
+
+
+def reply_text_mode(environ=None):
+    value = (os.environ if environ is None else environ).get(REPLY_TEXT_ENV, '') or 'model'
+    if value not in REPLY_TEXT_MODES:
+        raise ValueError('%s must be one of %s, not %r' % (REPLY_TEXT_ENV, '|'.join(REPLY_TEXT_MODES), value))
+    return value
 
 
 def salt_of(run_id, label, agent, session):
@@ -83,7 +103,7 @@ def stream_turn(url, body, key, origin, *, timeout=READ_TIMEOUT_S, clock=time.mo
 def draws(seed, agent):
     def stream(kind):
         return random.Random('%d|%d|%s' % (seed, agent, kind))
-    return {name: stream(name) for name in ('start', 'append', 'reply', 'pause', 'text')}
+    return {name: stream(name) for name in ('start', 'append', 'reply', 'pause', 'text', 'reply_text')}
 
 
 class TurnSink:
@@ -101,7 +121,8 @@ class TurnSink:
         self.handle.close()
 
 
-def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None, faults=None):
+def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None, faults=None, reply_text='model'):
+    assert reply_text in REPLY_TEXT_MODES, reply_text
     rng = draws(cfg['SEED'], agent)
     session, history_tokens, messages, salt = 0, 0, [], None
     turn_index = 0
@@ -121,8 +142,11 @@ def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, record
             history_tokens += append_draw
             append_draw, kind = None, 'append'
         reply = rng['reply'].randint(cfg['REPLY_MIN'], cfg['REPLY_MAX'])
+        synthetic = ar.text(rng['reply_text'], reply) if reply_text == 'seeded' else None
         sent = clock() - origin
         record = {'agent': agent, 'session': session, 'kind': kind, 't': round(sent, 3), 'history_est': history_tokens, 'reply_target': reply}
+        if synthetic is not None:
+            record['reply_text'] = 'seeded'
         turn_index += 1
         if cfg.get('REQUEST_IDS', False):
             record.update(client_request_id=request_id_of(run_id, label, agent, session, turn_index), response_id=None)
@@ -137,7 +161,7 @@ def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, record
                 record['response_id'] = got['response_id']
             record.update({k: got[k] for k in ('ttft', 'seconds', 'completion_tokens', 'prompt_tokens', 'cached_tokens', 'finish', 'arrivals_ms')})
             record['complete'] = ar.turn_complete(got, reply)
-            messages.append({'role': 'assistant', 'content': got['text']})
+            messages.append({'role': 'assistant', 'content': got['text'] if synthetic is None else synthetic})
             history_tokens = (got['prompt_tokens'] or history_tokens) + (got['completion_tokens'] or reply)
         except Exception as exc:  # noqa: BLE001 - recorded; the agent starts a new session, as agent_replay
             record['error'] = type(exc).__name__ + ':' + str(exc)[:200]
@@ -172,11 +196,12 @@ def _guarded_agent(counts, guard, /, *args, **kwargs):
 def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, finish_bound_s=FINISH_BOUND_S, sink=None):
     """The replay; (config, summary, turns, still_open). Same start spacing as agent_replay's."""
     cfg = dict(T.REPLAY if cfg is None else cfg)
+    mode = reply_text_mode()
     records, lock = [], threading.Lock()
     faults = dict(journal_write_failures=0, agents_finished=0, kinds=set())
     origin = clock()
     t_end = origin + cfg['DURATION']
-    threads = [threading.Thread(target=_guarded_agent, args=(faults, lock, i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink, faults=faults), name='compose4-agent-%d' % i, daemon=True)
+    threads = [threading.Thread(target=_guarded_agent, args=(faults, lock, i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink, faults=faults, reply_text=mode), name='compose4-agent-%d' % i, daemon=True)
                for i in range(cfg['AGENTS'])]
     for thread in threads:
         thread.start()
@@ -190,6 +215,8 @@ def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep
     summary = ar.summarize(turns, cfg['WARMUP'], cfg['DURATION'])
     with lock:
         summary.update(journal_write_failures=faults['journal_write_failures'], agents_died=len(threads) - faults['agents_finished'] - len(still_open), fault_kinds=sorted(faults['kinds']))
+        if mode == 'seeded':
+            summary['reply_text'] = mode
     return cfg, summary, turns, still_open
 
 

@@ -83,7 +83,7 @@ DEFAULTS = {
     'FLASH_S5_INGRESS_VERIFY_ASYNC': None, 'FLASH_S5_APPEND_NO_BLOCK_STOP': '0', 'FLASH_S5_DECODE_GROUPS': 'chunk',
     'FLASH_S5_DECODE_LIVENESS': '0', 'FLASH_S5_CONTROL_INWAIT': '0', 'FLASH_S5_CONTROL_O3_INWAIT': '0',
     'FLASH_S5_DECODE_SAMPLE_FAST': '0',
-    'FLASH_S5_DECODE_ANATOMY': '0', 'FLASH_S5_DECODE_TIMELINE': '0'}
+    'FLASH_S5_DECODE_ANATOMY': '0', 'FLASH_S5_DECODE_TIMELINE': '0', 'REPLAY_REPLY_TEXT': 'model'}
 NP_KEYS = (('batch', 'FLASH_S5_SMALL_PIECE_BATCH'), ('settle', 'FLASH_S5_YIELD_REENTRY_SETTLE'),
            ('y1', 'FLASH_S5_YIELD_NO_APPEND_OWNER'), ('y2', 'FLASH_S5_YIELD_WINDOW'),
            ('ingress', 'FLASH_S5_INGRESS_INCREMENTAL'))
@@ -445,6 +445,13 @@ def collect(root, label, flags, cost_ratio=WORK_COST_RATIO):
         result['R'] = round(sum(done[n] for n in N3_ARMS) / sum(done[n] for n in SP_ARMS), 4)
     else:
         result['R'] = None
+    seeded = flags.get('REPLAY_REPLY_TEXT') == 'seeded'
+    for name, arm in loaded.items():          # brief 11 B.1: the replay's own record of its reply-text mode
+        mode = ((arm or {}).get('replay_summary') or {}).get('reply_text')
+        if arm is not None and seeded and mode != 'seeded':
+            result['compose_notes'].append('reply-text-not-seeded-%s-%s' % (label, name))
+        elif arm is not None and not seeded and mode is not None:
+            result['compose_notes'].append('reply-text-%s-unexpected-%s-%s' % (mode, label, name))
     for name, w in result['work'].items():
         if w is not None and done.get(name) is not None and w['turns_completed'] != done[name]:
             result['compose_notes'].append('work-completed-differs-%s-%s' % (label, name))

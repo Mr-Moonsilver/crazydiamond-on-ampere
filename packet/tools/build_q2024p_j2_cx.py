@@ -86,7 +86,12 @@ FLAGS = (
     ('FLASH_S5_DECODE_SAMPLE_FAST', 'decode_sample_fast', ('0', '1'), '0'),   # lever D (decode_step, 13 Nov)
     ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
     ('FLASH_S5_DECODE_TIMELINE', 'decode_timeline', ('0', '1'), '0'),         # log-only stamp (decode_timeline, 13 Nov)
+    ('REPLAY_REPLY_TEXT', 'replay_reply_text', ('model', 'seeded'), 'model'),  # harness only: compose4_replay (brief 11)
 )
+# harness flags: not on the engine's settings line and not in its env asserts; the draft exports them (seeded only)
+HARNESS_FLAGS = ('REPLAY_REPLY_TEXT',)
+REPLY_TEXT_EXPORT = ('export REPLAY_REPLY_TEXT=seeded  # brief 11 B.1: compose4_replay puts a seeded synthetic reply '
+                     'text in the history (every python started below)\n')
 EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
          'decode_sample_fast', 'decode_anatomy', 'decode_timeline')                                                     # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
@@ -145,7 +150,8 @@ ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
 NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode_timeline.py'}
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
-                      'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline')
+                      'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline',
+                      'test_replay_reply_text')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -279,6 +285,9 @@ def queues(variant):
             assert sep and not any(m in line for line in code for m in ('n3j2_packet', 'n3j2_arms', 'python')), \
                 'table use before the export'
             text = hgb.once(text, dmp.DRAFT_ANCHOR, dmp.DRAFT_ANCHOR + DRAFT_EXPORT % v['decode_groups'])
+            assert 'REPLAY_REPLY_TEXT' not in text, 'the parent draft names REPLAY_REPLY_TEXT already'
+            if v['replay_reply_text'] == 'seeded':
+                text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'], DRAFT_EXPORT % v['decode_groups'] + REPLY_TEXT_EXPORT)
         result[rel] = text
     return result
 
@@ -298,7 +307,7 @@ def copy_delta(b, commit, bundle):
                  'patches/s5_engine/decode_timeline.py', 'patches/s5_engine/handler_anatomy.py',
                  'patches/s5_engine/native_measurement.py', 'harness/test_decode_timeline.py',
                  'harness/decode_timeline_fixture_leaves.json', 'harness/decode_timeline_parent_ast.json',
-                 'harness/receipt_lines.py'):
+                 'harness/receipt_lines.py', 'harness/compose4_replay.py', 'harness/test_replay_reply_text.py'):
         assert name in copied, name
     return copied
 

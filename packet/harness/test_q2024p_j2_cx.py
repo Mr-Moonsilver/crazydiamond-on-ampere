@@ -315,6 +315,11 @@ class Queues(unittest.TestCase):
             settings = texts['runs/' + stem + '_settings.sh']
             flags = {}
             for f in cx.FLAGS:
+                if f[0] in cx.HARNESS_FLAGS:      # not on the settings line: the draft's export, else the default
+                    got = re.findall(r'^export %s=(\S+) ' % f[0], texts['runs/' + stem + '.draft.sh'], re.M)
+                    self.assertLessEqual(len(got), 1, f[0])
+                    flags[f[0]] = got[0] if got else f[3]
+                    continue
                 got = re.findall(r'\b%s=(\S+) ' % f[0], settings)
                 self.assertLessEqual(len(set(got)), 1, f[0])
                 flags[f[0]] = got[0] if got else None
@@ -372,6 +377,38 @@ class Queues(unittest.TestCase):
                     cx._np_queues = original
         finally:
             cx.CONFIG.update(saved)
+
+    def test_replay_reply_text_option(self):
+        """Brief 11 B.1: seeded exports REPLAY_REPLY_TEXT once, right after the decode-group export and before any
+        python; model (the default) leaves every queue text as it was (no name anywhere); never on the settings line."""
+        self.assertEqual(cx.parse_flags([])['REPLAY_REPLY_TEXT'], 'model')
+        with self.assertRaises(SystemExit):
+            cx.parse_flags(['REPLAY_REPLY_TEXT=on'])
+        self.assertEqual(reader.DEFAULTS['REPLAY_REPLY_TEXT'], 'model')
+        self.assertNotIn('REPLAY_REPLY_TEXT', reader.COMPOSE_ENVS)
+        self.assertNotIn('replay_reply_text', cx.EXTRA)
+        self.assertIn('test_replay_reply_text', cx.SUITES)
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        saved = dict(cx.CONFIG)
+        try:
+            cx.configure(cx.parse_flags([]), 'zr')
+            plain = cx.queues('b1')
+            cx.configure(cx.parse_flags(['REPLAY_REPLY_TEXT=seeded']), 'zr')
+            seeded = cx.queues('b1')
+        finally:
+            cx.CONFIG.update(saved)
+        self.assertFalse(any('REPLAY_REPLY_TEXT' in t for t in plain.values()))
+        self.assertEqual(set(plain), set(seeded))
+        for rel in plain:
+            if not rel.endswith('.draft.sh'):
+                self.assertEqual(plain[rel], seeded[rel], rel)
+                continue
+            self.assertEqual(seeded[rel].count('REPLAY_REPLY_TEXT'), 1)
+            self.assertEqual(seeded[rel].replace(cx.REPLY_TEXT_EXPORT, ''), plain[rel])
+            head = seeded[rel].partition(cx.REPLY_TEXT_EXPORT)[0]
+            self.assertEqual(head.partition(cx.dmp.DRAFT_ANCHOR)[2], cx.DRAFT_EXPORT % 'chunk')   # nothing runs between
 
     def test_decode_timeline_flag_in_the_queues(self):
         """The timeline stamp rides the settings line and the asserts; its module is a new, bound overlay file and its suite
