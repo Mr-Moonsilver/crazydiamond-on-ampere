@@ -10,7 +10,7 @@
   DURATION, a cap without a spec, a spec without a cap;
 * the first N requests of an agent are the same under any completion timing (the seeded property, under fixed work);
 * mutants: the stop ignored, the stop at the first agent's target, errors counted, the cap ignored; each caught.
-CPU only, fake server in scaled real time (turns of milliseconds); no engine, network or box.
+CPU only, fake server on a virtual clock shared by the real agent threads; no engine, network or box.
 """
 import json
 import os
@@ -18,7 +18,6 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
-import time
 import types
 import unittest
 from unittest import mock
@@ -31,21 +30,82 @@ import compose4_arms as T  # noqa: E402
 import compose4_replay as rp  # noqa: E402
 import test_replay_reply_text as rt  # noqa: E402
 
-# Scaled real time: the agents are real threads, so a shared fake clock would move by every agent's sleeps (and race
-# the loop's own check). DURATION 0.25 s, turns 10-30 ms, tool pauses 0-20 ms. A turn's send stamp comes after its
-# text is built (a fresh 60k-131k prompt takes milliseconds), as with DURATION today: stop/cap tolerance TOL.
-CFG = dict(T.REPLAY, DURATION=0.25, WARMUP=0.0, SEED=2, AGENTS=3, TOOL_MIN=0.0, TOOL_MAX=0.02)
+# Virtual time (SimClock): the agents are real threads, but the clock moves only when every live agent thread (and
+# the starter, until every agent has started) waits in sleep() or in a fake turn, and then to the earliest wake. So a
+# run is exact and does not depend on host load (two frozen CPU runs under parallel containers failed a real-time rig).
+# Seconds are virtual: DURATION 60 s, turns 1-3 s, tool pauses compose4's 1-5 s. EPS: the 3-decimal rounding of stamps.
+CFG = dict(T.REPLAY, DURATION=60.0, WARMUP=0.0, SEED=2, AGENTS=3)
 SPEC = '1=4,5,6/2=2,14,4'
 TARGETS = [2, 14, 4]
-TOL = 0.1
+CAP = 400.0
+EPS = 0.002
+CYCLE = 3.0 + CFG['TOOL_MAX']          # the longest turn plus the longest tool pause
+PREFIX = 'compose4-agent-'
+
+
+class SimClock:
+    """Shared virtual clock for the driver's agent threads (see above). ``close()`` stops its ticker."""
+
+    def __init__(self, agents):
+        self.now, self.agents = 1000.0, agents
+        self.cond = threading.Condition()
+        self.waits, self.members = {}, set()
+        self.main = threading.current_thread()
+        self.stale = {t for t in threading.enumerate() if t.name.startswith(PREFIX)}
+        self.done = threading.Event()
+        self.ticker = threading.Thread(target=self._tick, name='simclock-ticker', daemon=True)
+        self.ticker.start()
+
+    def _join(self):
+        me = threading.current_thread()
+        if me.name.startswith(PREFIX) and me not in self.members:
+            self.members.add(me)
+            self.cond.notify_all()
+
+    def __call__(self):
+        with self.cond:
+            self._join()
+            return self.now
+
+    def sleep(self, seconds):
+        me = threading.current_thread()
+        with self.cond:
+            self._join()
+            if seconds <= 0:
+                return
+            self.waits[me] = self.now + seconds
+            self.cond.notify_all()
+            while me in self.waits:
+                self.cond.wait(0.05)
+
+    def _quiet(self):
+        live = [t for t in threading.enumerate() if t.name.startswith(PREFIX) and t not in self.stale and t.is_alive()]
+        if not self.waits or any(t not in self.members or t not in self.waits for t in live):
+            return False
+        return len(self.members) >= self.agents or self.main in self.waits
+
+    def _tick(self):
+        while not self.done.is_set():
+            with self.cond:
+                if self._quiet():
+                    self.now = min(self.waits.values())
+                    for th in [th for th, w in self.waits.items() if w <= self.now]:
+                        del self.waits[th]
+                    self.cond.notify_all()
+                else:
+                    self.cond.wait(0.0005)
+
+    def close(self):
+        self.done.set()
+        self.ticker.join(5.0)
 
 
 class Shared:
-    """A fake engine for every agent thread, in real (scaled) time: a turn takes ``duration(turn)`` seconds."""
+    """A fake engine for every agent thread on the SimClock: a turn takes ``duration(turn)`` virtual seconds."""
 
-    def __init__(self, duration=None, fail=None):
-        self.lock, self.turn, self.bodies = threading.Lock(), 0, []
-        self.duration = duration or (lambda turn: 0.01 + 0.02 * (turn % 2))
+    def __init__(self, clock, duration=None, fail=None):
+        self.clock, self.lock, self.turn, self.bodies = clock, threading.Lock(), 0, []
+        self.duration = duration or (lambda turn: 1.0 + 2.0 * (turn % 2))
         self.fail = fail or (lambda turn, body: False)
 
     def __call__(self, url, body, key, origin):
@@ -53,11 +113,11 @@ class Shared:
             self.turn += 1
             turn = self.turn
             self.bodies.append(json.loads(json.dumps(body)))
-        start = time.monotonic()
-        time.sleep(self.duration(turn))
+        start = self.clock()
+        self.clock.sleep(self.duration(turn))
         if self.fail(turn, body):
             raise OSError('reset')
-        seconds = time.monotonic() - start
+        seconds = self.clock() - start
         n = body['max_tokens']
         return dict(text='ok %d' % turn, ttft=seconds / 3, seconds=seconds, completion_tokens=n,
                     prompt_tokens=rt.tokens_of(body['messages']), cached_tokens=0, finish='length',
@@ -65,20 +125,25 @@ class Shared:
 
 
 def run_with(env, module=rp, cfg=CFG, duration=None, fail=None):
-    stream = Shared(duration, fail)
-    with mock.patch.dict(os.environ, env, clear=False):
-        for name in (rp.FIXED_WORK_ENV, rp.FIXED_CAP_ENV, rp.REPLY_TEXT_ENV):
-            if name not in env:
-                os.environ.pop(name, None)
-        out = module.run('u', 'm', None, 'run', 'sp.g2-live-0', cfg=cfg, stream=stream, finish_bound_s=1.0)
-    return out, stream, None
+    clock = SimClock(cfg['AGENTS'])
+    stream = Shared(clock, duration, fail)
+    try:
+        with mock.patch.dict(os.environ, env, clear=False):
+            for name in (rp.FIXED_WORK_ENV, rp.FIXED_CAP_ENV, rp.REPLY_TEXT_ENV):
+                if name not in env:
+                    os.environ.pop(name, None)
+            out = module.run('u', 'm', None, 'run', 'sp.g2-live-0', cfg=cfg, clock=clock, sleep=clock.sleep,
+                             stream=stream, finish_bound_s=1.0)
+    finally:
+        clock.close()
+    return out, stream, clock
 
 
 def bodies_of(stream, agent):
     return [b for b in stream.bodies if b['messages'][0]['content'].startswith('You are coding agent %d,' % agent)]
 
 
-ON = {rp.REPLY_TEXT_ENV: 'seeded', rp.FIXED_WORK_ENV: SPEC, rp.FIXED_CAP_ENV: '5'}
+ON = {rp.REPLY_TEXT_ENV: 'seeded', rp.FIXED_WORK_ENV: SPEC, rp.FIXED_CAP_ENV: str(CAP)}
 
 
 def per_agent(turns):
@@ -102,7 +167,7 @@ class Off(unittest.TestCase):
         self.assertIsNone(rp.fixed_work_targets(CFG, environ={}, reply_text='seeded'))
         (_cfg, summary, turns, _still), _s, _c = run_with({rp.REPLY_TEXT_ENV: 'seeded'})
         self.assertNotIn('fixed_work', summary)
-        self.assertTrue(max(t['t'] for t in turns) <= CFG['DURATION'] + TOL)
+        self.assertTrue(max(t['t'] for t in turns) < CFG['DURATION'])
         # agent_loop with fixed=None is the seeded loop: same bodies as the default call
         a, _ = rt.agent_run(reply_text='seeded')
         clock = rt.Clock()
@@ -120,16 +185,15 @@ class Off(unittest.TestCase):
 
 class On(unittest.TestCase):
     def assert_reached(self, reached, end):
-        """The driver stamps the target when the turn returns; the row's t + seconds is a lower bound of that (t is
-        stamped before the body is built, the fake times only its own sleep). Under a loaded container: TOL."""
-        self.assertGreaterEqual(reached, end - 0.005)
-        self.assertLessEqual(reached, end + TOL)
+        """The driver stamps the target when the turn returns: the row's own end (t + seconds), in virtual time exact
+        up to the 3-decimal rounding of both stamps."""
+        self.assertAlmostEqual(reached, end, delta=EPS)
 
     def test_all_agents_send_until_the_last_target_then_stop(self):
         (_cfg, summary, turns, still), stream, clock = run_with(ON)
         self.assertEqual(still, [])
         fw = summary['fixed_work']
-        self.assertEqual((fw['targets'], fw['cap_s'], fw['all_reached'], fw['cap_hit']), (TARGETS, 5.0, True, False))
+        self.assertEqual((fw['targets'], fw['cap_s'], fw['all_reached'], fw['cap_hit']), (TARGETS, CAP, True, False))
         rows = per_agent(turns)
         self.assertEqual(sorted(rows), [0, 1, 2])
         for agent, target in enumerate(TARGETS):
@@ -140,22 +204,22 @@ class On(unittest.TestCase):
         self.assertGreater(fw['end_s'], CFG['DURATION'])          # it ran past DURATION to finish the work
         # early agents kept sending: every agent that got there well before the last started turns after its own
         # target and up to the stop
-        early = [a for a in range(3) if fw['reached_s'][a] < fw['end_s'] - 0.3]
+        early = [a for a in range(3) if fw['reached_s'][a] < fw['end_s'] - 2 * CYCLE]
         self.assertTrue(early, fw)
         for agent in early:
             after = [r['t'] for r in rows[agent] if r['t'] > fw['reached_s'][agent]]
-            self.assertTrue(after and max(after) > fw['end_s'] - 0.25, (agent, after, fw))
+            self.assertTrue(after and max(after) >= fw['end_s'] - CYCLE, (agent, after, fw))
         # and no turn starts after the stop
-        self.assertTrue(all(t['t'] <= fw['end_s'] + TOL for t in turns), fw)
+        self.assertTrue(all(t['t'] <= fw['end_s'] + EPS for t in turns), fw)
         self.assertEqual(fw['completed'], [len(done_at(rows[a])) for a in range(3)])
 
     def test_the_cap_ends_the_arm_and_is_marked(self):
-        env = dict(ON, **{rp.FIXED_WORK_ENV: '2=3,90,5', rp.FIXED_CAP_ENV: '0.6'})
+        env = dict(ON, **{rp.FIXED_WORK_ENV: '2=3,90,5', rp.FIXED_CAP_ENV: '120'})
         (_cfg, summary, turns, still), _s, _c = run_with(env)
         fw = summary['fixed_work']
         self.assertEqual((fw['all_reached'], fw['cap_hit'], fw['end_s']), (False, True, None))
         self.assertIsNone(fw['reached_s'][1])
-        self.assertTrue(all(t['t'] < 0.6 + TOL for t in turns))
+        self.assertTrue(all(t['t'] < 120.0 for t in turns))
         self.assertEqual(still, [])
         self.assertGreater(max(t['t'] for t in turns), CFG['DURATION'])
 
@@ -170,7 +234,7 @@ class On(unittest.TestCase):
 
     def test_the_first_n_requests_are_timing_free(self):
         bodies = []
-        for duration in (None, lambda turn: 0.003, lambda turn: 0.02 + 0.01 * (turn % 3)):
+        for duration in (None, lambda turn: 0.3, lambda turn: 2.0 + 1.0 * (turn % 3)):
             _out, stream, _c = run_with(ON, duration=duration)
             mine = bodies_of(stream, 1)
             bodies.append(mine[:TARGETS[1]])
@@ -187,7 +251,7 @@ class On(unittest.TestCase):
                ({rp.FIXED_WORK_ENV: '2=3,9,5/2=3,9,5', rp.FIXED_CAP_ENV: '400'}, 'seeded'),
                ({rp.FIXED_WORK_ENV: '3,9,5', rp.FIXED_CAP_ENV: '400'}, 'seeded'),
                ({rp.FIXED_WORK_ENV: '1=3,9,5', rp.FIXED_CAP_ENV: '400'}, 'seeded'),
-               ({rp.FIXED_WORK_ENV: SPEC, rp.FIXED_CAP_ENV: '0.25'}, 'seeded'),
+               ({rp.FIXED_WORK_ENV: SPEC, rp.FIXED_CAP_ENV: '60'}, 'seeded'),
                ({rp.FIXED_WORK_ENV: SPEC, rp.FIXED_CAP_ENV: ''}, 'seeded'),
                ({rp.FIXED_WORK_ENV: SPEC, rp.FIXED_CAP_ENV: 'soon'}, 'seeded'),
                ({rp.FIXED_CAP_ENV: '400'}, 'seeded')]
@@ -195,7 +259,7 @@ class On(unittest.TestCase):
             with self.subTest(env=env, mode=mode):
                 with self.assertRaises(ValueError):
                     rp.fixed_work_targets(cfg, environ=env, reply_text=mode)
-        self.assertEqual(rp.fixed_work_targets(cfg, environ=ON, reply_text='seeded'), (TARGETS, 5.0))
+        self.assertEqual(rp.fixed_work_targets(cfg, environ=ON, reply_text='seeded'), (TARGETS, CAP))
         # run() refuses before any agent sends
         clock = rt.Clock()
         sent = []
@@ -251,9 +315,9 @@ class BoxReason(unittest.TestCase):
 class Mutants(unittest.TestCase):
     def test_stop_ignored_is_caught(self):
         m = rt.load_mutant(("while clock() < t_end and (fixed is None or not fixed.stop.is_set()):", "while clock() < t_end:"))
-        (_cfg, summary, turns, _still), _s, _c = run_with(dict(ON, **{rp.FIXED_CAP_ENV: '1.5'}), module=m)
+        (_cfg, summary, turns, _still), _s, _c = run_with(ON, module=m)
         fw = summary['fixed_work']
-        self.assertFalse(all(t['t'] <= fw['end_s'] + TOL for t in turns))   # what test_all_agents_send_until_... refuses
+        self.assertFalse(all(t['t'] <= fw['end_s'] + EPS for t in turns))   # what test_all_agents_send_until_... refuses
 
     def test_stop_at_the_first_target_is_caught(self):
         m = rt.load_mutant(("                if all(r is not None for r in self.reached) and self.end_s is None:",
@@ -272,9 +336,9 @@ class Mutants(unittest.TestCase):
     def test_cap_ignored_is_caught(self):
         m = rt.load_mutant(("    t_end = origin + (cfg['DURATION'] if work is None else work[1])\n",
                             "    t_end = origin + cfg['DURATION']\n"))
-        env = dict(ON, **{rp.FIXED_WORK_ENV: '2=3,90,5', rp.FIXED_CAP_ENV: '0.6'})
+        env = dict(ON, **{rp.FIXED_WORK_ENV: '2=3,90,5', rp.FIXED_CAP_ENV: '120'})
         (_cfg, summary, turns, _still), _s, _c = run_with(env, module=m)
-        self.assertFalse(max(t['t'] for t in turns) > CFG['DURATION'] + TOL)     # the work is cut at DURATION, not run on
+        self.assertFalse(max(t['t'] for t in turns) >= CFG['DURATION'])     # the work is cut at DURATION, not run on
 
     def test_box_reason_dropped_is_caught(self):
         import e3_compose4_box as box
