@@ -377,6 +377,24 @@ class Case(unittest.TestCase):
         self.assertIsNone(recorder.timeline.active)
         self.assertEqual(recorder.timeline.sessions, 1)
 
+    def test_manual_split_requires_real_current_route_lease(self):
+        driver = NS(engine_epoch=7, route_generation=9, _split_ready=True,
+                    auto_arm=NS(manual_owned=True))
+        engine = NS(model_executor=NS(), _flash_s5_driver=driver)
+        good = dict(owner='native-control', intent='enter_split', engine_epoch=7,
+                    route_generation=9, since_ns=123)
+        for route in (None, 'split', {}, dict(good, owner='other'), dict(good, intent='leave_split'),
+                      dict(good, engine_epoch=6), dict(good, route_generation=8)):
+            driver._control_route = route
+            dt.engine_step(engine)
+            self.assertFalse(engine.model_executor._flash_s5_decode_timeline.enabled)
+        driver._control_route = good
+        dt.engine_step(engine)
+        self.assertTrue(engine.model_executor._flash_s5_decode_timeline.enabled)
+        driver._split_ready = False
+        dt.engine_step(engine)
+        self.assertFalse(engine.model_executor._flash_s5_decode_timeline.enabled)
+
     def outside_rpc(self, r, sampler, method, args=()):
         r.seq += 1
         tag = sampler.wire(method, r.seq, args, True)
@@ -531,8 +549,40 @@ class OutsideWire(unittest.TestCase):
                 self.assertFalse(net.executor._flash_s5_decode_timeline.enabled)
                 engine._flash_s5_driver._control_route = 'split'
                 dt.engine_step(engine)
+                self.assertFalse(net.executor._flash_s5_decode_timeline.enabled)
+                engine._flash_s5_driver._split_ready = True
+                engine._flash_s5_driver.route_generation = 9
+                engine._flash_s5_driver._control_route = dict(owner='native-control', intent='enter_split',
+                    engine_epoch=7, route_generation=9, since_ns=1)
+                dt.engine_step(engine)
                 self.assertTrue(net.executor._flash_s5_decode_timeline.enabled)
                 net.close()
+
+
+class RealManualSplit(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_route_control_dict_enables_and_full_return_disables_sampling(self):
+        import asyncio
+        import test_e3_native_overlap as native
+        from native_overlap_control import NativeControlClient
+        with patch.dict(os.environ, {dt.ENV: '1'}):
+            stack = native.idle_stack()
+            core, frontend = native.core_for(stack)
+            control = NativeControlClient(frontend, timeout_s=5)
+            task = asyncio.create_task(control.enter_split())
+            await native.pump_until(lambda: task.done(), core)
+            self.assertEqual(task.result()['route_after'], 'split')
+            self.assertIs(type(stack.driver._control_route), dict)
+            stack.driver.auto_arm = NS(manual_owned=True)
+            dt.engine_step(core)
+            self.assertTrue(core.model_executor._flash_s5_decode_timeline.enabled)
+            del stack.driver.auto_arm
+            task = asyncio.create_task(control.leave_split())
+            await native.pump_until(lambda: task.done(), core)
+            self.assertEqual(task.result()['route_after'], 'full')
+            stack.driver.auto_arm = NS(manual_owned=True)
+            dt.engine_step(core)
+            self.assertFalse(core.model_executor._flash_s5_decode_timeline.enabled)
+
 
 
 class StripDiagnostic(ast.NodeTransformer):
@@ -608,6 +658,9 @@ class Mutants(unittest.TestCase):
     def test_restarting_after_refused_flush_caught(self):
         self.killed("            self._emit(False)\n            if self.blocked:\n                return",
                     "            self._emit(False)", 'test_supersession_sink_refusal_stays_blocked')
+
+    def test_manual_split_dict_gate_removed_caught(self):
+        self.killed("type(route) is dict", 'False', 'test_manual_split_requires_real_current_route_lease')
 
     def test_outside_scope_removed_caught(self):
         self.killed('if recorder is None or recorder.timeline is None:', 'if True:',

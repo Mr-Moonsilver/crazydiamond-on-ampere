@@ -336,8 +336,12 @@ def engine_step(engine):
     driver = getattr(engine, '_flash_s5_driver', None)
     policy = getattr(driver, 'auto_arm', None)
     side.epoch = getattr(driver, 'engine_epoch', None)
-    side.enabled = (policy is not None and (policy.manual_owned is False
-                    or getattr(driver, '_control_route', None) == 'split')
+    route = getattr(driver, '_control_route', None)
+    manual_split = (type(route) is dict and route.get('owner') == 'native-control'
+                    and route.get('intent') == 'enter_split' and driver._split_ready is True
+                    and route.get('engine_epoch') == driver.engine_epoch
+                    and route.get('route_generation') == driver.route_generation)
+    side.enabled = (policy is not None and (policy.manual_owned is False or manual_split)
                     and type(side.epoch) is int and side.epoch >= 0)
 
 
