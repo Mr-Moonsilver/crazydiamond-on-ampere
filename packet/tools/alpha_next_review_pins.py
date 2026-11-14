@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REVIEW = ROOT / 'patches/s5_engine/native_candidate_review.json'
 # decode_timeline.py: Codex's decode-timeline stamp (84135895 + 1469bd85, merged dc50f392) joins E3_MODULES without a review
 # entry of its own (lever D's decode_step.py carried one); admitted here like the three C0/stage-1 modules.
-ADDED = {'handler_anatomy.py', 'stage_progress.py', 'stage_wire.py', 'decode_timeline.py'}
+# decode_overlap.py: lever 2's soft split (claude/n3-lever2-split, 14 Nov) joins E3_MODULES the same way.
+ADDED = {'handler_anatomy.py', 'stage_progress.py', 'stage_wire.py', 'decode_timeline.py', 'decode_overlap.py'}
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 
 

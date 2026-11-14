@@ -39,6 +39,12 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     needs FLASH_S5_HANDLER_ANATOMY=1, AUTO_ARM=1, NATIVE_PROGRESS=burst and FUSED_PHASE_EVERY in 1..4096 in the parent's
     settings (TIMELINE_NEEDS, asserted at build time; decode_timeline.check_startup refuses the engine otherwise); its
     module is a new overlay file and bound; its suite test_decode_timeline runs in the frozen CPU.
+  * FLASH_S5_DECODE_OVERLAP_SMS (lever 2 soft split, claude/n3-lever2-split, 14 Nov; default 0 = off): the split decode
+    bank captured in a wider decode green context (42 or 48 SMs: the 24 decode SMs plus SMs of the prefill partition)
+    opened by the same helper ABI; the native lane keeps its 58-SM prefill context (patches/s5_engine/decode_overlap.py,
+    hooked in native_startup before the bank). In the settings line and asserted; decode_overlap is a new overlay
+    file and bound, native_startup and decode_probe (its module list) bound; suite test_decode_overlap in the frozen
+    CPU. Refused with QUIET_SPLIT_CONTROL=1 (the control's rule reads a 24-SM split bank).
 Refused flag sets: settle with the yield window (settle sits where the window hands off), a decode-group mode other than
 chunk without the liveness observer (the guard would be blind), verify settings without ingress, and CONTROL_INWAIT with
 any of settle, the small-piece batch, ingress, a decode-group mode other than chunk or the liveness observer (none of
@@ -91,6 +97,7 @@ FLAGS = (
     ('FLASH_S5_DECODE_SAMPLE_FAST', 'decode_sample_fast', ('0', '1'), '0'),   # lever D (decode_step, 13 Nov)
     ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
     ('FLASH_S5_DECODE_TIMELINE', 'decode_timeline', ('0', '1'), '0'),         # log-only stamp (decode_timeline, 13 Nov)
+    ('FLASH_S5_DECODE_OVERLAP_SMS', 'decode_overlap', ('0', '42', '48'), '0'),  # lever 2 soft split (decode_overlap, 14 Nov)
     ('REPLAY_REPLY_TEXT', 'replay_reply_text', ('model', 'seeded'), 'model'),  # harness only: compose4_replay (brief 11)
     ('QUIET_SPLIT_CONTROL', 'quiet_split_control', ('0', '1'), '0'),     # harness only: the tail read (brief 11 C)
     ('REPLAY_FIXED_WORK', 'replay_fixed_work', ('0',) + tuple(sorted(FIXED_WORK)), '0'),   # harness only (brief 12)
@@ -205,7 +212,7 @@ def minutes_of(flags):
 QUIET_SPLIT_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_DECODE_MERGE=1 ', 'FLASH_S5_LAZY_RECV=1 ',
                      'FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 ')
 EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
-         'decode_sample_fast', 'decode_anatomy', 'decode_timeline')                                                     # added on top of np's queues
+         'decode_sample_fast', 'decode_anatomy', 'decode_timeline', 'decode_overlap')                                   # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
 CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SMALL_PIECE_BATCH', '0'),
                            ('FLASH_S5_INGRESS_INCREMENTAL', '0'), ('FLASH_S5_DECODE_GROUPS', 'chunk'),
@@ -255,16 +262,17 @@ BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
 # decode_timeline is new; Codex's stamp also moves handler_anatomy and native_measurement in the overlay (their
 # timeline hooks), so the parent's regenerate refuses them undeclared (first ayc2t build, 13 Nov 19:15)
+# lever 2 (14 Nov): decode_overlap is new; its hook moves native_startup and its module list moves decode_probe
 BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step', 'decode_timeline',
-                                     'handler_anatomy', 'native_measurement')
+                                     'handler_anatomy', 'native_measurement', 'decode_overlap', 'native_startup')
 ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
 # decode_step (13 Nov) and decode_timeline (Codex 1469bd85): new in the overlay
-NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode_timeline.py'}
+NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode_timeline.py', 'e3/decode_overlap.py'}
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
                       'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline',
                       'test_replay_reply_text', 'test_quiet_split_box', 'test_replay_fixed_work',
-                      'test_fixed_work_packet', 'test_q2024p_j2_long_reader')
+                      'test_fixed_work_packet', 'test_q2024p_j2_long_reader', 'test_decode_overlap')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py', 'tools/q2024p_j2_long_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -314,6 +322,9 @@ def parse_flags(pairs):
     if flags['REPLAY_FIXED_WORK'] != '0' and flags['REPLAY_REPLY_TEXT'] != 'seeded':
         raise SystemExit('refused: REPLAY_FIXED_WORK=%s needs REPLAY_REPLY_TEXT=seeded (the first N turns are the same '
                          'work on both engines only then)' % flags['REPLAY_FIXED_WORK'])
+    if flags['FLASH_S5_DECODE_OVERLAP_SMS'] != '0' and flags['QUIET_SPLIT_CONTROL'] == '1':
+        raise SystemExit('refused: FLASH_S5_DECODE_OVERLAP_SMS=%s with QUIET_SPLIT_CONTROL=1 (the control and its rule '
+                         'read a 24-SM split bank)' % flags['FLASH_S5_DECODE_OVERLAP_SMS'])
     if flags['FLASH_S5_CONTROL_INWAIT'] == '1':
         for key, safe in CONTROL_INWAIT_UNTESTED:
             if flags[key] != safe:
@@ -442,7 +453,9 @@ def copy_delta(b, commit, bundle):
                  'harness/receipt_lines.py', 'harness/compose4_replay.py', 'harness/test_replay_reply_text.py',
                  'harness/e3_quiet_split_box.py', 'harness/test_quiet_split_box.py',
                  'harness/e3_compose4_box.py', 'harness/fixed_work_packet.py', 'harness/test_fixed_work_packet.py',
-                 'harness/test_replay_fixed_work.py', 'harness/test_q2024p_j2_long_reader.py'):
+                 'harness/test_replay_fixed_work.py', 'harness/test_q2024p_j2_long_reader.py',
+                 'patches/s5_engine/decode_overlap.py', 'patches/s5_engine/native_startup.py',
+                 'patches/s5_engine/decode_probe.py', 'harness/test_decode_overlap.py'):
         assert name in copied, name
     return copied
 

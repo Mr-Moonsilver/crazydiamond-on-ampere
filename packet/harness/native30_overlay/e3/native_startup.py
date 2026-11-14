@@ -271,6 +271,10 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     except E3ContractError as exc:
         raise NativeStartupError('cannot resolve the local text backbone') from exc
     tp_group, pp_group = _groups(tp_group, pp_group)
+    if (os.environ if env is None else env).get('FLASH_S5_DECODE_OVERLAP_SMS', '0') != '0':
+        # lever 2 (default off): the split bank captures in a wider decode context overlapping the prefill SMs
+        from decode_overlap import install as install_decode_overlap
+        split = install_decode_overlap(split, os.environ if env is None else env)
 
     bank, backend, controller = install_split_bank(
         runner, split, torch_module=torch, set_graph_pool_id=set_graph_pool_id, clock=clock)

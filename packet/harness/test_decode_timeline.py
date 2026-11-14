@@ -598,7 +598,10 @@ class StripDiagnostic(ast.NodeTransformer):
         return self.generic_visit(node)
 
     def visit_Tuple(self, node):
-        node.elts = [x for x in node.elts if not isinstance(x, ast.Constant) or x.value not in (dt.TimelineTrace.LINE, 'decode_timeline')]
+        # 'decode_overlap': lever 2's module-list entry (claude/n3-lever2-split, 14 Nov); its own default-off proof is
+        # test_decode_overlap (OffPath), so the frozen parent stays the timeline's only other difference here
+        node.elts = [x for x in node.elts if not isinstance(x, ast.Constant)
+                     or x.value not in (dt.TimelineTrace.LINE, 'decode_timeline', 'decode_overlap')]
         return self.generic_visit(node)
 
 

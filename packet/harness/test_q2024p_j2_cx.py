@@ -66,7 +66,7 @@ class Flags(unittest.TestCase):
                       ['FLASH_S5_YIELD_NO_APPEND_OWNER=1'], ['FLASH_S5_YIELD_WINDOW=1'],
                       ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'], ['FLASH_S5_CONTROL_INWAIT=1'],
                       ['FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1'], ['FLASH_S5_DECODE_ANATOMY=1'],
-                      ['FLASH_S5_DECODE_TIMELINE=1'],
+                      ['FLASH_S5_DECODE_TIMELINE=1'], ['FLASH_S5_DECODE_OVERLAP_SMS=42'], ['FLASH_S5_DECODE_OVERLAP_SMS=48'],
                       ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'],
                       ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'],
                       ['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1']):
@@ -92,6 +92,12 @@ class Flags(unittest.TestCase):
                                 'FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1',
                                 'FLASH_S5_DECODE_ANATOMY=1', 'FLASH_S5_DECODE_TIMELINE=1'])
         self.assertEqual(dict(ayc2, FLASH_S5_DECODE_TIMELINE='1'), ayc2t)      # ayc2s plus the stamp, nothing else
+        # lever 2 (14 Nov): cxay12's flags plus the stamp, and the same plus the soft split; one flag apart
+        ay12t = ['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1', 'FLASH_S5_YIELD_WINDOW=1',
+                 'FLASH_S5_DECODE_ANATOMY=1', 'FLASH_S5_DECODE_TIMELINE=1']
+        off, on = cx.parse_flags(ay12t), cx.parse_flags(ay12t + ['FLASH_S5_DECODE_OVERLAP_SMS=42'])
+        self.assertEqual(sorted(k for k in off if off[k] != on[k]), ['FLASH_S5_DECODE_OVERLAP_SMS'])
+        self.assertEqual(off['FLASH_S5_DECODE_OVERLAP_SMS'], '0')
 
     def test_refusals(self):
         self.refuses(['FLASH_S5_YIELD_REENTRY_SETTLE=1', 'FLASH_S5_YIELD_WINDOW=1'])
@@ -120,6 +126,10 @@ class Flags(unittest.TestCase):
         self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=2'])
         self.refuses(['FLASH_S5_DECODE_ANATOMY=yes'])
         self.refuses(['FLASH_S5_DECODE_TIMELINE=2'])
+        for value in ('1', '24', '40', '41', '82', 'on'):     # lever 2: off or one of the two built widths
+            self.refuses(['FLASH_S5_DECODE_OVERLAP_SMS=' + value])
+        self.refuses(['FLASH_S5_DECODE_OVERLAP_SMS=42', 'QUIET_SPLIT_CONTROL=1'])
+        self.assertEqual(cx.parse_flags(['FLASH_S5_DECODE_OVERLAP_SMS=0', 'QUIET_SPLIT_CONTROL=1'])['QUIET_SPLIT_CONTROL'], '1')
         # scope 2 needs scope 1; its untested pairs are scope 1's (refused through CONTROL_INWAIT=1)
         self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=1'])
         self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=2', 'FLASH_S5_CONTROL_INWAIT=1'])
@@ -229,7 +239,7 @@ class Names(unittest.TestCase):
 
 COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
            'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_CONTROL_O3_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST',
-           'FLASH_S5_DECODE_ANATOMY', 'FLASH_S5_DECODE_TIMELINE')
+           'FLASH_S5_DECODE_ANATOMY', 'FLASH_S5_DECODE_TIMELINE', 'FLASH_S5_DECODE_OVERLAP_SMS')
 QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
 
 
@@ -593,6 +603,39 @@ class Queues(unittest.TestCase):
             self.assertEqual(qs['verdict'], 'PASS')
             (root / 'quiet-split.json').write_text('{')
             self.assertEqual(reader.quiet_split(root)['verdict'], 'UNREADABLE')
+
+    def test_decode_overlap_flag_in_the_queues(self):
+        """Lever 2 (14 Nov): the soft split rides the settings line and the asserts on the cxay12 flags plus the stamp;
+        decode_overlap is a new, bound overlay file, the two modules it moves (native_startup, decode_probe) are bound
+        and its suite runs in the frozen CPU. Off, the line carries 0 and nothing else moves."""
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        ay12t = ['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1', 'FLASH_S5_YIELD_WINDOW=1',
+                 'FLASH_S5_DECODE_ANATOMY=1', 'FLASH_S5_DECODE_TIMELINE=1']
+        saved = dict(cx.CONFIG)
+        try:
+            texts = {}
+            for width in ('0', '42'):
+                flags = cx.parse_flags(ay12t + ['FLASH_S5_DECODE_OVERLAP_SMS=' + width])
+                cx.configure(flags, 'zl')
+                texts[width] = cx.queues('b1')
+                self.check_texts(texts[width], flags, cx.name_of('b1', 'zl'))
+                settings = next(t for r, t in texts[width].items() if r.endswith('_settings.sh'))
+                self.assertIn('FLASH_S5_DECODE_TIMELINE=1 FLASH_S5_DECODE_OVERLAP_SMS=%s ' % width, settings)
+                self.assertEqual(settings.count('FLASH_S5_DECODE_OVERLAP_SMS'), 1)
+                self.assertIn('FLASH_S5_DECODE_SMS=24', settings)        # the base split is unchanged
+            self.assertIn('e3/decode_overlap.py', cx.hgb.NEW_OVERLAY_FILES)
+            for name in ('decode_overlap', 'native_startup', 'decode_probe'):
+                self.assertIn(name, cx.ing.BOUND_MODULES)
+            self.assertIn('test_decode_overlap', cx.SUITES)
+            for rel in texts['0']:                   # the two packets differ only in the one value
+                a, b = texts['0'][rel], texts['42'][rel]
+                self.assertEqual(a.replace('FLASH_S5_DECODE_OVERLAP_SMS=0', 'X').replace(
+                    "'FLASH_S5_DECODE_OVERLAP_SMS') == '0'", 'Y'), b.replace('FLASH_S5_DECODE_OVERLAP_SMS=42', 'X').replace(
+                    "'FLASH_S5_DECODE_OVERLAP_SMS') == '42'", 'Y'), rel)
+        finally:
+            cx.CONFIG.update(saved)
 
     def test_decode_timeline_flag_in_the_queues(self):
         """The timeline stamp rides the settings line and the asserts; its module is a new, bound overlay file and its suite
