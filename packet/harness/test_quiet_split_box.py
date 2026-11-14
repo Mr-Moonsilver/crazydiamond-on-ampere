@@ -1,10 +1,12 @@
-"""Quiet-SPLIT control v2 (e3_quiet_split_box, brief 13 item 2): a fake engine and fake streams, CPU only.
+"""Quiet-SPLIT control v3 (e3_quiet_split_box, brief 13 item 2, brief 14 item 1): a fake engine and fake streams, CPU only.
 
 The fake engine keeps the state the tool reads (route, generation, pause, the stage-local selection, merge_steps,
 native admitted, the auto-arm row, the control route, scheduler requests = live fake streams, the attn-meta selection
 and its batched counter behind a fake worker adapter) and a fake clock advanced by sleep(); each status poll advances
 every live stream by one chunk on the fake clock. Every guard has a negative (one fault injected, the verdict
-INCONCLUSIVE with that guard named, FULL restored, the split lease released), the declaration guard sends no control,
+INCONCLUSIVE with that guard named, FULL restored, the split lease released, no stage completed), a refused stage does
+not end the control (the next stage runs after the FULL return and the lease are proved) while native work, a lost lease
+or an unproved return still do, a failed stage is never labelled completed, the declaration guard sends no control,
 the disconnect check and its max_tokens fallback are both exercised, a real SIGTERM delivered mid-run still runs the
 cleanup and writes the record, and mutants of the tool (a guard removed) turn a negative green, so the negatives are
 live.
@@ -273,9 +275,9 @@ class Clean(Base):
     def test_clean_run_passes_with_the_declared_plan(self):
         record, engine = run()
         self.assertEqual(record['verdict'], 'PASS', record.get('cause'))
-        self.assertEqual(record['schema'], 'quiet-split-box/2')
+        self.assertEqual(record['schema'], 'quiet-split-box/3')
         self.assertEqual([(s['prompt_tokens'], s['live']) for s in record['stages']], list(q.PLAN))
-        self.assertEqual(q.PLAN, ((120000, 8), (120000, 6), (120000, 4), (120000, 2), (120000, 1), (72000, 4), (72000, 1)))
+        self.assertEqual(q.PLAN, ((120000, 4), (120000, 1), (120000, 2), (120000, 6), (120000, 8), (72000, 4), (72000, 1)))
         for row in record['stages']:
             self.assertGreaterEqual(row['window']['wall_s'], 25.0)
             self.assertLessEqual(row['window']['wall_s'], 26.0)
@@ -283,7 +285,9 @@ class Clean(Base):
             self.assertEqual(len(row['streams']), row['live'])
             self.assertTrue(all(v['window_chunks'] >= 1 for v in row['streams']))
             self.assertIsNotNone(row['aggregate_tokens_per_s'])
-            self.assertEqual(row['abort'], 'disconnect')
+            self.assertEqual(row['drain'], 'disconnect')
+            self.assertIs(row['completed'], True)
+            self.assertNotIn('abort', row)
             self.assertEqual(row['history_tokens'][0], row['prompt_tokens'] + 1)
         self.assertEqual(record['selection']['decode_merge'], 'always')
         self.assertIs(record['selection']['lazy_recv'], True)
@@ -329,7 +333,7 @@ class Disconnect(Base):
     def test_fallback_when_a_disconnect_does_not_abort(self):
         record, _ = run('disconnect-not-aborting')
         self.assertEqual(record['verdict'], 'PASS', record.get('cause'))
-        self.assertTrue(all(s['abort'] == 'max_tokens' for s in record['stages']))
+        self.assertTrue(all(s['drain'] == 'max_tokens' and s['completed'] for s in record['stages']))
         self.assertTrue(all(s['drain_s'] > q.ABORT_BOUND_S for s in record['stages']))
         self.assertEqual(len(record['stages']), len(q.PLAN))
 
@@ -342,7 +346,10 @@ class Disconnect(Base):
 
 class Declaration(Base):
     def test_other_declarations_send_no_control(self):
+        qsplit3 = ((120000, 8), (120000, 6), (120000, 4), (120000, 2), (120000, 1), (72000, 4), (72000, 1))
         for over, reason in ((dict(plan=q.PLAN[:5]), 'plan-not-declared'), (dict(plan=((8, 120000),)), 'plan-not-declared'),
+                             (dict(plan=qsplit3), 'plan-not-declared'),        # brief 14: the 8-live-first order
+                             (dict(plan=q.PLAN[1:] + q.PLAN[:1]), 'plan-not-declared'),
                              (dict(plan=tuple(reversed(q.PLAN))), 'plan-not-declared'),
                              (dict(hold_s=19.5), 'hold-not-20-30-s'), (dict(hold_s=31.0), 'hold-not-20-30-s'),
                              (dict(decode_merge='chunk'), 'decode-merge-not-always'),
@@ -356,7 +363,7 @@ class Declaration(Base):
     def test_bounds_accepted_and_plan_parsed(self):
         for hold in (20.0, 30.0):
             self.assertEqual(q.declaration_reasons(q.PLAN, hold, 'always', q.MAX_TOKENS), [])
-        self.assertEqual(q.parse_plan('120000x8,120000x6,120000x4,120000x2,120000x1,72000x4,72000x1'), q.PLAN)
+        self.assertEqual(q.parse_plan('120000x4,120000x1,120000x2,120000x6,120000x8,72000x4,72000x1'), q.PLAN)
         self.assertEqual(q.parse_plan('8,4,1'), ())
 
     def test_loopback_required(self):
@@ -393,12 +400,9 @@ class Negatives(Base):
                 self.assertTrue(record['cleanup']['full_restored'])
                 self.assertTrue(record['cleanup']['split_lease_released'])
                 self.assertTrue(all(s.stop.is_set() for s in engine.streams))
-
-    def test_fault_on_the_second_stage(self):
-        record, _ = run('stage-live-mismatch')
-        self.assertEqual(record['verdict'], 'INCONCLUSIVE')
-        self.assertIn('scheduler-requests-not-live', record['cause'])
-        self.assertEqual([s['live'] for s in record['stages']], [8, 6])
+                if fault != 'attn-not-engaged':          # that one fails at the end read, after every stage completed
+                    self.assertFalse(any(s.get('completed') for s in record['stages']), 'a refused stage labelled completed')
+                    self.assertTrue(all('abort' in s for s in record['stages']))
 
     def test_split_lease_left_reads_not_released(self):
         """A FULL route that kept the native-control split lease: the cleanup records it as not released."""
@@ -428,6 +432,105 @@ class Negatives(Base):
                        sleep=clock.sleep, now_ns=clock.ns)
         self.assertFalse(record['selection_restore']['attempted'])
         self.assertEqual(engine.calls.count(q.STAGE_CONTROL), 1)
+
+
+PER_STAGE = ('route-left-split', 'route-generation-changed', 'transition-or-return-pending', 'scheduler-requests-not-live',
+             'decode-merge-not-always', 'decoders-not-live-on-full', 'decoder-ended-in-hold', 'decoder-stalled-in-hold',
+             'merge-not-active-in-hold', 'enter-refused', 'history-off-band')
+STOPPING = ('native-admitted', 'native-chunk-open', 'admission-armed', 'auto-arm-active', 'manual-lease-lost')
+
+
+class Continuation(Base):
+    """Brief 14: a refused stage is recorded (completed False, abort {reason, phase}, drained) and the next stage runs;
+    native work, the lease, the drain or an unproved FULL return still end the control."""
+
+    def test_refused_stage_does_not_end_the_control(self):
+        record, engine = run('stage-live-mismatch')            # the 6-live stage (index 3) only
+        self.assertEqual([(s['prompt_tokens'], s['live']) for s in record['stages']], list(q.PLAN))
+        self.assertEqual([s['completed'] for s in record['stages']], [True, True, True, False, True, True, True])
+        bad = record['stages'][3]
+        self.assertEqual(bad['abort'], dict(reason='poll:scheduler-requests-not-live', phase='hold'))
+        self.assertEqual(bad['drain'], 'disconnect')
+        self.assertEqual(record['verdict'], 'PARTIAL')
+        self.assertEqual(record['cause'], 'stages-refused:3=poll:scheduler-requests-not-live')
+        self.assertTrue(record['cleanup']['full_restored'] and record['cleanup']['split_lease_released'])
+        self.assertTrue(record['selection_restore']['restored'])
+        self.assertEqual(engine.calls.count('enter'), 7)
+        self.assertEqual(record['attn_meta']['selected_end'], True)
+
+    def test_every_stage_refused_runs_them_all(self):
+        for fault in PER_STAGE:
+            with self.subTest(fault=fault):
+                record, engine = run(fault)
+                self.assertEqual(len(record['stages']), len(q.PLAN), record.get('cause'))
+                self.assertTrue(record['cause'].startswith('stages-refused:'), record['cause'])
+                self.assertEqual(record['verdict'], 'INCONCLUSIVE')
+                self.assertEqual(engine.route, 'full')
+
+    def test_stop_causes_end_the_control(self):
+        for fault in STOPPING:
+            with self.subTest(fault=fault):
+                record, engine = run(fault)
+                self.assertEqual(len(record['stages']), 1)
+                self.assertEqual(record['stages'][0]['abort']['phase'], 'stop')
+                self.assertIs(record['stages'][0]['completed'], False)
+                self.assertIn(fault, record['cause'])
+                self.assertNotIn('stages-refused', record['cause'])
+                self.assertTrue(record['cleanup']['full_restored'] and record['cleanup']['split_lease_released'])
+
+    def test_unproved_return_ends_the_control(self):
+        """The route still split after a refusal and restore_full not proving FULL: no further stage."""
+        q.restore_full = lambda client: dict(attempted=True, full_restored=False)
+        record, engine = run('route-generation-changed')
+        self.assertEqual(record['cause'], 'stage-full-return-unproved')
+        self.assertEqual(len(record['stages']), 1)
+        self.assertNotIn('drain', record['stages'][0])
+
+    def test_lease_lost_after_the_return_ends_the_control(self):
+        clock = Clock()
+        engine = Engine(clock, 'enter-refused')
+        leave = engine.leave
+
+        def keeps_lease():
+            leave()
+            engine.control_route = dict(owner='native-control')
+        engine.leave = keeps_lease
+        status = engine.status
+
+        def lease_kept_after_refusal():
+            out = status()
+            if engine.calls.count('enter') == 1:
+                out['control_route'] = dict(owner='native-control')
+            return out
+        engine.status = lease_kept_after_refusal
+        record = q.run(args(), client=engine, starter=engine.starter, warmer=engine.warmer, clock=clock,
+                       sleep=clock.sleep, now_ns=clock.ns)
+        self.assertEqual(record['cause'], 'stage-lease-unproved')
+        self.assertEqual(len(record['stages']), 1)
+
+    def test_failed_stage_never_labelled_completed(self):
+        """Across every fault: a stage is completed only with a window, merge steps >= 1 and a drain, and never with an
+        abort; every stage that is not completed has its abort reason."""
+        for fault in PER_STAGE + STOPPING + ('stage-live-mismatch', 'disconnect-not-aborting', None):
+            record, _ = run(fault)
+            for s in record['stages']:
+                with self.subTest(fault=fault, live=s['live']):
+                    if s.get('completed'):
+                        self.assertNotIn('abort', s)
+                        self.assertIn('window', s)
+                        self.assertGreaterEqual(s['merge_steps'], 1)
+                        self.assertIn(s['drain'], ('disconnect', 'max_tokens'))
+                    else:
+                        self.assertIs(s.get('completed'), False)
+                        self.assertTrue(s['abort']['reason'])
+
+    def test_stops_control_names(self):
+        self.assertTrue(q.stops_control('poll:scheduler-requests-not-live,manual-lease-lost'))
+        self.assertTrue(q.stops_control('terminated:SIGTERM'))
+        self.assertTrue(q.stops_control('requests-not-drained'))
+        self.assertFalse(q.stops_control('poll:route-left-split'))
+        self.assertFalse(q.stops_control('history-off-band'))
+        self.assertFalse(q.stops_control('native-split-not-applied'))
 
 
 def term_run(case, at_stage=2, second=False, module=q):
@@ -714,7 +817,29 @@ class Mutants(Base):
         m = mutant("            return ('disconnect' if spent <= ABORT_BOUND_S else 'max_tokens'), round(spent, 3)\n",
                    "            return 'disconnect', round(spent, 3)\n")
         record, _ = run('disconnect-not-aborting', module=m)
-        self.assertTrue(all(s['abort'] == 'disconnect' for s in record['stages']))      # what the fallback test refuses
+        self.assertTrue(all(s['drain'] == 'disconnect' for s in record['stages']))      # what the fallback test refuses
+
+    def test_continuation_mutant(self):
+        """The refused stage ends the control again (v2's behaviour): the continuation test's seven stages fail."""
+        m = mutant("                recover_stage(client, a, row, cause, clock=clock, sleep=sleep)\n", "                raise\n")
+        record, _ = run('stage-live-mismatch', module=m)
+        self.assertEqual(len(record['stages']), 4)
+
+    def test_counted_label_mutant(self):
+        """A refused stage labelled completed: the never-labelled-completed test refuses it."""
+        m = mutant("    row['completed'] = False\n    row['abort'] = dict(reason=cause,",
+                   "    row['completed'] = True\n    row['abort'] = dict(reason=cause,")
+        record, _ = run('stage-live-mismatch', module=m)
+        self.assertTrue(record['stages'][3]['completed'] and 'abort' in record['stages'][3])
+        self.assertEqual(record['verdict'], 'PASS')
+
+    def test_stop_mutant(self):
+        """stops_control never true: native work in a poll would let later stages run; the stop test refuses it."""
+        m = mutant("    if cause.startswith('terminated:') or cause in STOP_CAUSES:\n        return True\n"
+                   "    return cause.startswith('poll:') and any(r in STOP_POLL for r in cause[len('poll:'):].split(','))\n",
+                   "    return cause.startswith('terminated:')\n")
+        record, _ = run('manual-lease-lost', module=m)
+        self.assertGreater(len(record['stages']), 1)
 
     def test_term_handler_mutant(self):
         """A handler that does not raise: the run goes on to PASS, so the SIGTERM test's cause check catches it."""

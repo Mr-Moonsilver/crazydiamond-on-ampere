@@ -27,9 +27,24 @@ Per cell: n, D p10/p50/p90 (ms), max-history p50 and its band (the busy/far read
 attn_meta.requested and every rank's select.after.selected; the control's quiet-split.json attn_meta block).
 TP stage value = max of the two peers' p50 (stage 0 ranks 0,1; stage 1 ranks 2,3), never a sum.
 Three numbers per live count (1, 2, 4, 6, 8; at 8 B_split pools actual rows 7 and 8 at num_tokens 8): Q_full, Q_split
-per stage, B_split, with S = Q_split - Q_full and N = B_split - Q_split per rank; the consistency check (QUIET_SPLIT_READ
-draft): |p50 Q_split - p50 C_split| <= CONSIST_MS on at least 3 of 4 ranks with C_split n >= MIN_REF, C_split pooled
-over this record and every --reference record (same rank, num_tokens, actual_rows). Descriptive only: no verdict.
+per stage, B_split, with S = Q_split - Q_full and N = B_split - Q_split per rank. A pooled cell holds one (cg_mode,
+bank_sms): rows of a second key make it 'mixed' (no p50, the keys listed), and N is computed only when Q_split and B_split
+carry the same key (brief 14, REVIEW-qsplit3 finding 3).
+Per control stage (QUIET_SPLIT_READ_V2 as adopted, brief 14):
+  counted   quiet-split-box/3: completed true, no abort field, a window, merge_steps >= 1, drain disconnect|max_tokens;
+            /2 (cxqsplit3's control): a window, merge_steps >= 1 and abort disconnect|max_tokens (its drain field);
+  matched   history_tokens inside [prompt, prompt + HISTORY_SLACK] and pre_hold_tokens_max <= PRE_HOLD; every stream's
+            first_token_s <= FIRST_TOKEN_S (the cache proof); attn-meta selected, order ok and batched_delta > 0 on
+            every rank ('engagement not read' when the control stopped before the end read); every warm row 200 with
+            prompt_tokens 120,000;
+  order     (120k stages at 1, 2, 4 live; else NOT_APPLICABLE) Q_full < Q_split <= B_split + ORDER_MS on at least 3
+            ranks (OK / BROKEN / NOT_TESTABLE, reasons per rank);
+  consistency  C_split pooled over this record and every --reference record (same rank, num_tokens, actual_rows):
+            PASS / FAIL when at least 3 ranks have C_split n >= MIN_REF and Q_split n >= MIN_CTL (PASS: |Q_split -
+            C_split| <= CONSIST_MS on 3 ranks); otherwise NOT_TESTABLE, which blocks names only when Q_split > C_split +
+            CONSIST_MS on at least 3 ranks with C_split n >= MIN_REF_LOW; the reason list is printed with every value;
+  names     allowed only when counted, matched, order OK and consistency not blocking (stated per stage).
+Descriptive only: no verdict.
 Budget per rank: native sessions and outside samples (highest number seen), log_budget_exhausted sessions, and bytes
 as sum(len(payload) + 97) per line (the stamp adds 97 per line for the receipt identity and newline; the logged payload
 already holds that identity, so this is an upper estimate), split before and after the control's first row.
@@ -42,7 +57,7 @@ from pathlib import Path
 import statistics
 import sys
 
-SCHEMA = 'q2024p-j2-quiet-split-read/1'
+SCHEMA = 'q2024p-j2-quiet-split-read/2'
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location('q2024p_j2_busyfar_reader_qs', HERE / 'q2024p_j2_busyfar_reader.py')
 bf = importlib.util.module_from_spec(_spec)
@@ -53,7 +68,15 @@ LIVE = (1, 2, 4, 6, 8)            # the control's live counts (qsplit3); 1, 4 an
 PADDED = {1: 1, 2: 2, 3: 3, 4: 4, 5: 6, 6: 6, 7: 8, 8: 8}     # actual rows -> the stock graph's num_tokens (ayc2t2)
 CONSIST_MS = 0.5
 MIN_REF = 5
+MIN_REF_LOW = 3                   # NOT_TESTABLE still blocks names on a 3-rank excess with C_split n >= 3 (rule)
 MIN_CTL = 12
+ORDER_MS = 0.3                    # Q_split <= B_split + 0.3 ms (the p50 resolution of these cells)
+HISTORY_SLACK = 4096              # history_tokens inside [prompt, prompt + 4096] (REVIEW-qsplit3 correction 2)
+PRE_HOLD = 600                    # the control's PRE_HOLD_TOKENS
+FIRST_TOKEN_S = 10.0              # a stage's streams reached their first token from the cache
+WARM_TOKENS = 120000
+DRAINS = ('disconnect', 'max_tokens')
+CROSS_LIVE = (1, 2, 4)            # ORDER and C_split: the 120k stages at 1, 2 and 4 live (rule V2)
 MIN_BUSY, MIN_BUSY8 = 50, 30
 STAGES = {0: (0, 1), 1: (2, 3)}
 LINE_BYTES = 97                   # decode_timeline._emit: len(line) + 97 per line
@@ -150,22 +173,68 @@ def usable(row):
     return None
 
 
+def stage_counted(schema, s):
+    """(counted, why): v3 needs completed, no abort, a window, merge steps and a drain; v2 its abort as the drain."""
+    window = bool(s.get('window')) and type(s.get('merge_steps')) is int and s['merge_steps'] >= 1
+    if schema == 'quiet-split-box/3':
+        why = [w for w, bad in (('not-completed', s.get('completed') is not True), ('abort', 'abort' in s),
+                                ('no-window-or-merge', not window), ('no-drain', s.get('drain') not in DRAINS)) if bad]
+    else:
+        why = [w for w, bad in (('no-window-or-merge', not window), ('no-drain', s.get('abort') not in DRAINS),
+                                ('reasons', bool(s.get('reasons')))) if bad]
+    return not why, why
+
+
+def stage_matched(s, doc):
+    """(matched, lines): history bound, the cache proof (first tokens), attn-meta engaged, the warm (rule V2)."""
+    lines = {}
+    prompt, hist = s.get('prompt_tokens'), s.get('history_tokens')
+    ok = (type(prompt) is int and type(hist) is list and len(hist) == 2 and all(type(x) is int for x in hist)
+          and prompt <= hist[0] and hist[1] <= prompt + HISTORY_SLACK
+          and type(s.get('pre_hold_tokens_max')) is int and s['pre_hold_tokens_max'] <= PRE_HOLD)
+    lines['history'] = 'ok' if ok else 'out (history %s, prompt %s, pre_hold %s; bound prompt+%d, pre_hold <= %d)' % (
+        hist, prompt, s.get('pre_hold_tokens_max'), HISTORY_SLACK, PRE_HOLD)
+    firsts = [v.get('first_token_s') for v in s.get('streams') or []]
+    ok = bool(firsts) and all(type(x) in (int, float) and x <= FIRST_TOKEN_S for x in firsts)
+    lines['cache'] = ('ok (first token max %.2f s)' % max(firsts) if ok else
+                      'out (first_token_s %s; bound %.0f s)' % (firsts, FIRST_TOKEN_S))
+    am = doc.get('attn_meta') if type(doc.get('attn_meta')) is dict else {}
+    delta = am.get('batched_delta')
+    if am.get('selected') is not True or am.get('order_ok') is not True:
+        lines['attn_meta'] = 'out (selected %s, order_ok %s)' % (am.get('selected'), am.get('order_ok'))
+    elif type(delta) is not dict:
+        lines['attn_meta'] = 'out (attn-meta selected, engagement not read)'
+    elif len(delta) != 4 or not all(type(v) is int and v > 0 for v in delta.values()):
+        lines['attn_meta'] = 'out (not engaged: batched_delta %s)' % json.dumps(delta, sort_keys=True)
+    else:
+        lines['attn_meta'] = 'ok'
+    warm = doc.get('warm')
+    ok = type(warm) is list and len(warm) > 0 and all(type(w) is dict and w.get('status') == 200
+                                                     and w.get('prompt_tokens') == WARM_TOKENS for w in warm)
+    lines['warm'] = 'ok' if ok else 'out (warm %s)' % ('absent' if warm is None else 'not all 200 / %d' % WARM_TOKENS)
+    return all(v.startswith('ok') for v in lines.values()), lines
+
+
 def control_of(path):
     if path is None or not os.path.isfile(path):
         return None
     with open(path) as handle:
         doc = json.load(handle)
+    schema = doc.get('schema')
     stages = []
     for i, s in enumerate(doc.get('stages') or []):
+        counted, not_counted = stage_counted(schema, s)
+        matched, lines = stage_matched(s, doc)
         stages.append(dict(index=i, live=s.get('live'), band=s.get('prompt_tokens'), generation=s.get('split_generation'),
-                           counted=bool(s.get('window')) and type(s.get('merge_steps')) is int and s['merge_steps'] >= 1
-                           and not s.get('reasons'), reasons=s.get('reasons') or []))
+                           counted=counted, not_counted=not_counted, matched=matched, lines=lines,
+                           abort=(s.get('abort') or {}).get('reason') if schema == 'quiet-split-box/3' else None,
+                           drain=s.get('drain') if schema == 'quiet-split-box/3' else s.get('abort')))
     am = doc.get('attn_meta') if type(doc.get('attn_meta')) is dict else None
     attn = ('on' if am and am.get('selected') is True else 'off' if am and am.get('selected') is False else
             'off (not selected: the control sends no attn_meta_select and inherits the last arm\'s)')
-    return dict(path=path, schema=doc.get('schema'), verdict=doc.get('verdict'), cause=doc.get('cause'),
+    return dict(path=path, schema=schema, verdict=doc.get('verdict'), cause=doc.get('cause'),
                 stages=stages, attn_meta=attn, admitted=(doc.get('native_admitted_before'), doc.get('native_admitted_after')),
-                disconnect=[s.get('abort') for s in doc.get('stages') or []])
+                drains=[s['drain'] for s in stages])
 
 
 def classify(root, quiet_split=None, engine_log=None, n3_only=True):
@@ -285,12 +354,20 @@ def cells(rows):
 
 
 def pooled(raw, cls, rank, live, stage=None, pool_8=False):
-    """One class at a live count: num_tokens PADDED[live], actual_rows live (8 live with pool_8: rows 7 and 8)."""
+    """One class at a live count: num_tokens PADDED[live], actual_rows live (8 live with pool_8: rows 7 and 8), one
+    (cg_mode, bank_sms) key: rows of two keys are 'mixed' (no p50; the keys and their n listed), never pooled."""
     out = [r for r in raw if r['cls'] == cls and r['rank'] == rank and r['num_tokens'] == PADDED[live]
            and (r['actual_rows'] == live or (pool_8 and live == 8 and r['actual_rows'] in (7, 8)))
            and (stage is None or r.get('stage') == stage)]
+    keys = {}
+    for r in out:
+        k = '%s/%s' % (r['cg_mode'], r['bank_sms'])
+        keys[k] = keys.get(k, 0) + 1
+    if len(keys) > 1:
+        return dict(n=len(out), p50=None, history_p50=None, key=None, mixed=keys)
     return dict(n=len(out), p50=round(p([r['D'] for r in out], 0.5), 3) if out else None,
-                history_p50=int(p([r['history'] for r in out], 0.5)) if out else None)
+                history_p50=int(p([r['history'] for r in out], 0.5)) if out else None,
+                key=next(iter(keys)) if keys else None)
 
 
 def stage_value(per_rank):
@@ -326,27 +403,82 @@ def three(doc, reference_rows):
         for s in stages:
             if s['live'] != live:
                 continue
-            ok, why = 0, []
-            for rank, v in row['ranks'].items():
-                q, c = v['Q_split'][s['index']], v['C_split']
-                if q['n'] < MIN_CTL:
-                    why.append('rank%d:control-n%d<%d' % (rank, q['n'], MIN_CTL))
-                elif c['n'] < MIN_REF:
-                    why.append('rank%d:reference-n%d<%d' % (rank, c['n'], MIN_REF))
-                elif abs(q['p50'] - c['p50']) <= CONSIST_MS:
-                    ok += 1
-                else:
-                    why.append('rank%d:|%.2f-%.2f|>%.1f' % (rank, q['p50'], c['p50'], CONSIST_MS))
+            per = {rank: (v['Q_split'][s['index']], v['C_split'], v['Q_full'], v['B_split'])
+                   for rank, v in row['ranks'].items()}
+            if s['band'] == WARM_TOKENS and live in CROSS_LIVE:
+                cons, order = consistency(per), ordering(per)
+            else:                                # the rule's cross-checks are per 120k stage at 1, 2 and 4 live
+                cons = dict(value='NOT_APPLICABLE', testable_ranks=0, ranks_within=0, ranks_control_slower=0,
+                            blocks_names=False, why=[])
+                order = dict(value='NOT_APPLICABLE', ranks_ok=0, why=[])
             diffs = {}
-            for rank, v in row['ranks'].items():
-                q = v['Q_split'][s['index']]['p50']
-                diffs[rank] = dict(S=None if q is None or v['Q_full']['p50'] is None else round(q - v['Q_full']['p50'], 3),
-                                   N=None if q is None or v['B_split']['p50'] is None else round(v['B_split']['p50'] - q, 3))
-            checks[s['index']] = dict(band=s['band'], counted=s['counted'], consistency='PASS' if ok >= 3 else 'FAIL',
-                                      ranks_within=ok, why=why, differences=diffs)
+            for rank, (q, _, full, busy) in per.items():
+                n_why = None
+                if q['p50'] is not None and busy['p50'] is not None and q['key'] != busy['key']:
+                    n_why = 'cg_mode/bank_sms differ: Q_split %s, B_split %s' % (q['key'], busy['key'])
+                diffs[rank] = dict(S=None if q['p50'] is None or full['p50'] is None else round(q['p50'] - full['p50'], 3),
+                                   N=None if q['p50'] is None or busy['p50'] is None or n_why else round(busy['p50'] - q['p50'], 3))
+                if n_why:
+                    diffs[rank]['N_refused'] = n_why
+            blocked = [w for w, bad in (('not counted: ' + ','.join(s['not_counted']), not s['counted']),
+                                        ('not matched: ' + ','.join(k for k, v in s['lines'].items() if not v.startswith('ok')),
+                                         not s['matched']),
+                                        ('order ' + order['value'], order['value'] not in ('OK', 'NOT_APPLICABLE')),
+                                        ('consistency ' + cons['value'] + ' blocking', cons['blocks_names'])) if bad]
+            checks[s['index']] = dict(band=s['band'], counted=s['counted'], not_counted=s['not_counted'],
+                                      matched=s['matched'], lines=s['lines'], consistency=cons, order=order,
+                                      differences=diffs, names_allowed=not blocked, names_blocked_by=blocked)
         row['control_stages'] = checks
         out.append(row)
     return out
+
+
+def consistency(per):
+    """PASS / FAIL (>= 3 testable ranks: C_split n >= MIN_REF and Q_split n >= MIN_CTL) or NOT_TESTABLE; blocks_names
+    on FAIL, or on NOT_TESTABLE with Q_split > C_split + CONSIST_MS on >= 3 ranks with C_split n >= MIN_REF_LOW."""
+    testable, within, excess, why = 0, 0, 0, []
+    for rank, (q, c, _, _) in sorted(per.items()):
+        if q['n'] < MIN_CTL or q['p50'] is None:
+            why.append('rank%d:control-n%d<%d' % (rank, q['n'], MIN_CTL) if q['n'] < MIN_CTL else 'rank%d:control-mixed' % rank)
+            continue
+        if c['p50'] is None or c['n'] < MIN_REF_LOW:
+            why.append('rank%d:reference-n%d<%d' % (rank, c['n'], MIN_REF_LOW) if c['p50'] is not None or not c.get('mixed')
+                       else 'rank%d:reference-mixed' % rank)
+            continue
+        if q['p50'] > c['p50'] + CONSIST_MS:
+            excess += 1
+        if c['n'] < MIN_REF:
+            why.append('rank%d:reference-n%d<%d (Q_split-C_split %+.2f)' % (rank, c['n'], MIN_REF, q['p50'] - c['p50']))
+            continue
+        testable += 1
+        if abs(q['p50'] - c['p50']) <= CONSIST_MS:
+            within += 1
+        else:
+            why.append('rank%d:|%.2f-%.2f|>%.1f' % (rank, q['p50'], c['p50'], CONSIST_MS))
+    if testable >= 3:
+        value = 'PASS' if within >= 3 else 'FAIL'
+        blocks = value == 'FAIL'
+    else:
+        value = 'NOT_TESTABLE'
+        blocks = excess >= 3
+    return dict(value=value, testable_ranks=testable, ranks_within=within, ranks_control_slower=excess,
+                blocks_names=blocks, why=why)
+
+
+def ordering(per):
+    """Q_full < Q_split <= B_split + ORDER_MS per rank: OK on >= 3 ranks, BROKEN when 2 or more ranks break it,
+    else NOT_TESTABLE (values missing or mixed); reasons per rank."""
+    ok, broken, why = 0, 0, []
+    for rank, (q, _, full, busy) in sorted(per.items()):
+        if None in (q['p50'], full['p50'], busy['p50']):
+            why.append('rank%d:missing' % rank)
+        elif full['p50'] < q['p50'] <= busy['p50'] + ORDER_MS:
+            ok += 1
+        else:
+            broken += 1
+            why.append('rank%d:Q_full %.2f Q_split %.2f B_split %.2f' % (rank, full['p50'], q['p50'], busy['p50']))
+    value = 'OK' if ok >= 3 else 'BROKEN' if broken >= 2 else 'NOT_TESTABLE'
+    return dict(value=value, ranks_ok=ok, why=why)
 
 
 def read(root, quiet_split=None, references=(), engine_log=None):
@@ -372,7 +504,10 @@ def read(root, quiet_split=None, references=(), engine_log=None):
 
 
 def fmt(v):
-    return '-' if v is None or v.get('p50') is None else '%.2f (n %d, h %dk)' % (v['p50'], v['n'], v['history_p50'] // 1000)
+    if v is not None and v.get('mixed'):
+        return 'MIXED %s' % json.dumps(v['mixed'], sort_keys=True)
+    return '-' if v is None or v.get('p50') is None else '%.2f (n %d, h %dk, %s)' % (
+        v['p50'], v['n'], v['history_p50'] // 1000, v['key'])
 
 
 def text(doc):
@@ -387,8 +522,11 @@ def text(doc):
     if c:
         out.append('control %s verdict %s%s; native admitted before/after %s; stages %s' % (
             c['schema'], c['verdict'], '' if c['verdict'] == 'PASS' else ' (' + str(c['cause']) + ')', c['admitted'],
-            json.dumps([dict(i=s['index'], live=s['live'], band=s['band'], gen=s['generation'], counted=s['counted'])
-                        for s in c['stages']])))
+            json.dumps([dict(i=s['index'], live=s['live'], band=s['band'], gen=s['generation'], counted=s['counted'],
+                             not_counted=s['not_counted'], abort=s['abort'], drain=s['drain']) for s in c['stages']])))
+        for s in c['stages']:
+            out.append('  stage %d (%s x %s live): matched %s %s' % (s['index'], s['band'], s['live'], s['matched'],
+                                                                     json.dumps(s['lines'], sort_keys=True)))
     else:
         out.append('control: no quiet-split.json (no Q_split class)')
     out.append('budget per rank (caps %s): %s' % (json.dumps(doc['budget']['caps']), json.dumps(doc['budget']['per_rank'], sort_keys=True)))
@@ -410,10 +548,17 @@ def text(doc):
                 rank, fmt(v['Q_full']), ctl, fmt(v['C_split']), fmt(v['B_split'])))
         out.append('    TP stage values %s' % json.dumps(row['stage_values'], sort_keys=True))
         for i, chk in sorted(row['control_stages'].items()):
-            out.append('    control stage %d (band %s, counted %s): consistency %s (%d of 4 ranks within %.1f ms) %s; '
-                       'S = Q_split - Q_full, N = B_split - Q_split per rank %s' % (
-                           i, chk['band'], chk['counted'], chk['consistency'], chk['ranks_within'], CONSIST_MS,
-                           chk['why'] or '', json.dumps(chk['differences'], sort_keys=True)))
+            c, o = chk['consistency'], chk['order']
+            out.append('    control stage %d (band %s; synthetic random-id prompts; attn-meta on; decode_merge always): counted %s%s, '
+                       'matched %s' % (i, chk['band'], chk['counted'],
+                                       '' if chk['counted'] else ' (%s)' % ','.join(chk['not_counted']), chk['matched']))
+            out.append('      order %s (%d ranks ok; Q_full < Q_split <= B_split + %.1f) %s' % (
+                o['value'], o['ranks_ok'], ORDER_MS, o['why']))
+            out.append('      consistency %s (%d testable ranks, %d within %.1f ms, %d with the control slower; blocks names %s) '
+                       'reasons %s' % (c['value'], c['testable_ranks'], c['ranks_within'], CONSIST_MS,
+                                       c['ranks_control_slower'], c['blocks_names'], c['why']))
+            out.append('      S = Q_split - Q_full, N = B_split - Q_split per rank %s' % json.dumps(chk['differences'], sort_keys=True))
+            out.append('      names %s' % ('allowed' if chk['names_allowed'] else 'blocked by ' + '; '.join(chk['names_blocked_by'])))
     return '\n'.join(out) + '\n'
 
 

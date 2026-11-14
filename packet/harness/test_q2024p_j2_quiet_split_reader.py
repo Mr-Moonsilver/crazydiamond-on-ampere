@@ -8,6 +8,12 @@ sum), the consistency check (0.5 ms on 3 of 4 ranks, reference pooled from --ref
 the attn-meta state. Mutants, each caught: the handler-flags filter dropped, the arm by the stamp without the log lag,
 the control tied by time instead of route generation, the stage value as a sum, the native-in-control stop dropped,
 the consistency bound widened.
+Brief 14 (REVIEW-qsplit3 finding 3): consistency is PASS / FAIL / NOT_TESTABLE with its reasons (NOT_TESTABLE blocks
+names only on a 3-rank excess of the control); "counted" needs a completed stage without an abort (v3) or a drain
+(v2); a pooled cell never mixes cg_mode / bank_sms and N needs one key; the ordering check, the prompt + 4,096 history
+bound, the first-token cache check, attn-meta engagement and the warm; the cross-checks only at 120k on 1, 2, 4 live.
+Mutants, each caught: NOT_TESTABLE folded into FAIL, the abort ignored in counted, the key filter dropped, the
+history slack widened, the order bound dropped, the cache bound dropped.
 """
 import contextlib
 import datetime
@@ -44,13 +50,13 @@ class Rec:
         self.lines, self.seq, self.samples, self.e = [], {}, {}, 1000
 
     def row(self, rank, wall, D, *, scope='outside', rows=1, bank='split', gen=5, flags=0, calls=1, history=120000,
-            device=True, nt=None, sessions_s=None, seq=None):
+            device=True, nt=None, sessions_s=None, seq=None, cg=None, sms=None):
         """One session with one d row on ``rank``; returns the row's (rank, seq)."""
         if seq is None:
             self.e += 1
             seq = self.e
         meta = dict(META, actual_rows=rows, num_reqs=rows, num_tokens=nt or qs.PADDED[rows], bank=bank,
-                    bank_sms=24 if bank == 'split' else 82, cg_mode='full' if bank == 'split' else 'FULL',
+                    bank_sms=sms or (24 if bank == 'split' else 82), cg_mode=cg or ('full' if bank == 'split' else 'FULL'),
                     route_generation=gen, handler_flags=flags, forward_calls=calls,
                     history_tokens=[history] * rows if history else [])
         d = [seq, meta, 0.0, D, int(D * 1e6) if device else None, 3000000, 100000, 0, 3, int(D * 1000) + 5]
@@ -84,15 +90,21 @@ class Rec:
         return root
 
 
-CONTROL = dict(schema='quiet-split-box/2', verdict='PASS', native_admitted_before=4, native_admitted_after=4,
-               attn_meta=dict(selected=True),
-               stages=[dict(live=4, prompt_tokens=120000, split_generation=20, window=dict(wall_s=25), merge_steps=900,
-                            reasons=[], abort='disconnect'),
-                       dict(live=1, prompt_tokens=120000, split_generation=22, window=dict(wall_s=25), merge_steps=900,
-                            reasons=[], abort='disconnect')])
+def stage(live, gen, prompt=120000, **over):
+    s = dict(live=live, prompt_tokens=prompt, split_generation=gen, window=dict(wall_s=25), merge_steps=900,
+             completed=True, drain='disconnect', drain_s=0.4, history_tokens=[prompt + 2, prompt + 1500],
+             pre_hold_tokens_max=3, streams=[dict(first_token_s=0.8) for _ in range(live)])
+    s.update(over)
+    return s
 
 
-def standard(q_full=8.0, c_split=11.4, busy=14.3, q_split=11.2, n_busy=60, n_ctl=14, rec=None, peers=None):
+CONTROL = dict(schema='quiet-split-box/3', verdict='PASS', native_admitted_before=4, native_admitted_after=4,
+               attn_meta=dict(selected=True, order_ok=True, batched_delta={str(r): 40 for r in range(4)}),
+               warm=[dict(index=i, status=200, prompt_tokens=120000) for i in range(8)],
+               stages=[stage(4, 20), stage(1, 22)])
+
+
+def standard(q_full=8.0, c_split=11.4, busy=14.3, q_split=11.2, n_busy=60, n_ctl=14, rec=None, peers=None, n_c=6):
     """4 live: Q_full / C_split / B_split in the n3 arm on every rank, the control's stage 0 (4 live) after the sp arm."""
     rec = rec or Rec()
     peers = peers or {}
@@ -100,7 +112,7 @@ def standard(q_full=8.0, c_split=11.4, busy=14.3, q_split=11.2, n_busy=60, n_ctl
         bump = peers.get(rank, 0.0)
         for i in range(10):
             rec.row(rank, W0 + 10 + i, q_full + bump, bank='full', rows=4)
-        for i in range(6):
+        for i in range(n_c):
             rec.row(rank, W0 + 30 + i, c_split + bump, rows=4)
         for i in range(n_busy):
             rec.row(rank, W0 + 50 + i, busy + bump, scope='native', rows=4)
@@ -195,27 +207,147 @@ class Refusals(unittest.TestCase):
 class Consistency(unittest.TestCase):
     def test_pass_within_half_a_ms_on_three_ranks(self):
         doc = read(standard(c_split=11.4, q_split=11.2).write(control=CONTROL))
-        self.assertEqual(live(doc, 4)['control_stages'][0]['consistency'], 'PASS')
+        chk = live(doc, 4)['control_stages'][0]
+        self.assertEqual((chk['consistency']['value'], chk['order']['value'], chk['names_allowed']), ('PASS', 'OK', True))
 
     def test_fail_beyond_half_a_ms(self):
         doc = read(standard(c_split=11.4, q_split=10.7).write(control=CONTROL))
         chk = live(doc, 4)['control_stages'][0]
-        self.assertEqual((chk['consistency'], chk['ranks_within']), ('FAIL', 0))
+        self.assertEqual((chk['consistency']['value'], chk['consistency']['ranks_within']), ('FAIL', 0))
+        self.assertTrue(chk['consistency']['blocks_names'])
+        self.assertFalse(chk['names_allowed'])
 
     def test_reference_rows_pooled_and_minimum_counts(self):
         thin = standard()
         root = thin.write(control=CONTROL)
         doc = read(root)
-        self.assertEqual(live(doc, 1)['control_stages'][1]['consistency'], 'FAIL')      # no C_split at 1 live
+        thin1 = live(doc, 1)['control_stages'][1]['consistency']                         # no C_split at 1 live
+        self.assertEqual((thin1['value'], thin1['blocks_names']), ('NOT_TESTABLE', False))
+        self.assertIn('rank0:reference-n0<3', thin1['why'])
         ref = Rec()
         for rank in range(4):
             for i in range(5):
                 ref.row(rank, W0 + 20 + i, 9.2, rows=1)
         doc = read(root, references=[str(ref.write())])
         chk = live(doc, 1)['control_stages'][1]
-        self.assertEqual((chk['consistency'], live(doc, 1)['ranks'][0]['C_split']['n']), ('PASS', 5))
+        self.assertEqual((chk['consistency']['value'], live(doc, 1)['ranks'][0]['C_split']['n']), ('PASS', 5))
         few = read(standard(n_ctl=11).write(control=CONTROL))
-        self.assertIn('rank0:control-n11<12', live(few, 4)['control_stages'][0]['why'])
+        self.assertIn('rank0:control-n11<12', live(few, 4)['control_stages'][0]['consistency']['why'])
+
+
+class Labels(unittest.TestCase):
+    """Brief 14: the three labels the review names, and the stage lines."""
+
+    def test_not_testable_is_not_fail_and_prints_its_reasons(self):
+        doc = read(standard(n_c=3).write(control=CONTROL))
+        c = live(doc, 4)['control_stages'][0]['consistency']
+        self.assertEqual((c['value'], c['blocks_names'], c['testable_ranks']), ('NOT_TESTABLE', False, 0))
+        self.assertTrue(any(w.startswith('rank0:reference-n3<5') for w in c['why']), c['why'])
+        self.assertTrue(live(doc, 4)['control_stages'][0]['names_allowed'])
+
+    def test_not_testable_blocks_on_a_three_rank_excess(self):
+        doc = read(standard(n_c=3, q_split=12.2).write(control=CONTROL))
+        chk = live(doc, 4)['control_stages'][0]
+        self.assertEqual((chk['consistency']['value'], chk['consistency']['blocks_names']), ('NOT_TESTABLE', True))
+        self.assertEqual(chk['consistency']['ranks_control_slower'], 4)
+        self.assertFalse(chk['names_allowed'])
+        thin = read(standard(n_c=2, q_split=12.2).write(control=CONTROL))       # n < 3: names allowed
+        self.assertFalse(live(thin, 4)['control_stages'][0]['consistency']['blocks_names'])
+
+    def test_counted_needs_a_completed_stage(self):
+        failed = dict(CONTROL, verdict='PARTIAL', stages=[
+            stage(4, 20, completed=False, abort=dict(reason='decoder-stalled-in-hold', phase='hold')),
+            stage(1, 22, abort=dict(reason='odd', phase='hold'))])          # completed but an abort: never counted
+        doc = read(standard().write(control=failed))
+        s0, s1 = doc['control']['stages']
+        self.assertEqual((s0['counted'], s0['not_counted'], s0['abort']), (False, ['not-completed', 'abort'],
+                                                                            'decoder-stalled-in-hold'))
+        self.assertEqual((s1['counted'], s1['not_counted']), (False, ['abort']))
+        self.assertIn('not counted: not-completed,abort', live(doc, 4)['control_stages'][0]['names_blocked_by'])
+        nodrain = dict(CONTROL, stages=[stage(4, 20, drain=None), stage(1, 22)])
+        self.assertEqual(read(standard().write(control=nodrain))['control']['stages'][0]['not_counted'], ['no-drain'])
+
+    def test_counted_for_a_v2_record(self):
+        """cxqsplit3's schema: its abort field is the drain mode; a failed stage has none."""
+        v2 = dict(CONTROL, schema='quiet-split-box/2',
+                  stages=[dict(stage(4, 20), abort='max_tokens'), dict(stage(1, 22), abort=None)])
+        for s in v2['stages']:
+            s.pop('completed')
+            s.pop('drain')
+        doc = read(standard().write(control=v2))
+        s0, s1 = doc['control']['stages']
+        self.assertEqual((s0['counted'], s0['drain'], s1['counted'], s1['not_counted']), (True, 'max_tokens', False, ['no-drain']))
+
+    def test_cells_never_pool_two_graph_keys(self):
+        rec = standard()
+        for i in range(3):
+            rec.row(0, W0 + 1250 + i, 10.0, rows=4, gen=20, cg='piecewise')
+        doc = read(rec.write(control=CONTROL))
+        q = live(doc, 4)['ranks'][0]['Q_split'][0]
+        self.assertEqual((q['p50'], q['mixed']), (None, {'full/24': 14, 'piecewise/24': 3}))
+        chk = live(doc, 4)['control_stages'][0]
+        self.assertIn('rank0:control-mixed', chk['consistency']['why'])
+        self.assertIsNone(chk['differences'][0]['N'])
+
+    def test_n_refused_across_keys(self):
+        rec = Rec()
+        standard(rec=rec, n_busy=0)
+        for rank in range(4):
+            for i in range(60):
+                rec.row(rank, W0 + 50 + i, 14.3, scope='native', rows=4, sms=32)
+        doc = read(rec.write(control=CONTROL))
+        d = live(doc, 4)['control_stages'][0]['differences'][0]
+        self.assertIsNone(d['N'])
+        self.assertEqual(d['N_refused'], 'cg_mode/bank_sms differ: Q_split full/24, B_split full/32')
+        self.assertEqual(d['S'], 3.2)
+
+    def test_order_broken_blocks_names(self):
+        doc = read(standard(q_split=7.5, c_split=7.6).write(control=CONTROL))
+        chk = live(doc, 4)['control_stages'][0]
+        self.assertEqual((chk['order']['value'], chk['consistency']['value']), ('BROKEN', 'PASS'))
+        self.assertFalse(chk['names_allowed'])
+        self.assertIn('order BROKEN', chk['names_blocked_by'])
+
+    def test_stage_lines(self):
+        cases = (
+            (dict(history_tokens=[120002, 124097]), 'history'), (dict(pre_hold_tokens_max=601), 'history'),
+            (dict(streams=[dict(first_token_s=0.8)] * 3 + [dict(first_token_s=12.0)]), 'cache'),
+            (dict(streams=[]), 'cache'))
+        for over, line in cases:
+            with self.subTest(over=over):
+                ctl = dict(CONTROL, stages=[stage(4, 20, **over), stage(1, 22)])
+                s0 = read(standard().write(control=ctl))['control']['stages'][0]
+                self.assertFalse(s0['matched'])
+                self.assertTrue(s0['lines'][line].startswith('out'), s0['lines'])
+        edge = dict(CONTROL, stages=[stage(4, 20, history_tokens=[120000, 124096], pre_hold_tokens_max=600,
+                                           streams=[dict(first_token_s=10.0)] * 4), stage(1, 22)])
+        self.assertTrue(read(standard().write(control=edge))['control']['stages'][0]['matched'])
+        noread = dict(CONTROL, attn_meta=dict(selected=True, order_ok=True))
+        s0 = read(standard().write(control=noread))['control']['stages'][0]
+        self.assertEqual(s0['lines']['attn_meta'], 'out (attn-meta selected, engagement not read)')
+        cold = dict(CONTROL, warm=[dict(index=0, status=200, prompt_tokens=120001)])
+        self.assertTrue(read(standard().write(control=cold))['control']['stages'][0]['lines']['warm'].startswith('out'))
+
+    def test_cross_checks_only_at_120k_on_1_2_4(self):
+        rec = standard()
+        for rank in range(4):
+            for i in range(14):
+                rec.row(rank, W0 + 1400 + i, 15.0, rows=6, gen=24)
+                rec.row(rank, W0 + 1500 + i, 10.8, rows=4, gen=26, history=72000)
+        ctl = dict(CONTROL, stages=[stage(4, 20), stage(1, 22), stage(6, 24), stage(4, 26, prompt=72000)])
+        doc = read(rec.write(control=ctl))
+        for live_n, idx in ((6, 2), (4, 3)):
+            chk = live(doc, live_n)['control_stages'][idx]
+            self.assertEqual((chk['order']['value'], chk['consistency']['value']), ('NOT_APPLICABLE', 'NOT_APPLICABLE'))
+            self.assertTrue(chk['names_allowed'], chk['names_blocked_by'])
+
+    def test_text_prints_values_and_reasons(self):
+        doc = read(standard(n_c=3).write(control=CONTROL))
+        text = qs.text(doc)
+        self.assertIn('consistency NOT_TESTABLE', text)
+        self.assertIn('reference-n3<5', text)
+        self.assertIn('synthetic random-id prompts', text)
+        self.assertIn('order OK', text)
 
 
 class Budget(unittest.TestCase):
@@ -295,6 +427,28 @@ class Mutants(unittest.TestCase):
         self.check("        if gen in gens and r['scope'] == 'native':", "        if False:",
                    Refusals('test_native_session_on_a_control_generation_is_a_hard_stop')
                    .test_native_session_on_a_control_generation_is_a_hard_stop)
+
+    def test_not_testable_folded_into_fail(self):
+        self.check("        value = 'NOT_TESTABLE'\n        blocks = excess >= 3\n", "        value = 'FAIL'\n        blocks = True\n",
+                   Labels('test_not_testable_is_not_fail_and_prints_its_reasons').test_not_testable_is_not_fail_and_prints_its_reasons)
+
+    def test_abort_ignored_in_counted(self):
+        self.check("('abort', 'abort' in s)", "('abort', False)",
+                   Labels('test_counted_needs_a_completed_stage').test_counted_needs_a_completed_stage)
+
+    def test_key_filter_dropped(self):
+        self.check("    if len(keys) > 1:\n", "    if False:\n",
+                   Labels('test_cells_never_pool_two_graph_keys').test_cells_never_pool_two_graph_keys)
+
+    def test_history_slack_widened(self):
+        self.check('HISTORY_SLACK = 4096 ', 'HISTORY_SLACK = 1 << 30 ', Labels('test_stage_lines').test_stage_lines)
+
+    def test_order_bound_dropped(self):
+        self.check("        elif full['p50'] < q['p50'] <= busy['p50'] + ORDER_MS:", "        elif True:",
+                   Labels('test_order_broken_blocks_names').test_order_broken_blocks_names)
+
+    def test_cache_bound_dropped(self):
+        self.check('FIRST_TOKEN_S = 10.0 ', 'FIRST_TOKEN_S = 1e9 ', Labels('test_stage_lines').test_stage_lines)
 
     def test_consistency_bound_widened(self):
         self.check('CONSIST_MS = 0.5\n', 'CONSIST_MS = 1.0\n',

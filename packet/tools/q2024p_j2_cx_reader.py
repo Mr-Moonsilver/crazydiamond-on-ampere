@@ -409,7 +409,11 @@ def quiet_split(root):
         views = row.get('streams') or []
         p50 = sorted(v['window_gap_ms_p50'] for v in views if type(v.get('window_gap_ms_p50')) in (int, float))
         top = [v['window_gap_ms_max'] for v in views if type(v.get('window_gap_ms_max')) in (int, float)]
-        stages.append(dict(live=row.get('live'), prompt_tokens=row.get('prompt_tokens'), abort=row.get('abort'),
+        v3 = d.get('schema') == 'quiet-split-box/3'       # brief 14: drain mode in 'drain', 'abort' only on a refused stage
+        stages.append(dict(live=row.get('live'), prompt_tokens=row.get('prompt_tokens'),
+                           completed=row.get('completed') if v3 else None,
+                           drain=row.get('drain') if v3 else row.get('abort'),
+                           abort=(row.get('abort') or {}).get('reason') if v3 else None,
                            wall_s=(row.get('window') or {}).get('wall_s'),
                            tokens_per_s=row.get('aggregate_tokens_per_s'), merge_steps=row.get('merge_steps'),
                            polls=row.get('polls'), gap_ms_p50_median=p50[len(p50) // 2] if p50 else None,

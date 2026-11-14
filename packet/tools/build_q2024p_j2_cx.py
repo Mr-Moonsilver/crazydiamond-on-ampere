@@ -151,7 +151,8 @@ QUIET_SPLIT_EXPORT = ('export QUIET_SPLIT_CONTROL=1  # brief 11 C, v2 brief 13: 
                       '(e3_quiet_split_box), a read\n')
 # The quiet-SPLIT control (v2, brief 13) as a tail READ (never the queue verdict; the core grade is written before it), on
 # a healthy engine inside LAST_TAIL_ENTRY_S, after the typed all-rank FULL entry that takes the manual lease (no auto-arm
-# cycle, no native work). Seven stages (120k prompts at 8, 6, 4, 2, 1 live, then 72k at 4, 1), 25 s each, attn-meta on,
+# cycle, no native work). Seven stages (brief 14: 120k prompts at 4, 1, 2, 6, 8 live, then 72k at 4, 1; a refused stage
+# is recorded and the next one runs), 25 s each, attn-meta on,
 # about 6.5 min nominal; its timeout is the active budget left after the end steps' reserve (360 s = n3j2_gate's
 # END_RESERVE_S) and the kill-after (150 s), at most 900 s, and the step is NOT_RUN under 450 s of it. The control handles
 # SIGTERM (the timeout's TERM): its cleanup restores typed FULL and records the split lease. The tail-engine check,
@@ -166,7 +167,7 @@ QUIET_SPLIT_END_RESERVE_S, QUIET_SPLIT_KILL_AFTER_S, QUIET_SPLIT_MAX_S, QUIET_SP
 QUIET_SPLIT_ANCHOR = ('  for _label in ; do\n'
                       '    alpha_next_arm tail "$_label"\n'
                       '  done\n')
-QUIET_SPLIT_STEP = '''  # brief 13: the quiet-SPLIT control v2 (e3_quiet_split_box): 120k prompts at 8, 6, 4, 2, 1 live, 72k at 4, 1, on the
+QUIET_SPLIT_STEP = '''  # brief 14: the quiet-SPLIT control v3 (e3_quiet_split_box): 120k prompts at 4, 1, 2, 6, 8 live, 72k at 4, 1, on the
   # split route, no native work, decode_merge=always, attn-meta on, 25 s each. A read: never counted. Gated by the export.
   if [[ ${QUIET_SPLIT_CONTROL:-0} == 1 ]]; then
     n=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null) || n=unknown
@@ -189,7 +190,7 @@ QUIET_SPLIT_STEP = '''  # brief 13: the quiet-SPLIT control v2 (e3_quiet_split_b
           --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --hold-s 25 --max-tokens 4096 \\
           --decode-merge always --control-timeout-s 60 --warm-timeout-s 420 --drain-timeout-s 150 \\
           --out "$Q/quiet-split.json" > "$Q/quiet-split.log" 2>&1
-        read_step quiet-split "$?" "quiet-SPLIT control v2: 120k at 8,6,4,2,1 live, 72k at 4,1, attn-meta on, no native work, 25 s each (timeout ${_qs_to}s)"
+        read_step quiet-split "$?" "quiet-SPLIT control v3: 120k at 4,1,2,6,8 live, 72k at 4,1, attn-meta on, no native work, 25 s each, refused stages recorded (timeout ${_qs_to}s)"
       fi
     fi
   fi

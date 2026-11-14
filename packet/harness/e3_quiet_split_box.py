@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Quiet-SPLIT control v2 (brief 13 item 2): live decoders on the split route with no native work, at the replay arms'
+"""Quiet-SPLIT control v3 (brief 13 item 2, brief 14 item 1): live decoders on the split route with no native work, at the replay arms'
 histories, with attn-meta selected as in the n3 arms.
 
 What it measures: decode alone on the SPLIT route with the stage-local selection decode_merge=always (the merge active
 on every step whatever the policy phase, stage_overlap._decode_merge_wanted) and attn_meta_select {on} (the n3 arms'
 selection, compose5_arms.ATTN), on the declared PLAN of (prompt tokens, live decoders) stages, HOLD_S s each:
-120,000-token histories at 8, 6, 4, 2 and 1 live, then 72,000 at 4 and 1 (the replay arms' busy split forwards have max
-histories 62k-134k; REVIEW-qsplit2 finding 2). Nothing native runs: the manual lease (taken by the queue's typed FULL
+120,000-token histories at 4, 1, 2, 6 and 8 live (the three-number cells first, REVIEW-qsplit3 finding 1), then 72,000
+at 4 and 1 (the replay arms' busy split forwards have max histories 62k-134k; REVIEW-qsplit2 finding 2). Nothing native runs: the manual lease (taken by the queue's typed FULL
 entry, held as after the sp arm) keeps the auto-arm gate closed ('gate-manual-owned'), no native admission is armed,
 and every poll proves it.
 
@@ -25,10 +25,19 @@ The flow per stage, as e3_native_w1 and e3_native41_unarmed_box do it:
   3. HOLD_S s of status polls, each one a runner guard (POLL_GUARDS); at the end every decoder advanced inside the
      window and the engine's merge_steps grew;
   4. pause, leave_full, resume (route full proved); the streams closed (socket shutdown);
-  5. the disconnect check: scheduler_requests 0 within ABORT_BOUND_S is abort 'disconnect'. Otherwise the fallback:
+  5. the disconnect check: scheduler_requests 0 within ABORT_BOUND_S is drain 'disconnect'. Otherwise the fallback:
      the requests end by themselves at MAX_TOKENS on the FULL route (the stamp samples nothing there: the manual lease is
-     held and the route is no longer the manual split); scheduler_requests 0 within drain_timeout_s is abort
-     'max_tokens', and the next stage runs; never 0: 'requests-not-drained'. Each stage records its abort and drain_s.
+     held and the route is no longer the manual split); scheduler_requests 0 within drain_timeout_s is drain
+     'max_tokens', and the next stage runs; never 0: 'requests-not-drained'. Each stage records drain and drain_s and
+     completed True.
+A refused stage (a guard or an engine refusal inside it) does not end the control (brief 14): the stage records
+completed False and abort {reason, phase}; the FULL return is proved (restore_full when the route is not idle FULL,
+then route full, no admission, auto-arm idle, the manual lease held, control_route None: else
+'stage-full-return-unproved' / 'stage-lease-unproved'), its requests drained, and the next stage runs. These still end
+the control (STOP_POLL, STOP_CAUSES): native work or the lease seen in a poll (native-admitted, native-chunk-open,
+admission-armed, auto-arm-active, manual-lease-lost), SIGTERM, requests-not-drained, a reader that did not close, a
+FULL return or lease not proved. Verdict: PASS when every stage completed, PARTIAL when some did, else INCONCLUSIVE;
+a stage's "abort" field exists only on a stage that did not complete.
 Before the stages, one pause while idle FULL: the stage-local selection (local, overlap, defer_bind, lazy_recv as the
 n3 selection, decode_merge=always) and attn_meta_select {on} through the reviewed worker adapter (every rank's
 after.selected True, order ok); then the warm. After the stages, one pause while idle FULL: attn_meta_read (engaged:
@@ -144,11 +153,11 @@ def rank_rows(reply, worker_action, epoch):
     return out
 
 
-SCHEMA = 'quiet-split-box/2'
+SCHEMA = 'quiet-split-box/3'
 STAGE_CONTROL = 'native_stage_local'
 SPLIT_PHASE = 'split-w1-decode'
 HIGH, LOW = 120000, 72000
-PLAN = ((HIGH, 8), (HIGH, 6), (HIGH, 4), (HIGH, 2), (HIGH, 1), (LOW, 4), (LOW, 1))
+PLAN = ((HIGH, 4), (HIGH, 1), (HIGH, 2), (HIGH, 6), (HIGH, 8), (LOW, 4), (LOW, 1))      # brief 14: 4, 1, 2 live first
 MAX_TOKENS = 4096                 # hold + open at the fastest step (~10 ms) is ~2,800 tokens; an unaborted stream ends
                                   # by itself within ~(4096 - 1,500) x 20 ms ~ 50 s at 8 live (the fallback)
 DECLARED = dict(plan=PLAN, hold_min_s=20.0, hold_max_s=30.0, decode_merge='always', lazy_recv=True, attn_meta=True,
@@ -163,6 +172,9 @@ POLL_GUARDS = ('route-left-split', 'route-generation-changed', 'transition-or-re
                'scheduler-requests-not-live', 'native-admitted', 'native-chunk-open', 'auto-arm-active',
                'manual-lease-lost', 'decode-merge-not-always')
 SELECTION_FIELDS = ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge')
+# brief 14: a stage refused for any other cause is recorded and the next stage runs; these end the control
+STOP_POLL = ('native-admitted', 'native-chunk-open', 'admission-armed', 'auto-arm-active', 'manual-lease-lost')
+STOP_CAUSES = ('requests-not-drained', 'stream-reader-not-closed', 'stage-full-return-unproved', 'stage-lease-unproved')
 
 
 class GuardError(ValueError):
@@ -240,6 +252,13 @@ def poll_reasons(status, *, generation, live, admitted):
     if type(step) is not dict or step.get('decode_merge') != DECLARED['decode_merge']:
         out.append('decode-merge-not-always')
     return out
+
+
+def stops_control(cause):
+    """True for a stage cause after which no further stage may run (native work or the lease, the drain, a reader)."""
+    if cause.startswith('terminated:') or cause in STOP_CAUSES:
+        return True
+    return cause.startswith('poll:') and any(r in STOP_POLL for r in cause[len('poll:'):].split(','))
 
 
 def merge_steps(status):
@@ -437,7 +456,7 @@ def wait_requests(client, want, deadline, clock, sleep):
 
 
 def drain(client, a, clock, sleep):
-    """After the close: ('disconnect' | 'max_tokens', seconds). The disconnect check, then the defined fallback."""
+    """After the close: drain ('disconnect' | 'max_tokens', seconds). The disconnect check, then the fallback."""
     t0 = clock()
     while True:
         status = client.call('status')
@@ -519,8 +538,32 @@ def run_stage(client, a, prompt_tokens, live, record, *, starter, clock, sleep, 
         tokens = sum(v['window_chunks'] for v in row['streams'])
         wall = (row.get('window') or {}).get('wall_s')
         row['aggregate_tokens_per_s'] = tokens / wall if wall else None
-    row['abort'], row['drain_s'] = drain(client, a, clock, sleep)
+    row['drain'], row['drain_s'] = drain(client, a, clock, sleep)
     if row['open_after_close']:
+        raise GuardError('stream-reader-not-closed')
+    row['completed'] = True
+    return row
+
+
+def recover_stage(client, a, row, cause, *, clock, sleep):
+    """A refused stage: recorded (completed False, abort), FULL and the lease proved, its requests drained; raises a
+    STOP_CAUSES GuardError when that is not proved (the control then ends)."""
+    row['completed'] = False
+    row['abort'] = dict(reason=cause, phase='hold' if 'split_generation' in row else 'open')
+    status = client.call('status')
+    if status.get('route') == 'full' and status.get('paused') is False and status.get('transition_pending') is False:
+        row['recovery'] = dict(attempted=False, reason='idle FULL already')
+    else:
+        row['recovery'] = restore_full(client)
+        if row['recovery'].get('full_restored') is not True:
+            raise GuardError('stage-full-return-unproved')
+        status = client.call('status')
+    arm = status.get('auto_arm') if type(status.get('auto_arm')) is dict else {}
+    if (status.get('route') != 'full' or status.get('admission_intent') is not None or arm.get('active') is not False
+            or arm.get('manual_owned') is not True or status.get('control_route') is not None):
+        raise GuardError('stage-lease-unproved')
+    row['drain'], row['drain_s'] = drain(client, a, clock, sleep)
+    if row.get('open_after_close'):
         raise GuardError('stream-reader-not-closed')
     return row
 
@@ -599,9 +642,19 @@ def run(a, *, client=None, starter=None, warmer=None, clock=time.monotonic, slee
         if record['attn_meta']['order_ok'] is not True:
             raise GuardError('attn-meta-order-not-ok')
         record['warm'] = warm(a.url, a.model, range(max(n for _, n in PLAN)), a.warm_timeout_s, warmer)
-        for prompt_tokens, live in DECLARED['plan']:
-            run_stage(client, a, prompt_tokens, live, record, starter=starter, clock=clock, sleep=sleep, now_ns=now_ns,
-                      admitted=admitted)
+        for index, (prompt_tokens, live) in enumerate(DECLARED['plan']):
+            try:
+                run_stage(client, a, prompt_tokens, live, record, starter=starter, clock=clock, sleep=sleep,
+                          now_ns=now_ns, admitted=admitted)
+            except ValueError as exc:            # GuardError, Terminated and the client's engine refusals
+                cause = str(exc)
+                if len(record['stages']) <= index:           # raised before the stage row existed (a TERM)
+                    raise
+                row = record['stages'][index]
+                if stops_control(cause):
+                    row.update(completed=False, abort=dict(reason=cause, phase='stop'))
+                    raise
+                recover_stage(client, a, row, cause, clock=clock, sleep=sleep)
         status = client.call('status')
         record['native_admitted_after'] = (status.get('native_admission') or {}).get('admitted')
         if record['native_admitted_after'] != admitted:
@@ -612,7 +665,14 @@ def run(a, *, client=None, starter=None, warmer=None, clock=time.monotonic, slee
                                                   for r in end_rows.values())
         if any(v is None or v <= 0 for v in record['attn_meta']['batched_delta'].values()):
             raise GuardError('attn-meta-not-engaged')
-        record.update(verdict='PASS', failure_class=None)
+        refused = [(i, (s.get('abort') or {}).get('reason')) for i, s in enumerate(record['stages'])
+                   if s.get('completed') is not True]
+        if not refused:
+            record.update(verdict='PASS', failure_class=None)
+        else:
+            record['cause'] = 'stages-refused:' + ';'.join('%d=%s' % x for x in refused)
+            if len(refused) < len(record['stages']):
+                record['verdict'] = 'PARTIAL'
     except Exception as exc:  # noqa: BLE001 - recorded; the verdict stays INCONCLUSIVE
         record['cause'] = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
     finally:
