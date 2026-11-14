@@ -83,7 +83,8 @@ DEFAULTS = {
     'FLASH_S5_INGRESS_VERIFY_ASYNC': None, 'FLASH_S5_APPEND_NO_BLOCK_STOP': '0', 'FLASH_S5_DECODE_GROUPS': 'chunk',
     'FLASH_S5_DECODE_LIVENESS': '0', 'FLASH_S5_CONTROL_INWAIT': '0', 'FLASH_S5_CONTROL_O3_INWAIT': '0',
     'FLASH_S5_DECODE_SAMPLE_FAST': '0',
-    'FLASH_S5_DECODE_ANATOMY': '0', 'FLASH_S5_DECODE_TIMELINE': '0', 'REPLAY_REPLY_TEXT': 'model'}
+    'FLASH_S5_DECODE_ANATOMY': '0', 'FLASH_S5_DECODE_TIMELINE': '0', 'REPLAY_REPLY_TEXT': 'model',
+    'QUIET_SPLIT_CONTROL': '0'}
 NP_KEYS = (('batch', 'FLASH_S5_SMALL_PIECE_BATCH'), ('settle', 'FLASH_S5_YIELD_REENTRY_SETTLE'),
            ('y1', 'FLASH_S5_YIELD_NO_APPEND_OWNER'), ('y2', 'FLASH_S5_YIELD_WINDOW'),
            ('ingress', 'FLASH_S5_INGRESS_INCREMENTAL'))
@@ -392,10 +393,32 @@ def compose_notes(root, label, flags, dview):
     return got, notes
 
 
+def quiet_split(root):
+    """Brief 11 C: the tail's quiet-SPLIT control (quiet-split.json), per stage; None when the packet has none."""
+    path = Path(root) / 'quiet-split.json'
+    if not path.is_file():
+        return None
+    try:
+        d = json.loads(path.read_text())
+    except ValueError:
+        return dict(verdict='UNREADABLE', cause=None, stages=[])
+    stages = []
+    for row in d.get('stages') or []:
+        views = row.get('streams') or []
+        p50 = sorted(v['window_gap_ms_p50'] for v in views if type(v.get('window_gap_ms_p50')) in (int, float))
+        top = [v['window_gap_ms_max'] for v in views if type(v.get('window_gap_ms_max')) in (int, float)]
+        stages.append(dict(live=row.get('live'), wall_s=(row.get('window') or {}).get('wall_s'),
+                           tokens_per_s=row.get('aggregate_tokens_per_s'), merge_steps=row.get('merge_steps'),
+                           polls=row.get('polls'), gap_ms_p50_median=p50[len(p50) // 2] if p50 else None,
+                           gap_ms_max=max(top) if top else None))
+    return dict(verdict=d.get('verdict'), cause=d.get('cause'), stages=stages)
+
+
 def collect(root, label, flags, cost_ratio=WORK_COST_RATIO):
     root = Path(root)
     result = np_view(root, label, flags)
     result['work'] = work_of(root, cost_ratio)
+    result['quiet_split'] = quiet_split(root)
     dview = dmp.collect(root, label)
     result['decode'] = {name: {k: arm.get(k) for k in ('completed_turns', 'seed', 'merge', 'step', 'liveness_status',
                                                        'liveness_guard', 'liveness_lines')}
@@ -452,6 +475,13 @@ def collect(root, label, flags, cost_ratio=WORK_COST_RATIO):
             result['compose_notes'].append('reply-text-not-seeded-%s-%s' % (label, name))
         elif arm is not None and not seeded and mode is not None:
             result['compose_notes'].append('reply-text-%s-unexpected-%s-%s' % (mode, label, name))
+    qs = result['quiet_split']
+    if flags.get('QUIET_SPLIT_CONTROL') == '1' and qs is None:
+        result['compose_notes'].append('quiet-split-missing-%s' % label)
+    elif qs is not None and flags.get('QUIET_SPLIT_CONTROL') != '1':
+        result['compose_notes'].append('quiet-split-unexpected-%s' % label)
+    elif qs is not None and qs['verdict'] != 'PASS':
+        result['compose_notes'].append('quiet-split-%s-%s' % (qs['verdict'], label))
     for name, w in result['work'].items():
         if w is not None and done.get(name) is not None and w['turns_completed'] != done[name]:
             result['compose_notes'].append('work-completed-differs-%s-%s' % (label, name))
@@ -674,6 +704,10 @@ def d_pair(off, on):
     return out
 
 
+def _r(value):
+    return round(value, 2) if type(value) is float else value
+
+
 def render(results, full=False, turn_work=None):
     lines = [np.render(results, full=full)]
     for r in results:
@@ -703,6 +737,14 @@ def render(results, full=False, turn_work=None):
                          'frac=%.3f errors=%d' % (name, w['seed'], w['turns_completed'], len(w['open']), w['open_rows'],
                                                   w['open_rows_W'], w['rows_W'], w['out_W'], w['work_W'],
                                                   w['frac_turns'], w['errors']))
+        qs = r.get('quiet_split')
+        if qs is not None:
+            lines.append('  quiet-split %s%s (decode only on SPLIT, no native work, decode_merge=always)' % (
+                qs['verdict'], '' if not qs['cause'] else ' cause=' + str(qs['cause'])))
+            for st in qs['stages']:
+                lines.append('    live=%s wall_s=%s tokens/s=%s gap_ms p50(median over streams)=%s max=%s merge_steps=%s '
+                             'polls=%s' % (st['live'], _r(st['wall_s']), _r(st['tokens_per_s']), _r(st['gap_ms_p50_median']),
+                                           _r(st['gap_ms_max']), st['merge_steps'], st['polls']))
         if r['compose_notes']:
             lines.append('  NOTES %s' % np.fmt(sorted(set(r['compose_notes']))))
     c = cohort_line(results, turn_work)

@@ -294,6 +294,11 @@ class Queues(unittest.TestCase):
                 self.assertIn(cx.dmp.DRAFT_ANCHOR + 'export FLASH_S5_DECODE_GROUPS=%s ' % flags['FLASH_S5_DECODE_GROUPS'], text)
                 self.assertIn('[[ $ENGINE_CRASHED != 0 ]]', text)
                 self.assertNotIn(cx.dmp.ARM_GATE, text)
+                # brief 11 C: the quiet-SPLIT tail read exactly when the flag is on
+                quiet = flags.get('QUIET_SPLIT_CONTROL') == '1'
+                self.assertEqual(text.count(cx.QUIET_SPLIT_STEP), int(quiet), rel)
+                self.assertEqual(text.count(cx.QUIET_SPLIT_EXPORT), int(quiet), rel)
+                self.assertEqual(text.count('e3_quiet_split_box'), 2 * int(quiet), rel)
         self.assertEqual(drafts, 1)
         self.assertTrue(any(name in t for t in texts.values()))
         # lever A x Y1 precondition: every turn lever A fuses (at most its MAX_NEW rows past the turn start) has at most
@@ -409,6 +414,80 @@ class Queues(unittest.TestCase):
             self.assertEqual(seeded[rel].replace(cx.REPLY_TEXT_EXPORT, ''), plain[rel])
             head = seeded[rel].partition(cx.REPLY_TEXT_EXPORT)[0]
             self.assertEqual(head.partition(cx.dmp.DRAFT_ANCHOR)[2], cx.DRAFT_EXPORT % 'chunk')   # nothing runs between
+
+    def test_quiet_split_option(self):
+        """Brief 11 C: QUIET_SPLIT_CONTROL=1 exports the gate once after the decode-group export and puts the quiet-SPLIT
+        step once in the tail, after the (empty) tail-arm loop and before the tail-engine check, instruments-end and
+        end-full-idle (which stay counted); a read_step, never record; 0 (the default) leaves every queue text as it was.
+        A settings line without auto-arm, decode merge, lazy receive or the deferred bind is refused at render time."""
+        self.assertEqual(cx.parse_flags([])['QUIET_SPLIT_CONTROL'], '0')
+        with self.assertRaises(SystemExit):
+            cx.parse_flags(['QUIET_SPLIT_CONTROL=on'])
+        self.assertIn('QUIET_SPLIT_CONTROL', cx.HARNESS_FLAGS)
+        self.assertNotIn('quiet_split_control', cx.EXTRA)
+        self.assertEqual(reader.DEFAULTS['QUIET_SPLIT_CONTROL'], '0')
+        self.assertIn('test_quiet_split_box', cx.SUITES)
+        step = cx.QUIET_SPLIT_STEP
+        self.assertNotIn('record ', step.replace('read_step', ''))
+        self.assertIn('--stages 8,4,1 --hold-s 25', step)
+        self.assertIn('--decode-merge always', step)
+        self.assertIn('(( SECONDS > LAST_TAIL_ENTRY_S ))', step)
+        self.assertIn('[[ $ENGINE_CRASHED != 0 ]]', step)
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        saved = dict(cx.CONFIG)
+        try:
+            cx.configure(cx.parse_flags([]), 'zq')
+            plain = cx.queues('b1')
+            cx.configure(cx.parse_flags(['QUIET_SPLIT_CONTROL=1']), 'zq')
+            quiet = cx.queues('b1')
+            needs = cx.QUIET_SPLIT_NEEDS
+            cx.QUIET_SPLIT_NEEDS = needs + ('FLASH_S5_NOT_IN_THE_PARENT=1 ',)
+            try:
+                with self.assertRaises(AssertionError):
+                    cx.queues('b1')
+            finally:
+                cx.QUIET_SPLIT_NEEDS = needs
+        finally:
+            cx.CONFIG.update(saved)
+        self.assertFalse(any('QUIET_SPLIT' in t or 'e3_quiet_split_box' in t for t in plain.values()))
+        for rel in plain:
+            if not rel.endswith('.draft.sh'):
+                self.assertEqual(plain[rel], quiet[rel], rel)
+                continue
+            text = quiet[rel]
+            self.assertEqual(text.replace(cx.QUIET_SPLIT_EXPORT, '').replace(cx.QUIET_SPLIT_STEP, ''), plain[rel])
+            at = text.index(cx.QUIET_SPLIT_STEP)
+            self.assertEqual(text.index(cx.QUIET_SPLIT_ANCHOR) + len(cx.QUIET_SPLIT_ANCHOR), at)
+            after = text[at:]
+            order = [after.index(k) for k in ('record tail-engine', 'record instruments-end', 'record end-full-idle')]
+            self.assertEqual(order, sorted(order))
+            self.assertLess(text.index('record compose5 '), at)            # the core grade is written before it
+            self.assertLess(text.index(cx.QUIET_SPLIT_EXPORT), text.index('python3'))
+            import subprocess
+            import tempfile
+            with tempfile.NamedTemporaryFile('w', suffix='.sh') as f:
+                f.write(text)
+                f.flush()
+                self.assertEqual(subprocess.run(['bash', '-n', f.name]).returncode, 0)
+
+    def test_quiet_split_reader(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.assertIsNone(reader.quiet_split(root))
+            rec = dict(verdict='PASS', stages=[dict(live=8, window=dict(wall_s=25.1), aggregate_tokens_per_s=400.0,
+                                                    merge_steps=900, polls=51,
+                                                    streams=[dict(window_gap_ms_p50=20.0, window_gap_ms_max=55.0),
+                                                             dict(window_gap_ms_p50=22.0, window_gap_ms_max=80.0)])])
+            (root / 'quiet-split.json').write_text(json.dumps(rec))
+            qs = reader.quiet_split(root)
+            self.assertEqual(qs['stages'][0]['gap_ms_max'], 80.0)
+            self.assertEqual(qs['stages'][0]['gap_ms_p50_median'], 22.0)
+            self.assertEqual(qs['verdict'], 'PASS')
+            (root / 'quiet-split.json').write_text('{')
+            self.assertEqual(reader.quiet_split(root)['verdict'], 'UNREADABLE')
 
     def test_decode_timeline_flag_in_the_queues(self):
         """The timeline stamp rides the settings line and the asserts; its module is a new, bound overlay file and its suite

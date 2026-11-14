@@ -87,11 +87,47 @@ FLAGS = (
     ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
     ('FLASH_S5_DECODE_TIMELINE', 'decode_timeline', ('0', '1'), '0'),         # log-only stamp (decode_timeline, 13 Nov)
     ('REPLAY_REPLY_TEXT', 'replay_reply_text', ('model', 'seeded'), 'model'),  # harness only: compose4_replay (brief 11)
+    ('QUIET_SPLIT_CONTROL', 'quiet_split_control', ('0', '1'), '0'),     # harness only: the tail read (brief 11 C)
 )
-# harness flags: not on the engine's settings line and not in its env asserts; the draft exports them (seeded only)
-HARNESS_FLAGS = ('REPLAY_REPLY_TEXT',)
+# harness flags: not on the engine's settings line and not in its env asserts; the draft exports them (when not default)
+HARNESS_FLAGS = ('REPLAY_REPLY_TEXT', 'QUIET_SPLIT_CONTROL')
 REPLY_TEXT_EXPORT = ('export REPLAY_REPLY_TEXT=seeded  # brief 11 B.1: compose4_replay puts a seeded synthetic reply '
                      'text in the history (every python started below)\n')
+QUIET_SPLIT_EXPORT = ('export QUIET_SPLIT_CONTROL=1  # brief 11 C: the tail runs the quiet-SPLIT control '
+                      '(e3_quiet_split_box), a read\n')
+# brief 11 C: the quiet-SPLIT control as a tail READ (never the queue verdict; the core grade is written before it), on a
+# healthy engine inside LAST_TAIL_ENTRY_S (the tail arm's reserve, 1.5 x 519 s, holds it: about 3 x 35 s), after the
+# typed all-rank FULL entry that takes the manual lease (no auto-arm cycle, no native work). The tail-engine check,
+# instruments-end and end-full-idle follow it unchanged and are counted, so a control that leaves the engine off FULL
+# or changed its rank processes still fails the packet.
+QUIET_SPLIT_ANCHOR = ('  for _label in ; do\n'
+                      '    alpha_next_arm tail "$_label"\n'
+                      '  done\n')
+QUIET_SPLIT_STEP = '''  # brief 11 C: the quiet-SPLIT control (e3_quiet_split_box): 8, 4 and 1 live decoders on the split route, no native
+  # work, decode_merge=always, 25 s each. A read: never counted. Gated by the export above.
+  if [[ ${QUIET_SPLIT_CONTROL:-0} == 1 ]]; then
+    n=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null) || n=unknown
+    if (( SECONDS > LAST_TAIL_ENTRY_S )); then
+      read_step quiet-split 2 "NOT_RUN: box budget, elapsed ${SECONDS}s > ${LAST_TAIL_ENTRY_S}s"
+    elif [[ $n != "$N0" ]] || [[ $ENGINE_CRASHED != 0 ]] || host_crash_detected || ! health_ok; then
+      read_step quiet-split 2 'NOT_RUN: engine crashed, unhealthy or auto-restarted; no restart attempted'
+    else
+      engine_watched entry-quiet-split timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
+        --control-timeout-s 60 --timeout-s "$IDLE_TIMEOUT_S" --out "$Q/entry-quiet-split.json" > "$Q/entry-quiet-split.log" 2>&1
+      _qs_rc=$?; read_step entry-quiet-split "$_qs_rc" 'typed all-rank FULL, resumed, idle, workers empty; lease taken'
+      if [[ $_qs_rc == 0 ]]; then
+        engine_watched quiet-split timeout --signal=TERM --kill-after=30s 360s python3 "$H/e3_quiet_split_box.py" \
+          --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --stages 8,4,1 --hold-s 25 \
+          --decode-merge always --control-timeout-s 60 --out "$Q/quiet-split.json" > "$Q/quiet-split.log" 2>&1
+        read_step quiet-split "$?" 'quiet-SPLIT control: 8, 4, 1 live decoders on split, no native work, decode_merge=always, 25 s each'
+      else
+        read_step quiet-split 2 'NOT_RUN: quiet-split entry not a typed idle FULL'
+      fi
+    fi
+  fi
+'''
+QUIET_SPLIT_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_DECODE_MERGE=1 ', 'FLASH_S5_LAZY_RECV=1 ',
+                     'FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 ')
 EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
          'decode_sample_fast', 'decode_anatomy', 'decode_timeline')                                                     # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
@@ -151,7 +187,7 @@ NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
                       'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline',
-                      'test_replay_reply_text')
+                      'test_replay_reply_text', 'test_quiet_split_box')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -268,6 +304,9 @@ def queues(variant):
             if v['control_o3_inwait'] == '1':   # s5_startup refuses the engine without them; refuse here first
                 for need in CONTROL_O3_NEEDS:
                     assert need in text, 'FLASH_S5_CONTROL_O3_INWAIT=1 needs %sin the settings' % need
+            if v['quiet_split_control'] == '1':  # the selection it sends is refused by the engine otherwise
+                for need in QUIET_SPLIT_NEEDS:
+                    assert need in text, 'QUIET_SPLIT_CONTROL=1 needs %sin the settings' % need
             if v['decode_timeline'] == '1':     # decode_timeline.check_startup refuses the engine otherwise
                 for need in TIMELINE_NEEDS:
                     assert need in text, 'FLASH_S5_DECODE_TIMELINE=1 needs %sin the settings' % need
@@ -288,6 +327,10 @@ def queues(variant):
             assert 'REPLAY_REPLY_TEXT' not in text, 'the parent draft names REPLAY_REPLY_TEXT already'
             if v['replay_reply_text'] == 'seeded':
                 text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'], DRAFT_EXPORT % v['decode_groups'] + REPLY_TEXT_EXPORT)
+            assert 'QUIET_SPLIT_CONTROL' not in text and 'e3_quiet_split_box' not in text, 'the parent draft has a quiet split'
+            if v['quiet_split_control'] == '1':
+                text = hgb.once(text, DRAFT_EXPORT % v['decode_groups'], DRAFT_EXPORT % v['decode_groups'] + QUIET_SPLIT_EXPORT)
+                text = hgb.once(text, QUIET_SPLIT_ANCHOR, QUIET_SPLIT_ANCHOR + QUIET_SPLIT_STEP)
         result[rel] = text
     return result
 
@@ -307,7 +350,8 @@ def copy_delta(b, commit, bundle):
                  'patches/s5_engine/decode_timeline.py', 'patches/s5_engine/handler_anatomy.py',
                  'patches/s5_engine/native_measurement.py', 'harness/test_decode_timeline.py',
                  'harness/decode_timeline_fixture_leaves.json', 'harness/decode_timeline_parent_ast.json',
-                 'harness/receipt_lines.py', 'harness/compose4_replay.py', 'harness/test_replay_reply_text.py'):
+                 'harness/receipt_lines.py', 'harness/compose4_replay.py', 'harness/test_replay_reply_text.py',
+                 'harness/e3_quiet_split_box.py', 'harness/test_quiet_split_box.py'):
         assert name in copied, name
     return copied
 
