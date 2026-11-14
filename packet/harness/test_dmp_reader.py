@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 HERE = Path(__file__).resolve().parent
@@ -233,6 +234,46 @@ class Reader(unittest.TestCase):
         self.assertEqual(doc['results'][0]['engine']['oom_max'], 2)
         with self.assertRaises(FileExistsError):              # never overwrites
             reader.main(['x=%s' % root, '--json-out', str(out)])
+
+
+class EngineLogName(unittest.TestCase):
+    """Brief 11: window 13's fetched records hold the engine stream as engine.log (the record's final capture) and no
+    engine-stream.log, so every arm read 'arm-unread' and the reader noted 'missing-engine-stream.log'."""
+
+    def fetched(self, keep_stream=False, empty_stream=False):
+        root = write_record(Path(tempfile.mkdtemp(prefix='dmp-reader-fetch-')))
+        stream = root / 'engine-stream.log'
+        if keep_stream:
+            (root / 'engine.log').write_text('2026-11-13T19:52:57.200440492Z an earlier capture\n')
+        else:
+            stream.rename(root / 'engine.log')
+            if empty_stream:
+                stream.write_text('')
+        return root
+
+    def test_a_fetched_record_reads_engine_log(self):
+        for empty in (False, True):
+            res = reader.collect(self.fetched(empty_stream=empty), 'fetch')
+            self.assertEqual((res['notes'], res['engine_log']), ([], 'engine.log'))
+            self.assertAlmostEqual(res['engine']['offset_s'], OFFSET, delta=0.01)
+            self.assertIn('gaps', res['arms']['n3.g2-live-0'])
+
+    def test_the_box_stream_wins(self):
+        res = reader.collect(self.fetched(keep_stream=True), 'box')
+        self.assertEqual((res['notes'], res['engine_log']), ([], 'engine-stream.log'))
+
+    def test_neither_is_still_noted(self):
+        root = self.fetched()
+        (root / 'engine.log').rename(root / 'engine.log.kept')
+        res = reader.collect(root, 'none')
+        self.assertIn('missing-engine-stream.log', res['notes'])
+        self.assertIsNone(res['engine_log'])
+        self.assertTrue(all(n.startswith('arm-unread:') for n in res['notes'] if n != 'missing-engine-stream.log'))
+
+    def test_mutant_without_the_fallback_is_caught(self):
+        with mock.patch.object(reader, 'ENGINE_LOGS', ('engine-stream.log',)):
+            res = reader.collect(self.fetched(), 'fetch')
+        self.assertIn('missing-engine-stream.log', res['notes'])
 
 
 if __name__ == '__main__':

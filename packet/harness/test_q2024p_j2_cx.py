@@ -319,6 +319,11 @@ class Queues(unittest.TestCase):
                 self.assertLessEqual(len(set(got)), 1, f[0])
                 flags[f[0]] = got[0] if got else None
             self.check_texts(texts, flags, cx.name_of(variant, tag))
+            # brief 11: the built box binds the guard with the observer the settings line launches
+            box = (HERE / 'n3j2_box.py').read_text()
+            want = cx.GUARD_INSTALL_NEW % cx.OBSERVER_OF[flags['FLASH_S5_DECODE_LIVENESS']]
+            self.assertEqual(box.count(want), 1, want)
+            self.assertEqual(box.count('decode_liveness_guard.install('), 1)
             return
         self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
         flags = cx.parse_flags(['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_DECODE_GROUPS=off-small',
@@ -413,6 +418,182 @@ class Queues(unittest.TestCase):
                 cx._np_queues = original
         finally:
             cx.CONFIG.update(saved)
+
+
+import decode_liveness_guard as guard_mod  # noqa: E402
+import types  # noqa: E402
+
+
+def quiet_reply():
+    """A w13 status reply with the observer off: the decode_step block has no liveness key."""
+    return {'native_stage_local': {'overlap': {'decode_step': {'steps': 1}}}}
+
+
+def live_reply(trips, live=0):
+    return {'native_stage_local': {'overlap': {'decode_step': {'liveness': dict(trips=trips, live_max_stall_ms=live,
+                                                                                stall_ms=10000)}}}}
+
+
+class Replies:
+    def __init__(self, replies):
+        self.replies = list(replies)
+
+    def call(self, action, **fields):
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def w13_arm(polls=33, guard=guard_mod, observer='off', replies=None, before=None, after=None):
+    """The w13 cx shape (cxay12-b1 sp.g2-live-0: 33 polls, no liveness block anywhere, no other reason)."""
+    g = guard.Guard('sp.g2-live-0', clock=lambda: 10.0, observer=observer)
+    client = guard.WatchedClient(Replies(replies if replies is not None else [quiet_reply()] * polls), g)
+    for _ in range(len(client._client.replies)):
+        try:
+            client.call('status')
+        except OSError:
+            pass
+    rows = [dict(label='entry'), dict(label='before'), dict(label='after')]
+    if before is not None:
+        rows[1]['decode_liveness'] = before
+    if after is not None:
+        rows[2]['decode_liveness'] = after
+    rec = dict(reasons=[], complete=True, statuses=rows)
+    g.settle(rec)
+    return g, rec
+
+
+def mutant(*edits):
+    """The guard module with source edits, as a fresh module (the suite's own guard is untouched)."""
+    source = Path(guard_mod.__file__).read_text()
+    for old, new in edits:
+        assert source.count(old) == 1, old
+        source = source.replace(old, new)
+    module = types.ModuleType('decode_liveness_guard_mutant')
+    exec(compile(source, 'decode_liveness_guard_mutant', 'exec'), module.__dict__)
+    return module
+
+
+def off_is_not_applicable(guard=guard_mod):
+    g, rec = w13_arm(guard=guard)
+    view = rec['decode_liveness_guard']
+    return (rec['reasons'], rec['complete'], view['liveness'], view['absent_polls'], view['blind_polls'],
+            view['observer']) == ([], True, 'NOT_APPLICABLE', 33, 0, 'off')
+
+
+def on_blind_is_inc(guard=guard_mod):
+    g, rec = w13_arm(guard=guard, observer='on')
+    view = rec['decode_liveness_guard']
+    return (rec['reasons'], rec['complete'], view['blind_polls'], view['liveness']) == (
+        ['decode-liveness-guard:HARNESS:guard-blind'], False, 33, 'read')
+
+
+def off_with_a_block_is_inc(guard=guard_mod):
+    _, polled = w13_arm(guard=guard, replies=[quiet_reply(), live_reply(0), quiet_reply()])
+    _, rowed = w13_arm(guard=guard, polls=2, after=dict(trips=0))
+    want = ['decode-liveness-guard:HARNESS:observer-declared-off']
+    return polled['reasons'] == want and rowed['reasons'] == want and not polled['complete'] and not rowed['complete']
+
+
+class GuardObserver(unittest.TestCase):
+    """Brief 11 (window 13: every cx packet INC only for guard-blind on all four arms, the observer off): the binding
+    declares the observer; off reads NOT_APPLICABLE and is not missing, on still reads a blind guard as INC."""
+
+    def test_off_is_not_applicable_and_not_missing(self):
+        self.assertTrue(off_is_not_applicable())
+
+    def test_on_blind_is_still_inc(self):
+        self.assertTrue(on_blind_is_inc())
+        g, rec = w13_arm(observer='on', polls=0)                # rows only, no poll: settle alone still reads blind
+        self.assertEqual(rec['reasons'], ['decode-liveness-guard:HARNESS:guard-blind'])
+
+    def test_off_with_a_liveness_block_is_inc(self):
+        self.assertTrue(off_with_a_block_is_inc())
+
+    def test_off_keeps_the_poll_watch(self):
+        g, rec = w13_arm(replies=[OSError()] * guard_mod.POLL_FAILS)
+        self.assertEqual(rec['reasons'], ['decode-liveness-guard:ENGINE:status-unanswered'])
+        self.assertTrue(rec['decode_liveness_guard']['ended_replay'])
+        g, rec = w13_arm(replies=[live_reply(0), live_reply(1, 12000)])   # a block seen off: still read and still ends
+        self.assertEqual(rec['reasons'], ['decode-liveness-guard:ENGINE:engine-stuck',
+                                          'decode-liveness-guard:HARNESS:observer-declared-off'])
+
+    def test_on_reads_as_before(self):
+        g, rec = w13_arm(observer='on', replies=[live_reply(0), live_reply(0)], before=dict(trips=0), after=dict(trips=0))
+        self.assertEqual((rec['reasons'], rec['complete'], rec['decode_liveness_guard']['liveness']), ([], True, 'read'))
+
+    def test_declaration_is_checked(self):
+        for bad in ('0', '1', None, 'OFF'):
+            with self.assertRaises(ValueError):
+                guard_mod.Guard('x', observer=bad)
+            with self.assertRaises(ValueError):
+                guard_mod.guarded(lambda *a, **k: {}, lambda: None, bad)
+        box = types.SimpleNamespace(replay_arm=lambda *a, **k: {}, _box=None)
+        bound = guard_mod.install(box, observer='off')
+        self.assertIs(guard_mod.install(box, observer='off'), bound)
+        with self.assertRaises(ValueError):
+            guard_mod.install(box)                              # a second declaration is refused
+        self.assertEqual(guard_mod.install(types.SimpleNamespace(replay_arm=lambda *a, **k: {}, _box=None))
+                         .decode_liveness_observer, 'on')       # the dmp binding's default
+
+    def test_builder_binds_the_packet_setting(self):
+        self.assertEqual(cx.OBSERVER_OF, {'0': 'off', '1': 'on'})
+        for liveness, observer in cx.OBSERVER_OF.items():
+            text = cx.box_import(liveness)
+            self.assertEqual(text.count("decode_liveness_guard.install(e3_compose5_box, observer='%s')" % observer), 1)
+            self.assertEqual(text.count('decode_liveness_guard.install('), 1)
+            self.assertEqual(text.replace(cx.GUARD_INSTALL_NEW % observer, cx.GUARD_INSTALL), cx.dmp.BOX_IMPORT_NEW)
+        with mock.patch.object(cx.dmp, 'BOX_IMPORT_NEW', cx.dmp.BOX_IMPORT_NEW.replace(cx.GUARD_INSTALL, '')):
+            with self.assertRaises(AssertionError):
+                cx.box_import('0')                              # the dmp line moved: refused, not silently unbound
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                              # a bundle: its own box is checked with its settings
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        saved, imp = dict(cx.CONFIG), cx.hgb.BOX_IMPORT_NEW
+        try:
+            for liveness in ('0', '1'):
+                flags = cx.parse_flags(['FLASH_S5_DECODE_LIVENESS=' + liveness])
+                cx.configure(flags, 'zg')
+                self.assertEqual(cx.hgb.BOX_IMPORT_NEW, cx.box_import(liveness))
+        finally:
+            cx.CONFIG.update(saved)
+            cx.hgb.BOX_IMPORT_NEW = imp
+
+
+class GuardObserverMutants(unittest.TestCase):
+    """Each mutant breaks one direction and is caught by the rule it breaks."""
+    OFF_POLL = ("                if self.observer == 'off':\n                    self.absent += 1\n"
+                "                    return\n")
+
+    def test_off_read_as_on_is_caught(self):
+        m = mutant((self.OFF_POLL, ''))
+        self.assertFalse(off_is_not_applicable(m))
+        self.assertTrue(on_blind_is_inc(m))
+
+    def test_settle_blind_without_the_declaration_is_caught(self):
+        m = mutant(("'after' in rows and self.observer == 'on':", "'after' in rows:"))
+        self.assertFalse(off_is_not_applicable(m))
+
+    def test_on_read_as_off_is_caught(self):
+        m = mutant((self.OFF_POLL, self.OFF_POLL.replace("self.observer == 'off'", 'True')),
+                   ("'after' in rows and self.observer == 'on':", "'after' in rows and False:"))
+        self.assertTrue(off_is_not_applicable(m))
+        self.assertFalse(on_blind_is_inc(m))
+
+    def test_contradiction_unread_is_caught(self):
+        m = mutant(("            if self.observer == 'off':\n                self.harness = self.harness or "
+                    "'observer-declared-off'\n", ''))
+        self.assertFalse(off_with_a_block_is_inc(m))
+        m = mutant(("        if self.observer == 'off' and self.harness is None and (isinstance(before, dict) or "
+                    "isinstance(after, dict)):\n            self.harness = 'observer-declared-off'\n", ''))
+        self.assertFalse(off_with_a_block_is_inc(m))
+
+    def test_builder_always_on_is_caught(self):
+        with mock.patch.dict(cx.OBSERVER_OF, {'0': 'on'}):
+            self.assertNotIn("observer='off'", cx.box_import('0'))   # what the bundle assertion then refuses
+        built = cx.dmp.BOX_IMPORT_NEW.replace(cx.GUARD_INSTALL, cx.GUARD_INSTALL_NEW % 'on')
+        self.assertEqual(built.count(cx.GUARD_INSTALL_NEW % 'off'), 0)
 
 
 def pieces(n):

@@ -15,8 +15,20 @@ Rules, every replay arm alike (chunk, off, off-small and stock):
   log); the replay goes on and the arm is not failed for it. Stock arms on the j2 records show recovering client gaps of
   up to 8.0 s (v1b4 sp.g2-live-0), so a recovered stall must not break the ABBA;
 * **ENGINE** ``status-unanswered``: POLL_FAILS consecutive polls raised (the engine loop or its control is wedged);
-* **HARNESS** ``guard-blind``: a status that answered has no liveness block (the launch lacks the setting, or the path
-  changed), so the guard cannot see; recorded, the replay is not ended for it.
+* **HARNESS** ``guard-blind``: a status that answered has no liveness block although the observer is declared on (the
+  launch lacks the setting, or the path changed), so the guard cannot see; recorded, the replay is not ended for it.
+
+The observer declaration (brief 11, 14 Nov 2026): the binding states whether the packet launches the engine's liveness
+observer (``install(box, observer='on'|'off')``; the cx builder passes its own FLASH_S5_DECODE_LIVENESS, the same value
+the settings line and the draft assert). Default ``'on'``, the dmp packets' binding, unchanged.
+* ``observer='on'``: as above; a reply without a block is blind and the arm is INC.
+* ``observer='off'``: no block is the expected state. The liveness reading is NOT_APPLICABLE (``liveness`` in the
+  record's view), polls without a block are counted as ``absent_polls``, not ``blind_polls``, and no reason is added.
+  The poll watch stays bound: ``status-unanswered`` still ends a wedged arm and the trip rules still apply to any block.
+  A block seen while the observer is declared off is **HARNESS** ``observer-declared-off`` (the declaration and the
+  engine disagree): recorded, the arm is INC.
+Why bound rather than unbound when off: unbinding would also drop the status-unanswered end and the poll counts, and an
+engine that runs the observer against an off declaration would go unseen.
 An ENGINE trip seen by a poll ends the replay within about a second: the agents' clock jumps past the window, so no new
 turn starts, and an agent whose turn is still streaming leaves it (each turn runs in its own daemon thread, so its socket
 read is not waited for); the join returns. Open streams stay open in the engine (the next arm's idle-FULL entry then
@@ -33,6 +45,8 @@ POLL_FAILS = 4                       # 4 x 15 s polls: a minute with no status a
 STALL_MS = 10_000                    # the engine's threshold when its block does not state it (stage_overlap.LIVENESS_STALL_NS)
 JUMP_S = 10.0 ** 7                   # past any replay window
 REASON = 'decode-liveness-guard:%s:%s'
+OBSERVER = ('on', 'off')
+NOT_APPLICABLE = 'NOT_APPLICABLE'
 
 
 def stall_of(block):
@@ -65,8 +79,11 @@ def persist(row, reply):
 
 
 class Guard:
-    def __init__(self, label, *, clock=time.monotonic, poll_fails=POLL_FAILS):
-        self.label, self._clock, self.poll_fails = label, clock, poll_fails
+    def __init__(self, label, *, clock=time.monotonic, poll_fails=POLL_FAILS, observer='on'):
+        if observer not in OBSERVER:
+            raise ValueError('decode-liveness-guard: observer must be one of %s, not %r' % ('|'.join(OBSERVER), observer))
+        self.label, self._clock, self.poll_fails, self.observer = label, clock, poll_fails, observer
+        self.absent = 0
         self.offset = 0.0
         self.lock = threading.Lock()
         self.base_trips = None
@@ -91,10 +108,15 @@ class Guard:
             self.consecutive = 0
             block = liveness_of(reply)
             if block is None:
+                if self.observer == 'off':
+                    self.absent += 1
+                    return
                 self.blind += 1
                 if self.harness is None:
                     self.harness = 'guard-blind'
                 return
+            if self.observer == 'off':
+                self.harness = self.harness or 'observer-declared-off'
             trips = block.get('trips')
             if type(trips) is not int:
                 self.blind += 1
@@ -139,9 +161,13 @@ class Guard:
                 self.trip = ('ENGINE', 'engine-stuck', None)
             elif unseen > 0 and self.trip is None:
                 self._recovered(unseen, after)
-        elif self.harness is None and 'before' in rows and 'after' in rows:
+        elif self.harness is None and 'before' in rows and 'after' in rows and self.observer == 'on':
             self.harness = 'guard-blind'
-        view = dict(polls=self.polls, poll_failures=self.failures, blind_polls=self.blind, base_trips=self.base_trips,
+        if self.observer == 'off' and self.harness is None and (isinstance(before, dict) or isinstance(after, dict)):
+            self.harness = 'observer-declared-off'
+        applicable = self.observer == 'on' or self.harness is not None or self.base_trips is not None
+        view = dict(observer=self.observer, liveness='read' if applicable else NOT_APPLICABLE, absent_polls=self.absent,
+                    polls=self.polls, poll_failures=self.failures, blind_polls=self.blind, base_trips=self.base_trips,
                     trips_delta=delta, recovered_trips=self.recovered_trips, max_live_stall_ms=self.max_live_stall_ms,
                     trip=None if self.trip is None else dict(classification=self.trip[0], detail=self.trip[1], wall_s=self.trip[2]),
                     harness=self.harness, ended_replay=self.offset > 0,
@@ -206,10 +232,13 @@ def watched_stream(inner, guard, *, wait_s=1.0):
     return stream
 
 
-def guarded(replay_arm, replay_run):
+def guarded(replay_arm, replay_run, observer='on'):
     """compose5's replay_arm with the guard: the poll client watched, the agents on the guard's clock and stream."""
+    if observer not in OBSERVER:
+        raise ValueError('decode-liveness-guard: observer must be one of %s, not %r' % ('|'.join(OBSERVER), observer))
+
     def arm(a, row, client, poll_client, *, run=None):
-        guard = Guard(row.get('label'))
+        guard = Guard(row.get('label'), observer=observer)
 
         def run_on_guard(*args, **kwargs):
             kwargs['clock'] = guard.clock
@@ -219,6 +248,7 @@ def guarded(replay_arm, replay_run):
         guard.settle(record)
         return record
     setattr(arm, 'decode_liveness_guard', True)
+    setattr(arm, 'decode_liveness_observer', observer)
     return arm
 
 
@@ -227,9 +257,13 @@ def _default_stream():
     return compose4_replay.stream_turn
 
 
-def install(box):
-    """Bind the guard into the compose5 box module (``e3_compose5_box``): its CLI looks replay_arm up at main()."""
+def install(box, observer='on'):
+    """Bind the guard into the compose5 box module (``e3_compose5_box``): its CLI looks replay_arm up at main().
+    A second install with another observer declaration is refused (one packet, one declaration)."""
     if getattr(box.replay_arm, 'decode_liveness_guard', False):
+        bound = getattr(box.replay_arm, 'decode_liveness_observer', 'on')
+        if bound != observer:
+            raise ValueError('decode-liveness-guard: already bound with observer=%s, not %s' % (bound, observer))
         return box.replay_arm
-    box.replay_arm = guarded(box.replay_arm, lambda: box._box.replay.run)
+    box.replay_arm = guarded(box.replay_arm, lambda: box._box.replay.run, observer)
     return box.replay_arm

@@ -191,8 +191,8 @@ def sample_fast_lines(root):
     """(wall, rank, counters, overflow) per lever D line in engine-stream.log; None without the log. ``overflow`` is the
     reviewed fix's ``overflow_rows_retired`` (2eba0dd0: rows drawn on the exact overflow route, read from a retired host
     copy, so one line behind; None while that copy is in flight), or the pre-fix ``tie_overflow_lagged``."""
-    path = Path(root) / 'engine-stream.log'
-    if not path.is_file():
+    path = dmp.engine_stream(root)
+    if path is None:
         return None
     out = []
     with path.open(errors='replace') as handle:
@@ -293,8 +293,8 @@ def dev_sample(root, arms):
     host monotonic clock; no native progress there by the window's own condition), each window placed in the graded arm
     whose replay window holds its core line's stamp, else 'before-arms' (the sm smoke arm's window); and ``native`` per
     graded arm (the other sample_tokens rows, by their flush's stamp). None without engine-stream.log."""
-    path = Path(root) / 'engine-stream.log'
-    if not path.is_file():
+    path = dmp.engine_stream(root)
+    if path is None:
         return None
     windows, records, torn, errors = {}, [], 0, 0
     with path.open(errors='replace') as handle:

@@ -445,6 +445,20 @@ def turns_per_hour(arm):
         return None, None
 
 
+ENGINE_LOGS = ('engine-stream.log', 'engine.log')
+
+
+def engine_stream(root):
+    """The engine's stdout stream: the box record's engine-stream.log, else the record's final capture engine.log (the
+    same stream; a hub fetch keeps engine.log and leaves engine-stream.log out: window 13's eight records). None
+    without either (non-empty)."""
+    for name in ENGINE_LOGS:
+        path = Path(root) / name
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    return None
+
+
 def replay_arms(root):
     arms = []
     for path in sorted(root.glob('arm-*.json')):
@@ -459,8 +473,8 @@ def collect(root, label):
     root = Path(root)
     notes = []
     grade, queue = load(root / 'compose5-grade.json') or {}, load(root / 'queue-grade.json') or {}
-    log = root / 'engine-stream.log'
-    engine = Engine(log) if log.is_file() else None
+    log = engine_stream(root)
+    engine = Engine(log) if log is not None else None
     if engine is None:
         notes.append('missing-engine-stream.log')
     elif engine.offset is None:
@@ -511,6 +525,7 @@ def collect(root, label):
         if row['completed_turns'] is not None:
             by_sel[name.split('.')[0]].append(row['completed_turns'])
     return dict(record=str(root), label=label, arms=arms, notes=notes, identity=identity(root),
+                engine_log=None if log is None else log.name,
                 turns_by_selection={k: v for k, v in sorted(by_sel.items())},
                 numerics=(grade.get('numerics_o3') or {}).get('verdict'),
                 compose5_grade=grade.get('verdict'), queue_grade=queue.get('verdict'), queue_rc=queue.get('rc'),

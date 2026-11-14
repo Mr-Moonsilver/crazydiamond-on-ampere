@@ -14,6 +14,9 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     FLASH_S5_DECODE_GROUPS before its first python, so every process the draft starts reads the same table;
   * the arm liveness guard (harness/decode_liveness_guard: ends an arm only on a still-stuck decoder) bound in the
     bundle's n3j2_box with its status-row line, and the arm gate closed by ENGINE_CRASHED (the dmp-b review fix);
+    the binding declares the packet's own FLASH_S5_DECODE_LIVENESS (``observer='on'|'off'``, GUARD_INSTALL, brief 11):
+    with the observer off the liveness reading is NOT_APPLICABLE and not a missing guard (window 13: all seven cx
+    packets INC only for guard-blind on every arm); with it on a blind guard still makes the arm INC;
   * the engine modules the composition moved (stage_overlap, native_overlap_control) bound as well, and the CPU suites
     of every lever (test_decode_merge_probe stays a hub suite: its bundle test needs the dmp table and budget).
   * FLASH_S5_CONTROL_INWAIT (Codex, a15bed1d: FULL-entry identity observed beside decode, the duplicate barrier
@@ -221,11 +224,23 @@ def configure(flags, tag):
     np.SUITES, np.TOOLS, np.NP_CONTAINER = SUITES, TOOLS, CX_CONTAINER
     np.NEW_OVERLAY_FILES = ing.NEW_OVERLAY_FILES = NEW_OVERLAY_FILES
     np.queues = queues
-    hgb.BOX_IMPORT_NEW, hgb.BOX_ROW_NEW = dmp.BOX_IMPORT_NEW, dmp.BOX_ROW_NEW        # + the arm liveness guard
+    hgb.BOX_IMPORT_NEW = box_import(flags['FLASH_S5_DECODE_LIVENESS'])           # + the arm liveness guard
+    hgb.BOX_ROW_NEW = dmp.BOX_ROW_NEW
     np.bind()
 
 
 _np_queues = np.queues
+
+GUARD_INSTALL = 'decode_liveness_guard.install(e3_compose5_box)  # decode-merge probe\n'
+GUARD_INSTALL_NEW = ("decode_liveness_guard.install(e3_compose5_box, observer='%s')  # cx: the packet's "
+                     "FLASH_S5_DECODE_LIVENESS\n")
+OBSERVER_OF = {'0': 'off', '1': 'on'}
+
+
+def box_import(liveness):
+    """dmp's box import with the guard's observer declaration from the packet's own liveness setting."""
+    assert dmp.BOX_IMPORT_NEW.count(GUARD_INSTALL) == 1, 'guard install line moved in the dmp binding'
+    return dmp.BOX_IMPORT_NEW.replace(GUARD_INSTALL, GUARD_INSTALL_NEW % OBSERVER_OF[liveness])
 
 
 def queues(variant):
@@ -330,6 +345,8 @@ def prepare(commit, variant, out, flags, tag=''):
         assert not refusals, 'lever D refused for %s: %s' % (commit, refusals)
     box = bundle / 'n3j2_box.py'
     box.write_text(hgb.once(hgb.once(box.read_text(), hgb.BOX_IMPORT, hgb.BOX_IMPORT_NEW), hgb.BOX_ROW, hgb.BOX_ROW_NEW))
+    observer = OBSERVER_OF[flags['FLASH_S5_DECODE_LIVENESS']]
+    assert box.read_text().count(GUARD_INSTALL_NEW % observer) == 1, 'the guard binding does not declare observer=' + observer
     packet = bundle / 'n3j2_packet.py'
     packet.write_text(packet.read_text() + PACKET_TAIL)
     for rel, text in queues(variant).items():
@@ -355,7 +372,7 @@ def prepare(commit, variant, out, flags, tag=''):
         p.chmod(0o555 if p.is_dir() else 0o444)
     runner.chmod(0o444)
     record = dict(proof, schema='q2024p-j2-cx-build/1', name=name, variant=variant, family=FAMILY, tag=tag,
-                  flags=dict(flags), diagnostic='always-on', liveness_guard='bound (decode_liveness_guard)',
+                  flags=dict(flags), diagnostic='always-on', liveness_guard='bound (decode_liveness_guard, observer=%s)' % observer,
                   new_overlay_files=sorted(NEW_OVERLAY_FILES), source_commit=commit, base_commit=hgb.BASE_COMMIT,
                   bundle=str(final), manifest=manifest, runner=str(runner), runner_sha256=b.sha(runner),
                   runner_size=runner.stat().st_size, held=True, hardware_qualified=False, exploratory=True,
