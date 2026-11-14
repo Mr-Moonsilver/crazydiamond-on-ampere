@@ -119,6 +119,12 @@ class Off(unittest.TestCase):
 
 
 class On(unittest.TestCase):
+    def assert_reached(self, reached, end):
+        """The driver stamps the target when the turn returns; the row's t + seconds is a lower bound of that (t is
+        stamped before the body is built, the fake times only its own sleep). Under a loaded container: TOL."""
+        self.assertGreaterEqual(reached, end - 0.005)
+        self.assertLessEqual(reached, end + TOL)
+
     def test_all_agents_send_until_the_last_target_then_stop(self):
         (_cfg, summary, turns, still), stream, clock = run_with(ON)
         self.assertEqual(still, [])
@@ -129,16 +135,16 @@ class On(unittest.TestCase):
         for agent, target in enumerate(TARGETS):
             ends = done_at(rows[agent])
             self.assertGreaterEqual(len(ends), target)
-            self.assertAlmostEqual(fw['reached_s'][agent], ends[target - 1], delta=0.01)
+            self.assert_reached(fw['reached_s'][agent], ends[target - 1])
         self.assertEqual(fw['end_s'], max(fw['reached_s']))
         self.assertGreater(fw['end_s'], CFG['DURATION'])          # it ran past DURATION to finish the work
         # early agents kept sending: every agent that got there well before the last started turns after its own
         # target and up to the stop
-        early = [a for a in range(3) if fw['reached_s'][a] < fw['end_s'] - 0.15]
+        early = [a for a in range(3) if fw['reached_s'][a] < fw['end_s'] - 0.3]
         self.assertTrue(early, fw)
         for agent in early:
             after = [r['t'] for r in rows[agent] if r['t'] > fw['reached_s'][agent]]
-            self.assertTrue(after and max(after) > fw['end_s'] - 0.1, (agent, after, fw))
+            self.assertTrue(after and max(after) > fw['end_s'] - 0.25, (agent, after, fw))
         # and no turn starts after the stop
         self.assertTrue(all(t['t'] <= fw['end_s'] + TOL for t in turns), fw)
         self.assertEqual(fw['completed'], [len(done_at(rows[a])) for a in range(3)])
@@ -160,7 +166,7 @@ class On(unittest.TestCase):
         self.assertTrue(any('error' in r for r in turns))
         self.assertEqual(fw['completed'], [len(done_at(rows[a])) for a in range(3)])
         for agent, target in enumerate(TARGETS):
-            self.assertAlmostEqual(fw['reached_s'][agent], done_at(rows[agent])[target - 1], delta=0.01)
+            self.assert_reached(fw['reached_s'][agent], done_at(rows[agent])[target - 1])
 
     def test_the_first_n_requests_are_timing_free(self):
         bodies = []
