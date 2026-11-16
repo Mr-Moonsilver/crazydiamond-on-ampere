@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "-- self-run journal stub ($*) --"; cat "$SR/systemd/unit.log" 2>/dev/null

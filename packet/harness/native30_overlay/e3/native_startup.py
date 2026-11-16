@@ -194,6 +194,9 @@ class WorkerNative:
         native_builder_inventory = getattr(self, 'native_builder_inventory', None)
         if native_builder_inventory is not None:
             record['native_attention_builder_storage'] = native_builder_inventory()
+        if os.environ.get('FLASH_S5_NATIVE_MM', '0') == '1':
+            from native_mm import inventory
+            record['native_mm'] = inventory(self.runner)
         return record
 
     def graph_builder(self, *, router_class=None, full_context_id, full_pool_id,

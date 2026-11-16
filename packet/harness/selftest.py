@@ -1004,6 +1004,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_vision_encoder_stage.py', 'owner vision copy actual argv and SHA refusal (CPU, fake SSH)'),
                      ('test_vision_encoder_protocol.py', 'speech-priority encoder full protocol, ownership and reader (CPU, no GPU)'),
                      ('test_native_mm.py', 'native image chunk wire, private scope, four-worker cancel/lifetime and bounded MM budget (CPU)'),
+                     ('test_vision_answer_protocol.py', 'trusted image embeddings and reference clients, whole protocol to answer reader (HTTP stubs, CPU)'),
                      ('test_cost_budget.py', 'cost budget: proxy fit decisions and generated scheduler hook (CPU)'),
                      ('test_sparse_stage.py', 'S6 sorted compaction, staged reduction oracle and verification coverage (CPU)'),
                      ('test_identity.py', 'engine identity: mocked Docker and content/provenance checks'),

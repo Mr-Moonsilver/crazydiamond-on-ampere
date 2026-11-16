@@ -95,11 +95,7 @@ def request_plan(request):
             raise NativeMMError('MM request metadata changed after snapshot')
         return old
     import torch
-    if (not isinstance(tensor, torch.Tensor) or tensor.device.type != 'cpu'
-            or tensor.dtype != torch.bfloat16 or tensor.ndim != 2
-            or tensor.shape[1] != WIDTH or not 0 < tensor.shape[0] <= MAX_IMAGE_ROWS
-            or not bool(torch.isfinite(tensor).all())):
-        raise NativeMMError('MM embeddings must be finite bounded CPU BF16 rows')
+    image_tensor(tensor)
     if (not isinstance(grid, torch.Tensor) or grid.device.type != 'cpu'
             or grid.dtype != torch.int64 or grid.numel() != 3):
         raise NativeMMError('MM image grid must be three CPU int64 values')
@@ -124,6 +120,55 @@ def request_plan(request):
                      tensor.contiguous().view(torch.uint8).numpy().tobytes())
     request._flash_s5_mm_plan = plan
     return plan
+
+
+def image_tensor(tensor):
+    import torch
+    if (not isinstance(tensor, torch.Tensor) or tensor.device.type != 'cpu'
+            or tensor.dtype != torch.bfloat16 or tensor.ndim != 2
+            or tensor.shape[1] != WIDTH or not 0 < tensor.shape[0] <= MAX_IMAGE_ROWS
+            or not bool(torch.isfinite(tensor).all())):
+        raise NativeMMError('MM embeddings must be finite bounded CPU BF16 rows')
+    return tensor
+
+
+def stage_image(feature, device, upload):
+    """Mirror prompt_embeds passthrough, keeping each GPU feature's storage private."""
+    if not enabled() or feature.modality != 'image' or set(feature.data) != {'image_embeds','image_grid_thw'}:
+        raise NativeMMError('ordinary MM path requires explicit image embeddings')
+    tensor=image_tensor(feature.data['image_embeds'].data)
+    if feature.mm_position.get_num_embeds() != tensor.shape[0]:
+        raise NativeMMError('ordinary MM mask disagrees with image rows')
+    result=upload(tensor.contiguous(), device=device)
+    if result.untyped_storage().nbytes() != result.nbytes:
+        raise NativeMMError('ordinary MM feature retained a larger shared storage')
+    return result
+
+
+def inventory(runner):
+    visual=getattr(runner.model,'visual',None)
+    if visual is None:raise NativeMMError('vision module missing from MM consumer')
+    # StageMissingLayer deliberately hides the original module from named_parameters.
+    visual=visual.__dict__.get('module',visual)
+    if visual is None:raise NativeMMError('language-only tower stub is not an MM consumer')
+    gpu=lambda tensor:getattr(getattr(tensor,'device',None),'type',None)=='cuda'
+    tower=sum(t.nbytes for t in (*visual.parameters(),*visual.buffers()) if gpu(t))
+    cache=getattr(runner,'encoder_cache',None)
+    values=[] if cache is None else list(cache.encoder_outputs.values())
+    def storage_bytes(tensors):
+        storage={t.untyped_storage().data_ptr():t.untyped_storage().nbytes() for t in tensors if gpu(t)}
+        return sum(storage.values())
+    state=getattr(runner,'model_state',None)
+    inputs=getattr(getattr(state,'encoder_runner',None),'inputs_embeds',None)
+    lane=getattr(getattr(runner,'_flash_s5_dispatcher',None),'lane',None)
+    lease=getattr(lane,'_native_mm_lease',None)
+    return dict(schema='native-mm-inventory/1',tower_registered_cuda_bytes=tower,
+        gpu_encoder_cache_present=cache is not None,cache_budget_tokens=CACHE_ROWS,
+        cache_budget_bytes=CACHE_ROWS*ROW_BYTES,cache_feature_bytes=sum(t.nbytes for t in values if gpu(t)),
+        cache_storage_bytes=storage_bytes(values),
+        encoder_inputs_buffer_bytes=inputs.nbytes if inputs is not None and gpu(inputs) else 0,
+        active_splice_device_bytes=storage_bytes([] if lease is None else lease.keepalive),
+        basis='host tensor/storage metadata only; no CUDA synchronization or tensor values read')
 
 
 def eligible(request):

@@ -108,6 +108,33 @@ class NativeMM(unittest.TestCase):
         self.assertEqual(len(lease.keepalive),1)
         event.complete=True;lease.release();self.assertEqual(lease.keepalive,[])
 
+    def test_private_feature_upload_refuses_shared_storage(self):
+        tensor=types.SimpleNamespace(shape=(1,2560),contiguous=lambda:object())
+        feature=types.SimpleNamespace(modality='image',data={'image_embeds':types.SimpleNamespace(data=tensor),'image_grid_thw':object()},
+            mm_position=types.SimpleNamespace(get_num_embeds=lambda:1))
+        result=types.SimpleNamespace(nbytes=5120,untyped_storage=lambda:types.SimpleNamespace(nbytes=lambda:5120))
+        with patch.object(mm,'image_tensor',return_value=tensor):
+            self.assertIs(mm.stage_image(feature,'cuda',lambda value,device:result),result)
+            result.untyped_storage=lambda:types.SimpleNamespace(nbytes=lambda:40960)
+            with self.assertRaisesRegex(mm.NativeMMError,'shared storage'):
+                mm.stage_image(feature,'cuda',lambda value,device:result)
+
+    def test_inventory_unwraps_hidden_tower_and_counts_unique_storage(self):
+        def tensor(size,device='cuda',ptr=1):
+            return types.SimpleNamespace(nbytes=size,device=types.SimpleNamespace(type=device),
+                untyped_storage=lambda:types.SimpleNamespace(data_ptr=lambda:ptr,nbytes=lambda:size))
+        actual=types.SimpleNamespace(parameters=lambda:[tensor(123)],buffers=lambda:[tensor(42,'meta')])
+        proxy=types.SimpleNamespace(module=actual,parameters=lambda:[],buffers=lambda:[])
+        cached=tensor(5120,ptr=7)
+        runner=types.SimpleNamespace(model=types.SimpleNamespace(visual=proxy),
+            encoder_cache=types.SimpleNamespace(encoder_outputs={'a':cached,'b':cached}),
+            model_state=types.SimpleNamespace(encoder_runner=types.SimpleNamespace(inputs_embeds=tensor(99))))
+        record=mm.inventory(runner)
+        self.assertEqual(record['tower_registered_cuda_bytes'],123)
+        self.assertEqual(record['cache_feature_bytes'],10240)
+        self.assertEqual(record['cache_storage_bytes'],5120)
+        self.assertEqual(record['encoder_inputs_buffer_bytes'],99)
+
     def stack(self):
         stack=Stack()
         stack.record=replace(stack.record,mm=payload(stack.record.transaction,stack.record.state_epoch))

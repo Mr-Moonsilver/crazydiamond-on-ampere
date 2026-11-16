@@ -15,10 +15,10 @@ FILES = ['harness/' + name for name in (
 FILES += ['tools/' + name for name in ('vision_encoder_read.py', 'vision_encoder_stop.py',
     'vision_encoder_bundle.py', 'vision_encoder_start.sh', 'stage_vision_encoder_weights.sh', 'build_vision_encoder_packet.py')]
 
-def red_png(size):
+def red_png(size, rgb=(255,0,0)):
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
-    pixels = (b'\0' + b'\xff\0\0' * size) * size
+    pixels = (b'\0' + bytes(rgb) * size) * size
     return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
         + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b''))
 
