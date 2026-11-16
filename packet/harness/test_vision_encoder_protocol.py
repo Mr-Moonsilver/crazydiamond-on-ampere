@@ -208,6 +208,7 @@ class Protocol(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('VISION_ENCODER_READ PASS', result.stdout)
         value['physical_peak_mib'] = None
+        self.assertEqual(reader.read(value)['verdict'], 'HOLD')
         self.assertEqual(reader.read(dict(value, physical_peak_mib=0))['verdict'], 'HOLD')
 
     def test_generated_service_argv_entire_http_protocol(self):
@@ -324,6 +325,22 @@ class Protocol(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'not this owned'):
                 stop.handoff(run)
             kill.assert_not_called()
+
+    def test_stop_actual_cli_to_off_verdict(self):
+        self.drive()
+        fakebin = self.root / 'stop-bin'; fakebin.mkdir()
+        sudo = fakebin / 'sudo'
+        sudo.write_text('#!/bin/sh\nprintf "false cpu-test\\n"\n')
+        sudo.chmod(0o755)
+        result = subprocess.run([sys.executable, str(Path(stop.__file__)), '--run-dir', str(self.root / 'run')],
+            env=dict(os.environ, PATH=str(fakebin)+':'+os.environ['PATH']), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('VISION_ENCODER_OFF ', result.stdout)
+
+    def test_physical_parser_counts_only_owned_gpu_pid(self):
+        gpu = 'GPU-00000000-0000-0000-0000-000000000000'
+        with patch.object(job, 'command', side_effect=['8000', '111, 7000, '+gpu+'\n345, 1800, '+gpu]):
+            self.assertEqual(job.physical(gpu, 345), dict(owned_mib=1800, free_mib=8000))
 
     def test_frozen_start_wrapper_actual_argv_whole_protocol(self):
         frozen = self.root / 'packet'
