@@ -31,7 +31,7 @@ class Protocol(unittest.TestCase):
                     if owner.race_out is not None:
                         owner.race_out.write_bytes(b'other-owner-artifact')
                     value=dict(schema='flash-next-image-embeds/1',manifest_sha256='x'*64 if owner.bad_manifest else '8b333e2380aac6ed98c6ed5700474972cefb919cf126949fc31f70b47a39ca93',
-                        dtype='bfloat16',shape=[1,2560],embedding_sha256='c'*64,
+                        dtype='bfloat16',shape=[1,2560],image_grid_thw=[[1,2,2]],embedding_sha256='c'*64,
                         content=dict(type='image_embeds',image_embeds=dict(image_embeds='CPU_STUB',image_grid_thw='CPU_STUB')))
                 elif self.path=='/v1/chat/completions':
                     content=body['messages'][0]['content']
@@ -70,6 +70,18 @@ class Protocol(unittest.TestCase):
         (self.root/'encoder.env').chmod(0o644)
         result=self.drive();self.assertEqual(result.returncode,2);self.assertEqual(self.calls,[])
         self.assertIn('private0600',result.stderr)
+    def test_per_image_grid_is_canonical_and_does_not_change_the_cache(self):
+        from vision_answer_probe import embedding_content
+        response=dict(schema='flash-next-image-embeds/1',manifest_sha256='8b333e2380aac6ed98c6ed5700474972cefb919cf126949fc31f70b47a39ca93',
+            dtype='bfloat16',shape=[1,2560],embedding_sha256='c'*64,image_grid_thw=[[1,2,2]],
+            content=dict(type='image_embeds',image_embeds=dict(image_embeds='original-payload',image_grid_thw='original-grid-tensor')))
+        before=json.dumps(response,sort_keys=True);content=embedding_content(response)
+        self.assertEqual(content['image_embeds']['image_grid_thw'],[1,2,2])
+        self.assertEqual(content['image_embeds']['image_embeds'],'original-payload')
+        self.assertEqual(json.dumps(response,sort_keys=True),before)
+        response['image_grid_thw']=[[1,4,4]]
+        with self.assertRaisesRegex(ValueError,'grid differs'):embedding_content(response)
+
     def test_empty_engine_reply_refuses_with_exception_location(self):
         self.empty_answer=True;result=self.drive()
         self.assertEqual(result.returncode,2);self.assertIn('answer text missing',result.stderr)

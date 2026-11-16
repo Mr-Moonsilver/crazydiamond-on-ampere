@@ -44,6 +44,25 @@ def validate_embedding(response):
     return response
 
 
+
+def embedding_content(response):
+    """The Chat API batches per-item metadata: supply one grid row, not a batched tensor."""
+    import copy
+    validate_embedding(response)
+    grid=response.get('image_grid_thw')
+    if (not isinstance(grid,list) or len(grid)!=1 or not isinstance(grid[0],list) or len(grid[0])!=3
+            or any(type(v) is not int for v in grid[0])):
+        raise ValueError('encoder per-image grid missing')
+    t,h,w=grid[0]
+    if t!=1 or min(h,w)<=0 or h%2 or w%2 or h*w//4!=response['shape'][0]:
+        raise ValueError('encoder per-image grid differs from rows')
+    content=copy.deepcopy(response['content'])
+    if set(content.get('image_embeds',{}))!={'image_embeds','image_grid_thw'}:
+        raise ValueError('embedding content fields differ')
+    content['image_embeds']['image_grid_thw']=grid[0][:]
+    return content
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--mode',choices=('embeddings','reference'),required=True)
@@ -86,7 +105,7 @@ def main(argv=None):
         if a.mode=='embeddings':
             response=validate_embedding(cache['features'][hashlib.sha256(raw).hexdigest()] if cache is not None
                 else post(a.encoder_url+'/v1/encode',encoder_key,dict(image_base64=base64.b64encode(raw).decode())))
-            content=response['content']
+            content=embedding_content(response)
             features={k:response[k] for k in ('manifest_sha256','shape','embedding_sha256')}
         else:
             content=dict(type='image_url',image_url=dict(url='data:image/png;base64,'+base64.b64encode(raw).decode()))
