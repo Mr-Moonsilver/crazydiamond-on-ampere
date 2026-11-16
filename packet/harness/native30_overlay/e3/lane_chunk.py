@@ -724,6 +724,7 @@ class ChunkAdmission:
     cow_pairs: tuple = ()
     state_epoch: int = 0
     native_end: int = 0     # coverage-soak-fix: wire_v1 AdmissionRecord.native_end; 0 is prompt_end - 1
+    mm: object = None
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
@@ -736,6 +737,11 @@ class ChunkAdmission:
             raise LaneChunkError('prompt_end must be a non-negative int')
         if type(self.state_epoch) is not int or self.state_epoch < 0:
             raise LaneChunkError('state_epoch must be a non-negative int')
+        if self.mm is not None:
+            from native_mm import MMChunk
+            if type(self.mm) is not MMChunk:
+                raise LaneChunkError('MM chunk admission needs a frozen chunk')
+            self.mm.validate(self.transaction, self.state_epoch)
         if not (self.chunk_start < self.chunk_end <= self.native_end <= self.prompt_end - 1):
             raise LaneChunkError('chunk must lie inside the prompt and leave the final token')
         _ints('input_ids', self.input_ids)

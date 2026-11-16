@@ -590,7 +590,19 @@ class LaneDispatcher:
                 raise E3Pending('PP receive has not completed')
             intermediate = {'hidden_states': payload}
         self._partial = True
-        record = self.lane.begin(intermediate_tensors=intermediate)
+        if self._stage() == 0 and getattr(self.admission, 'mm', None) is not None:
+            from native_mm import prefix_inputs
+            # Token embedding includes TP communication; keep the same lane
+            # communicator/private scope as the ordinary model prefix.
+            with self.lane._scopes():
+                inputs = prefix_inputs(self.lane, self.admission, self.torch)
+            record = self.lane.begin(inputs_embeds=inputs)
+            self.lane._native_mm_lease.bind(record.event)
+        else:
+            record = self.lane.begin(intermediate_tensors=intermediate)
+        if getattr(self.admission, 'mm', None) is not None:
+            from native_mm import note_prefix
+            note_prefix(self.admission, self._stage())
         return {'kind': record.kind}
 
     def _do_layer(self, command):
@@ -848,6 +860,9 @@ class LaneDispatcher:
                 if self.pp_send_ticket is not None:
                     channel.release_send(self.pp_send_ticket, self.pp_consumer_proof)
             self.operation.release()
+            mm_lease = getattr(self.lane, '_native_mm_lease', None)
+            if mm_lease is not None:
+                mm_lease.release()
             if self.chunk is not None:
                 # drain() above queried every segment/state/PP consumer event
                 # and operation.drain() proved its internal readers complete.

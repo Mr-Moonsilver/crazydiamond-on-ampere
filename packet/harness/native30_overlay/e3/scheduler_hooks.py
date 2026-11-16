@@ -2035,7 +2035,9 @@ class PrefillAdmissionController:
 
     def _request_refuses(self, scheduler, request):
         if getattr(request, 'has_encoder_inputs', False):
-            return True
+            from native_mm import eligible
+            if not eligible(request):
+                return True
         if getattr(request, 'kv_transfer_params', None):
             return True
         blocked = getattr(scheduler, '_is_blocked_waiting_status', None)
@@ -2961,6 +2963,10 @@ class PrefillAdmissionController:
         input_ids = tuple(tokens[start:chunk_end])
         if len(input_ids) != num_new or any(type(t) is not int for t in input_ids):
             return self._refuse(request, 'token-ids-invalid')
+        mm_plan = None
+        if getattr(request, 'has_encoder_inputs', False):
+            from native_mm import request_plan
+            mm_plan = request_plan(request)
 
         # A source-backed provider scopes the global manager queues around
         # exactly this allocation; a legacy callable keeps the old contract.
@@ -3019,6 +3025,8 @@ class PrefillAdmissionController:
                         'unpublished_blocks'}
             if type(details) is not dict or set(details) != required:
                 raise E3ContractError('admission metadata is incomplete')
+            mm_fields = ({} if mm_plan is None else
+                         {'mm': mm_plan.chunk(transaction, self._next_state_epoch)})
             record = _wire_admission()(
                 transaction=transaction, prompt_end=prompt_end,
                 state_epoch=self._next_state_epoch, committed_end=start,
@@ -3026,7 +3034,7 @@ class PrefillAdmissionController:
                 new_block_ids_to_zero=details['new_block_ids_to_zero'],
                 cow_pairs=details['cow_pairs'], input_ids=input_ids,
                 ngram_context=details['ngram_context'], sparse_active=False,
-                native_end=native_end)
+                native_end=native_end, **mm_fields)
             self.parked.admission = record
             row_blocks = {b for b in record.flat_blocks() if b > 0}
             if not set(details['new_block_ids_to_zero']) <= row_blocks:

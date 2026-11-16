@@ -172,6 +172,7 @@ class AdmissionRecord:
     ngram_context: tuple = field(default=(), repr=False)
     sparse_active: bool = False
     native_end: int = 0
+    mm: object = field(default=None, repr=False)
 
     def __post_init__(self):
         transaction = self.transaction
@@ -228,6 +229,11 @@ class AdmissionRecord:
         _ints('ngram_context', self.ngram_context, minimum=0, unique=False)
         if type(self.sparse_active) is not bool:
             raise E3ContractError('sparse_active must be bool')
+        if self.mm is not None:
+            from native_mm import MMChunk
+            if type(self.mm) is not MMChunk:
+                raise E3ContractError('MM admission needs its typed frozen chunk')
+            self.mm.validate(transaction, self.state_epoch)
 
     @property
     def chunk_tokens(self):

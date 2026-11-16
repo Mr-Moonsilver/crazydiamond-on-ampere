@@ -203,6 +203,10 @@ def admission_to_chunk(record):
     """
     if record is None or not hasattr(record, 'transaction'):
         raise WorkerBridgeError('open needs an AdmissionRecord')
+    if getattr(record, 'mm', None) is not None:
+        from native_mm import enabled
+        if not enabled():
+            raise WorkerBridgeError('MM admission while native MM is off')
     return ChunkAdmission(
         transaction=record.transaction,
         prompt_end=record.prompt_end,
@@ -213,6 +217,7 @@ def admission_to_chunk(record):
         cow_pairs=record.cow_pairs,
         state_epoch=record.state_epoch,
         native_end=getattr(record, 'native_end', 0),
+        mm=getattr(record, 'mm', None),
     )
 
 

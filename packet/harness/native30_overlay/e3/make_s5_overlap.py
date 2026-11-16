@@ -55,7 +55,7 @@ ROOT = HERE.parents[1]
 E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm',
-              'admission_metadata', 'worker_bridge',
+              'admission_metadata', 'worker_bridge', 'native_mm',
               'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma',
               'native_source', 'row1_oracle', 'row1_exactness',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
@@ -86,7 +86,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
 # reviewed launcher stays byte-identical (pin 22473a90). That loop greps names,
 # not digests; the queue preflight checks every overlay file's digest against
 # the manifest and refuses any file outside it.
-LAUNCHER_LIST_EXEMPT = ('native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
+LAUNCHER_LIST_EXEMPT = ('native_mm', 'native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
                         'attn_meta_batch', 'attn_meta_select', 'small_piece_batch', 'ingress_incremental', 'decode_step', 'decode_timeline',
                         'decode_overlap')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
