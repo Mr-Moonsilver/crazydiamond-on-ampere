@@ -78,6 +78,7 @@ def build(parent,out):
     dump(h/'vision-fit-engine-review.json',receipt)
     shutil.copy2(ROOT/'deploy/vision-fit/owner.sh',out/'owner.sh')
     shutil.copy2(ROOT/'deploy/vision-fit/seq.sh',out/'seq.sh')
+    shutil.copy2(ROOT/'deploy/vision-fit/w26-slot-update.md',out/'w26-slot-update.md')
     for name in ('vision_fit_identity.py','vision_fit_finish.py','vision_fit_stage_inputs.py','vision_fit_declaration_proof.py'):shutil.copy2(ROOT/'tools'/name,out/'tools'/name)
     binding=Path('<hub-dir>/cargo-target/flash-next/vision-native-mm-20261116/vision-fit-inputs-v<vm-id>-b-20261116.json')
     if sha(binding)!=plan()['inputs_binding_sha256']:raise ValueError('input-binding-sha')
