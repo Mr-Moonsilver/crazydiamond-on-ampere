@@ -12,10 +12,11 @@ def main():
     stack=rig.Stack('1',blocks=2048);stack.manager.max_model_len=200000
     stack.manager.max_in_flight_tokens=200000
     prompts=[]
-    def request(tokens,i):
-        stack.seq+=1
+    def request(tokens,i,owner=None):
+        owner=stack if owner is None else owner
+        owner.seq+=1
         feature=MultiModalFeatureSpec(data=None,modality='image',identifier='image-owner-'+str(i),mm_position=PlaceholderRange(offset=4,length=1024))
-        return rig.Request('r'+str(stack.seq),list(tokens),rig.SamplingParams(max_tokens=8192),None,mm_features=[feature],block_hasher=stack.hasher)
+        return rig.Request('r'+str(owner.seq),list(tokens),rig.SamplingParams(max_tokens=8192),None,mm_features=[feature],block_hasher=owner.hasher)
     # Same placeholder token IDs, different MM identities: hash separation is real.
     for i in range(7):
         tokens=[50,51,52,53]+[248056]*1024+list(range(1028,190320))
@@ -42,9 +43,16 @@ def main():
     _,late,_,lowered=rig.sh.residue_hit(fresh.host,again,64,190256)
     assert lowered and late<190256
     assert not fresh.violations,fresh.violations[:8]
+    small=rig.Stack('1',blocks=128)
+    small.native_turn(request(prompts[0][:4096],0,small),reply=128)
+    small.manager.new_step_starts()
+    _,same_hit,_=small.manager.get_computed_blocks(request(prompts[0][:4096],0,small))
+    _,different_hit,_=small.manager.get_computed_blocks(request(prompts[0][:4096],1,small))
+    assert same_hit==4048 and different_hit==0,(same_hit,different_hit)
+    assert not small.violations,small.violations[:8]
     assert not stack.violations,stack.violations[:8]
     assert not torch.cuda.is_initialized()
-    args.out.write_text(json.dumps(dict(verdict='PASS',members=hits,shadow_violations=stack.violations,cuda_initialized=False,
+    args.out.write_text(json.dumps(dict(verdict='PASS',members=hits,FULL_calibration=dict(same_hit=same_hit,different_hit=different_hit),shadow_violations=stack.violations,cuda_initialized=False,
         scope='real pinned hybrid cache/hash/CoW; CPU state-position shadow, no device recurrence'),indent=2)+'\n')
     print('VISION_FIT_CHECKPOINT PASS')
 if __name__=='__main__':

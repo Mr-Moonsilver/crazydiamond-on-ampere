@@ -92,7 +92,7 @@ def main():
         tail=fit.prepare(args,feature_case,190320,'tail-real-codec',tail=True)
         assert 0<tail.record()['image_tail_overlap']<=64
     assert not torch.cuda.is_initialized()
-    a.out.write_text(json.dumps(dict(verdict='PASS',rows=rows,reply_prefix_equal=True,growth=growth,cache_tensor_byte_equal=True,tail_image_overlap=tail.record()['image_tail_overlap'],cuda_initialized=False,
+    a.out.write_text(json.dumps(dict(verdict='PASS',rows=rows,companion_prime=dict(prompt_tokens=len(prime.prompt),shared_prefix_tokens=190080,output_cap=prime.output_cap),reply_prefix_equal=True,growth=growth,cache_tensor_byte_equal=True,tail_image_overlap=tail.record()['image_tail_overlap'],cuda_initialized=False,
         scope='real pinned codec/parser/tokenizer/protocol types; synthetic model placeholder lookup and processor owner; no model/device forward'),indent=2)+'\n')
     print('VISION_FIT_TOKENIZER PASS')
 
