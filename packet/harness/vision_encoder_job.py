@@ -143,7 +143,8 @@ def main(argv=None):
         pending.write_text(json.dumps(record, indent=2) + '\n')
         pending.replace(args.run_dir / 'result.json')
     def asr():
-        return check_asr(args.asr_url, args.fixture, expected, args.asr_max_seconds, args.asr_text_field)
+        result=check_asr(args.asr_url, args.fixture, expected, args.asr_max_seconds, args.asr_text_field)
+        return dict(result,observed_wall_ns=time.time_ns())
     save()
     try:
         record['speech']['pre_health'] = check_health(args.speech_health)
@@ -165,6 +166,7 @@ def main(argv=None):
     save()
     root = Path(__file__).resolve().parent.parent
     argv = docker + ['run', '--pull', 'never', '--name', name, '--label', 'flashnext.vision.run=' + args.run_id,
+        '--log-driver', 'local', '--log-opt', 'max-size=16m', '--log-opt', 'max-file=2',
         '--gpus', 'device=' + clear['gpu_uuid'], '--network', 'host', '--read-only', '--cpus', '2',
         '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
         '--memory', '4g', '--memory-swap', '4g', '--user', str(os.getuid()) + ':' + str(os.getgid()),
@@ -198,8 +200,9 @@ def main(argv=None):
             load_future = None
             asr_started = None
             next_asr = None
+            next_log_budget = 0
             while not stop_requested:
-                check_health(args.speech_health)
+                record['speech']['last_health']=dict(check_health(args.speech_health),observed_wall_ns=time.time_ns())
                 if proc.poll() is not None:
                     raise Refused('encoder exited before owned stop')
                 if pid is None:
@@ -214,12 +217,19 @@ def main(argv=None):
                             raise Refused('owned container identity differs')
                         pid = int(value) or None
                         record['gpu_pid'] = pid
+                if args.service and time.monotonic()>=next_log_budget:
+                    retained=sum(p.stat().st_size for p in args.run_dir.rglob('*') if p.is_file())
+                    if retained>256*2**20:raise Refused('service-retained-output-budget; stop before1GiB')
+                    next_log_budget=time.monotonic()+15
                 if pid:
                     sample = check_memory(**physical(clear['gpu_uuid'], pid))
+                    new_peak=sample['owned_mib']>record['physical_peak_mib']
                     record['physical_peak_mib'] = max(record['physical_peak_mib'], sample['owned_mib'])
                     record['memory_samples'] += 1
-                    with (args.run_dir / 'memory.jsonl').open('a') as log:
-                        log.write(json.dumps(dict(monotonic=time.monotonic(), **sample)) + '\n')
+                    if not args.service or new_peak or time.monotonic()>=record.get('next_memory_log',0):
+                        with (args.run_dir / 'memory.jsonl').open('a') as log:
+                            log.write(json.dumps(dict(monotonic=time.monotonic(), **sample)) + '\n')
+                        record['next_memory_log']=time.monotonic()+15
                 if phase == 'startup':
                     try:
                         health = request(url, '/health')
@@ -253,9 +263,14 @@ def main(argv=None):
                         save()
                         time.sleep(.25)
                         continue
-                    record['speech']['post_load_asr'] = speech_result
+                    history=record['speech'].setdefault('asr_history',[])
+                    if len(history)>=96:history.pop(1)
+                    history.append(dict(speech_result,phase='post-load' if not history else 'service'))
+                    record['speech']['post_load_asr'] = history[0]
+                    record['speech']['latest_asr'] = speech_result
                     next_asr = time.monotonic() + 900
                     phase = 'service'
+                    if args.service:record.update(verdict='RUNNING',reason='guarded-service; manual owner stop required',service_guard_ready=True)
                     if not args.service:
                         break
                 elif phase == 'service' and time.monotonic() >= next_asr:

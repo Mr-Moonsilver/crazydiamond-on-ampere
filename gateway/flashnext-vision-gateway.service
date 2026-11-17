@@ -1,0 +1,22 @@
+[Unit]
+Description=Flash-Next keyed raw-image gateway (CPU only)
+After=network-online.target docker.service vllm-flash.service
+Wants=network-online.target
+Requires=docker.service vllm-flash.service
+PartOf=vllm-flash.service
+Conflicts=vllm-qwen38.service
+
+[Service]
+Type=simple
+WorkingDirectory=/data/flash-next-packets/serve-vision-prod-w27-20261117a
+ExecStartPre=/usr/bin/sha256sum --strict --quiet -c PACKET-SHA256SUMS
+EnvironmentFile=/root/.flashnext-serve-vision-prod-w27-20261117a/vllm-api.env
+ExecStart=/bin/bash /data/flash-next-packets/serve-vision-prod-w27-20261117a/gateway-start.sh
+ExecStop=/bin/bash /data/flash-next-packets/serve-vision-prod-w27-20261117a/gateway-stop.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

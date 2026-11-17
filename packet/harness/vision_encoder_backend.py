@@ -90,6 +90,7 @@ class VisionBackend:
         image = Image.open(io.BytesIO(image_bytes))
         if image.width * image.height > 4096**2 or image.width <= 0 or image.height <= 0:
             raise ValueError('image dimensions exceed packet cap')
+        if getattr(image,'n_frames',1)!=1:raise ValueError('animated images and video are refused')
         image = image.convert('RGB')
         inputs = self.processor.image_processor(images=[image], return_tensors='pt',
             min_pixels=32**2, max_pixels=1024**2)
