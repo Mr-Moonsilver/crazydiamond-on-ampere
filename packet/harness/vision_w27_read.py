@@ -6,6 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from packet_client_contract import report_exception
 CALLERS=('<caller-a>.text','<caller-a>.image','<caller-c>50.text','<caller-c>50.image','<caller-c>50.summary','<caller-c>80.text','<caller-c>80.image','<caller-c>80.summary','<caller-b>.dev1','<caller-d>')
 
+G6_CONTRACT_SHA='eb9749fc979c3167480ef221c884e435824c256f43fd3a0e199ba90b15eb27e3'
 REQUIRED_CALLERS=('<caller-a>.text','<caller-a>.image','<caller-c>50.summary','<caller-c>80.summary','<caller-b>.dev1','<caller-d>')
 
 def verdict(v,r,**kw):return dict(verdict=v,reason=r,**kw)
@@ -74,6 +75,7 @@ def main(argv=None):
     if a.gate=='g5':result=g5_read(json.loads(a.record.read_text()),json.loads(a.reference.read_text()),json.loads(a.speech.read_text()))
     elif a.gate=='g6':result=g6_read(json.loads(a.reference.read_text()),json.loads(a.record.read_text()))
     else:result=a3_read(a.record,a.quality_packet,a.selection)
+    if a.gate=='g6':result['contract_sha256']=G6_CONTRACT_SHA
     if a.out:a.out.write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps(result,sort_keys=True));print('W27_'+a.gate.upper()+' '+result['verdict']+' '+result['reason']);return 0 if result['verdict']=='PASS' else 2
 if __name__=='__main__':

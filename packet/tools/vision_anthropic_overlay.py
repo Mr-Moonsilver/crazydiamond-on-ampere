@@ -1,7 +1,10 @@
 """Narrow trusted-loopback embedding adapter for the pinned Anthropic converter."""
 import hashlib
 
+SOURCE_SHA='fb3ccbb21e7095d4a45f5adca3a5798a10429f2a2011bbf9dc20cc1e2cbffb01'
+
 def transform(source):
+    if hashlib.sha256(source.encode()).hexdigest()!=SOURCE_SHA:raise ValueError('pinned Anthropic source identity differs')
     old='''            image_url = cls._convert_image_source_to_url(block.source)
             content_parts.append({"type": "image_url", "image_url": {"url": image_url}})'''
     new='''            if block.source.get("type") == "flash_next_embeds":

@@ -4,6 +4,7 @@ from vision_anthropic_overlay import transform
 from vision_public_gateway import transform as gateway_transform,GatewayError
 
 PIN=Path('<hub-dir>/cargo-target/flash-next/vision-fit-8x200k-20261116/source/pinned-entrypoints/anthropic/serving.py')
+if (Path(__file__).resolve().parent/'vision-pinned/anthropic-serving.py').is_file():PIN=Path(__file__).resolve().parent/'vision-pinned/anthropic-serving.py'
 class Conversion(unittest.TestCase):
     def converter(self,source):
         tree=ast.parse(source);klass=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='AnthropicServingMessages')

@@ -6,7 +6,10 @@ from unittest.mock import patch
 import vision_g5_probe as probe,vision_prod_a3 as a3,vision_w27_read as read,vision_service_owner as owner
 ROOT=Path(__file__).resolve().parents[1]
 Q=Path('<hub-dir>/cargo-target/flash-next/quality-bench-20261116')
-SEL=Path('<hub-dir>/agents/flash-next/tmp/final-engine/A3-main100-selection-20261117.json')
+SEL=ROOT/'A3-main100-selection-20261117.json'
+if not SEL.is_file():SEL=Path('<hub-dir>/agents/flash-next/tmp/final-engine/A3-main100-selection-20261117.json')
+CASES=ROOT/'vision-assets/cases.json'
+if not CASES.is_file():CASES=Path('<hub-dir>/cargo-target/flash-next/vision-native-mm-20261116/serve-vision-fe-20261116a-build-7/vision-assets/cases.json')
 class WholeProtocol(unittest.TestCase):
     def setUp(self):
         self.tmp=Path(tempfile.mkdtemp(prefix='w27-full-protocol-'));self.seen=[]
@@ -26,12 +29,12 @@ class WholeProtocol(unittest.TestCase):
         self.api=ThreadingHTTPServer(('127.0.0.1',0),API);self.api.daemon_threads=True
         threading.Thread(target=self.api.serve_forever,daemon=True).start();self.addCleanup(self.api.server_close);self.addCleanup(self.api.shutdown)
         self.url='http://127.0.0.1:'+str(self.api.server_port)
-        self.cases=json.loads((Path('<hub-dir>/cargo-target/flash-next/vision-native-mm-20261116/serve-vision-fe-20261116a-build-7/vision-assets/cases.json')).read_text())
+        self.cases=json.loads((CASES).read_text())
     def cli(self,args):
         r=subprocess.run([sys.executable,'-B',str(ROOT/'harness/vision_w27_read.py'),*args],capture_output=True,text=True,timeout=10)
         self.assertIn('W27_',r.stdout);return r
     def test_g5_actual_argv_all_four_images_final_reader_and_reference_mutant(self):
-        cases=Path('<hub-dir>/cargo-target/flash-next/vision-native-mm-20261116/serve-vision-fe-20261116a-build-7/vision-assets/cases.json')
+        cases=CASES
         for phase in ('reference','production'):
             args=['--base-url',self.url,'--key-file',str(self.key),'--cases',str(cases),'--phase',phase,'--out',str(self.tmp/(phase+'.json'))]
             r=subprocess.run([sys.executable,'-B',str(ROOT/'harness/vision_g5_probe.py'),*args],capture_output=True,text=True,timeout=15)
@@ -46,7 +49,7 @@ class WholeProtocol(unittest.TestCase):
     def test_g5_client_missing_case_mutant_is_incomplete_at_final_reader(self):
         source=(ROOT/'harness/vision_g5_probe.py').read_text();mutant=self.tmp/'mutant.py'
         mutant.write_text(source.replace('for case in cases:', 'for case in cases[:-1]:').replace("sys.path.insert(0,str(Path(__file__).resolve().parent))", "sys.path.insert(0,"+repr(str(ROOT/'harness'))+")"))
-        cases=Path('<hub-dir>/cargo-target/flash-next/vision-native-mm-20261116/serve-vision-fe-20261116a-build-7/vision-assets/cases.json')
+        cases=CASES
         argv=['--base-url',self.url,'--key-file',str(self.key),'--cases',str(cases),'--phase','production','--out',str(self.tmp/'mutant.json')]
         result=subprocess.run([sys.executable,'-I','-B',str(mutant),*argv],capture_output=True,text=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -98,6 +101,10 @@ class WholeProtocol(unittest.TestCase):
         with patch.object(owner,'validate_clearance',return_value=dict(service_cleared=True)),patch.object(owner.subprocess,'run',return_value=subprocess.CompletedProcess([],0)),patch.object(owner.subprocess,'Popen',side_effect=Child),patch.object(owner.signal,'signal'),contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(owner.main(argv),0)
         self.assertIn('--service',commands[0]);self.assertIn('--model',commands[0]);self.assertEqual(commands[0][-1],'--service')
+        refused_argv=argv[:];refused_argv[refused_argv.index('--state')+1]=str(self.tmp/'fresh-state/admissions.json')
+        with patch.object(owner,'validate_clearance',return_value=dict(service_cleared=False)),patch.object(owner.subprocess,'run',return_value=subprocess.CompletedProcess([],0)),patch.object(owner.subprocess,'Popen',side_effect=Child),patch.object(owner.signal,'signal'),contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(owner.Refused):owner.main(refused_argv)
+
         with self.assertRaises(Exception):owner.admission(dict(attempts=[time.time()]*3),time.time())
         with self.assertRaises(Exception):owner.admission(dict(yielded_at=time.time()-599),time.time())
         self.assertEqual(owner.admission(dict(attempts=[]),time.time()),[])

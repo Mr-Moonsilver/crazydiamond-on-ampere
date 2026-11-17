@@ -3,6 +3,8 @@ set -euo pipefail
 PK=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$PK"
 sha256sum --strict --quiet -c PACKET-SHA256SUMS
+(cd harness && sha256sum --strict --quiet -c SHA256SUMS)
+(cd harness/native30_overlay && sha256sum --strict --quiet -c SHA256SUMS)
 AUTH=/root/.flashnext-serve-vision-prod-w27-20261117a/vllm-api.env
 ENC=/root/.flashnext-serve-vision-prod-w27-20261117a/vision-encoder.env
 for f in "$AUTH" "$ENC"; do
