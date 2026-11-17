@@ -4,7 +4,7 @@ import argparse,hashlib,json,os,shutil,stat,subprocess,sys,time
 from pathlib import Path
 PK='/data/flash-next-packets/serve-vision-prod-w27-20261117a'
 TARGETS=('/etc/systemd/system/vllm-flash.service','/etc/systemd/system/vllm-flash.service.d/90-vision-native-ready.conf',
- '/etc/systemd/system/flashnext-vision-gateway.service',
+ '/etc/systemd/system/flashnext-vision-gateway.service','/etc/default/flashnext-vision-gateway',
  PK+'/gateway-start.sh',PK+'/gateway-stop.sh',PK+'/serve-params.env',PK+'/PACKET-SHA256SUMS',
  '/usr/local/sbin/flashnext-boot-guard.sh','/usr/local/sbin/flashnext-vision-pin-guard.py')
 DIRS=('/etc/systemd/system/vllm-flash.service.d','/etc/systemd/system/flashnext-vision-gateway.service.d')

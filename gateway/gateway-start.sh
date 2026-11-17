@@ -11,16 +11,22 @@ for f in "$AUTH" "$ENC"; do
   [[ -f $f && ! -L $f && $(stat -c '%a %u' "$f") == '600 0' ]] || { echo 'GATEWAY HOLD private0600 auth missing'; exit 2; }
 done
 PIN=$(sha256sum PACKET-SHA256SUMS); PIN=${PIN:0:64}
+LIMIT=${VISION_MAX_IMAGES:-4}
+[[ $LIMIT =~ ^[1-8]$ ]] || { echo 'GATEWAY HOLD invalid image limit'; exit 2; }
 if docker inspect flashnext-vision-gateway-w27 >/dev/null 2>&1; then
   [[ $(docker inspect -f '{{index .Config.Labels "flashnext.vision.packet"}} {{.State.Running}} {{.Image}}' flashnext-vision-gateway-w27) == "$PIN false sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b" ]] || { echo 'GATEWAY HOLD retained-container identity/state differs'; exit 2; }
-  exec docker start --attach flashnext-vision-gateway-w27
+  if [[ $(docker inspect -f '{{index .Config.Labels "flashnext.vision.max-images"}}' flashnext-vision-gateway-w27) == "$LIMIT" ]]; then
+    exec docker start --attach flashnext-vision-gateway-w27
+  fi
+  # Keep the owned stopped container; its immutable argv has the previous image limit.
+  docker rename flashnext-vision-gateway-w27 "flashnext-vision-gateway-w27-retained-$(date -u +%Y%m%dT%H%M%S)-$$"
 fi
 exec docker run --pull never --runtime runc --name flashnext-vision-gateway-w27 \
-  --label flashnext.vision.gateway=vision-prod-w27-20261117a --label "flashnext.vision.packet=$PIN" --network host --read-only \
+  --label flashnext.vision.gateway=vision-prod-w27-20261117a --label "flashnext.vision.packet=$PIN" --label "flashnext.vision.max-images=$LIMIT" --network host --read-only \
   --cap-drop ALL --security-opt no-new-privileges --pids-limit 128 --cpus 2 --memory 2g --memory-swap 2g \
   --log-driver local --log-opt max-size=16m --log-opt max-file=2 --tmpfs /tmp:rw,nosuid,nodev,size=64m \
   -v /data/flash-next-control/vision-prod-w27:/readiness:ro -v "$PK:/packet:ro" -v "$AUTH:/key/vllm-api.env:ro" -v "$ENC:/key/vision-encoder.env:ro" \
   -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 \
   sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b \
   -B /packet/harness/vision_public_gateway.py --bind 0.0.0.0 --port 8000 --backend http://127.0.0.1:8001 \
-  --encoder http://<encoder-host>:9041 --ready-file /readiness/readiness.json --packet-sha256 "$PIN" --key-file /key/vllm-api.env --encoder-key-file /key/vision-encoder.env
+  --max-images "$LIMIT" --encoder http://<encoder-host>:9041 --ready-file /readiness/readiness.json --packet-sha256 "$PIN" --key-file /key/vllm-api.env --encoder-key-file /key/vision-encoder.env

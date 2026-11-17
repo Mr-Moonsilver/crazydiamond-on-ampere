@@ -61,6 +61,14 @@ class Protocol(unittest.TestCase):
         body['messages'][0]['content'].append(copy.deepcopy(body['messages'][0]['content'][0]))
         self.assertEqual(self.call(body=body)[0],400);self.assertEqual(len(self.encodes),4)
 
+    def test_configured_eight_image_HTTP_limit_and_ninth_refusal(self):
+        self.gateway.max_images=8
+        body=self.body();body['messages'][0]['content']=[dict(type='image_url',image_url=dict(url=self.image)) for _ in range(8)]
+        self.assertEqual(self.call(body=body)[0],200);self.assertEqual(len(self.encodes),8)
+        self.assertEqual(len(self.seen[-1][1]['messages'][0]['content']),8)
+        body['messages'][0]['content'].append(copy.deepcopy(body['messages'][0]['content'][0]))
+        self.assertEqual(self.call(body=body)[0],400);self.assertEqual(len(self.encodes),8)
+
     def test_anthropic_image_and_tool_result_embedding_scope(self):
         image=dict(type='image',source=dict(type='base64',media_type='image/png',data=base64.b64encode(b'\x89PNG\r\n\x1a\nCPU_SCHEMA_LEAF').decode()))
         for part in (image,dict(type='tool_result',tool_use_id='one',content=[image])):

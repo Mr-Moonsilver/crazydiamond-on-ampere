@@ -602,7 +602,9 @@ class LaneDispatcher:
             record = self.lane.begin(intermediate_tensors=intermediate)
         if getattr(self.admission, 'mm', None) is not None:
             from native_mm import note_prefix
-            note_prefix(self.admission, self._stage())
+            note_prefix(self.admission, self._stage(), runner=getattr(self.native, 'runner', None),
+                        worker_rank=getattr(getattr(self.native, 'state', None), 'worker_rank', None),
+                        torch_module=self.torch)
         return {'kind': record.kind}
 
     def _do_layer(self, command):

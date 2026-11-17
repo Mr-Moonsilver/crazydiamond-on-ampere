@@ -11,16 +11,28 @@ REQUIRED_CALLERS=('<caller-a>.text','<caller-a>.image','<caller-c>50.summary','<
 
 def verdict(v,r,**kw):return dict(verdict=v,reason=r,**kw)
 def norm(s):return ' '.join(s.strip().lower().split())
-def g5_read(value,reference,speech):
-    if value.get('verdict')!='COMPLETE' or reference.get('verdict')!='COMPLETE' or len(value.get('cases',[]))!=4 or len(reference.get('cases',[]))!=4:return verdict('HOLD','incomplete-four-label-capture')
+def g5_read(value,reference,speech,boundary=None):
+    if value.get('phase')!='production' or reference.get('phase')!='reference':return verdict('HOLD','G5-phase-differs')
+    if value.get('phase')!='production' or reference.get('phase')!='reference' or value.get('verdict')!='COMPLETE' or reference.get('verdict')!='COMPLETE' or len(value.get('cases',[]))!=7 or len(reference.get('cases',[]))!=7:return verdict('HOLD','incomplete-seven-case-capture')
     refs={x['id']:x for x in reference['cases']};rows=[]
-    if len(refs)!=4 or len({x['id'] for x in value['cases']})!=4:return verdict('HOLD','duplicate-image-case')
+    if len(refs)!=7 or len({x['id'] for x in value['cases']})!=7:return verdict('HOLD','duplicate-image-case')
+    if set(refs)!=set(x['id'] for x in value['cases']):return verdict('HOLD','case-identities-differ')
+    if set(refs)!={'red','table','diagram','screenshot','four-distinct','four-reversed','four-native-boundary'}:return verdict('HOLD','multi-image-cases-missing')
+    def label(answer,expected):
+        if isinstance(expected,list):
+            try:actual=json.loads(answer)
+            except (ValueError,TypeError):return False
+            return isinstance(actual,list) and len(actual)==len(expected) and all(isinstance(x,str) and norm(x)==norm(y) for x,y in zip(actual,expected))
+        return norm(answer)==norm(expected)
     for case in value['cases']:
         ref=refs.get(case['id'])
-        if ref is None or any(case[k]!=ref[k] for k in ('image_sha256','question','expected')):return verdict('HOLD','unmatched-27B-reference')
-        okay=norm(case['answer'])==norm(case['expected'])==norm(ref['answer'])
+        if ref is None or any(case[k]!=ref[k] for k in ('image_sha256s','question','expected','request_sha256')):return verdict('HOLD','unmatched-27B-reference')
+        okay=label(case['answer'],case['expected']) and label(ref['answer'],case['expected'])
         rows.append(dict(id=case['id'],match=okay,reference_wall_s=ref['wall_s'],production_wall_s=case['wall_s'],reference_output_tokens=ref['output_tokens'],production_output_tokens=case['output_tokens']))
     if not all(r['match'] for r in rows):return verdict('FAIL','known-label-or-reference-MISMATCH',cases=rows)
+    geometry=next(c for c in value['cases'] if c['id']=='four-native-boundary').get('geometry') or {}
+    if geometry.get('prompt_tokens',0)<=4096 or geometry.get('max_chunk_image_rows',0)<=1024 or geometry.get('crosses_chunk') is not True:return verdict('HOLD','native-multi-image-chunk-boundary-not-shown',cases=rows)
+    if not boundary or boundary.get('verdict')!='PASS':return verdict('HOLD','four-peer-native-MM-memory-boundaries-unproven',cases=rows)
     start=min(c['started_wall_ns'] for c in value['cases']);end=max(c['finished_wall_ns'] for c in value['cases'])
     pre=speech.get('speech',{}).get('pre_asr',{});history=speech.get('speech',{}).get('asr_history',[])
     # ASR after G5 is the scheduled15min service check, not another immediate probe.
@@ -36,7 +48,7 @@ def g5_read(value,reference,speech):
             or speech.get('verdict') not in ('PASS','RUNNING')
             or speech.get('speech',{}).get('last_health',{}).get('observed_wall_ns',0)<end):
         return verdict('HOLD','encoder-clearance-health-or-memory-not-proven',cases=rows)
-    return verdict('PASS','four-labels-reference-and-speech',cases=rows)
+    return verdict('PASS','seven-cases-reference-native-boundaries-and-speech',cases=rows)
 
 def g6_read(pre,post):
     if pre.get('phase')!='27B' or post.get('phase')!='Flash-Next':return verdict('HOLD','caller-phase-differs')
@@ -70,9 +82,9 @@ def a3_read(out,quality,selection):
     return verdict('PASS' if after-before>=-.03-1e-12 else 'FAIL','paired-main100-score',reference=before,production=after,delta_pp=100*(after-before),errors=0,n=100)
 
 def main(argv=None):
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('gate',choices=('g5','g6','a3'));p.add_argument('--record',type=Path,required=True);p.add_argument('--reference',type=Path);p.add_argument('--speech',type=Path);p.add_argument('--quality-packet',type=Path);p.add_argument('--selection',type=Path);p.add_argument('--out',type=Path)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('gate',choices=('g5','g6','a3'));p.add_argument('--record',type=Path,required=True);p.add_argument('--reference',type=Path);p.add_argument('--speech',type=Path);p.add_argument('--boundary',type=Path);p.add_argument('--quality-packet',type=Path);p.add_argument('--selection',type=Path);p.add_argument('--out',type=Path)
     a=p.parse_args(argv)
-    if a.gate=='g5':result=g5_read(json.loads(a.record.read_text()),json.loads(a.reference.read_text()),json.loads(a.speech.read_text()))
+    if a.gate=='g5':result=g5_read(json.loads(a.record.read_text()),json.loads(a.reference.read_text()),json.loads(a.speech.read_text()),json.loads(a.boundary.read_text()) if a.boundary else None)
     elif a.gate=='g6':result=g6_read(json.loads(a.reference.read_text()),json.loads(a.record.read_text()))
     else:result=a3_read(a.record,a.quality_packet,a.selection)
     if a.gate=='g6':result['contract_sha256']=G6_CONTRACT_SHA

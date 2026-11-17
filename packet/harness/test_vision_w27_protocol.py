@@ -1,5 +1,5 @@
 """Real client argv through COMPLETE synthetic G5/A3/G6 protocols; explicit scorer/GPU leaves."""
-import contextlib,copy,datetime as dt,hashlib,http.client,importlib.util,io,json,os,subprocess,sys,tempfile,threading,time,unittest
+import contextlib,shutil,copy,datetime as dt,hashlib,http.client,importlib.util,io,json,os,subprocess,sys,tempfile,threading,time,unittest
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from unittest.mock import patch
@@ -20,41 +20,60 @@ class WholeProtocol(unittest.TestCase):
             def do_POST(self):
                 body=json.loads(self.rfile.read(int(self.headers['Content-Length'])));owner_test.seen.append(body)
                 if self.headers.get('Authorization')!='Bearer '+'a'*64:self.send_response(401);self.end_headers();return
+                if self.path=='/tokenize':
+                    self.send_response(200);self.end_headers();self.wfile.write(json.dumps(dict(tokens=[1]*1536+[248056]*2609+[2]*2000)).encode());return
                 self.send_response(200);self.send_header('Content-Type','text/event-stream' if body.get('stream') else 'application/json');self.end_headers()
                 if body.get('stream'):
                     self.wfile.write(b'data: {"id":"cpu-stub","choices":[{"delta":{"content":"CPU_SCORER_LEAF"},"finish_reason":"stop"}],"usage":{"completion_tokens":1}}\n\ndata: [DONE]\n\n')
                 else:
-                    question=body['messages'][0]['content'][1]['text'];case=next(c for c in owner_test.cases if c['question']==question)
-                    self.wfile.write(json.dumps(dict(choices=[dict(message=dict(content=case['expected']))],usage=dict(completion_tokens=1),model=body['model'])).encode())
+                    case=next(c for c in owner_test.cases if body['request_id']=='w27-g5-'+c['id'])
+                    answer=json.dumps(case['expected']) if isinstance(case['expected'],list) else case['expected']
+                    self.wfile.write(json.dumps(dict(id='chatcmpl-'+body['request_id'],choices=[dict(message=dict(content=answer))],usage=dict(completion_tokens=1),model=body['model'])).encode())
         self.api=ThreadingHTTPServer(('127.0.0.1',0),API);self.api.daemon_threads=True
         threading.Thread(target=self.api.serve_forever,daemon=True).start();self.addCleanup(self.api.server_close);self.addCleanup(self.api.shutdown)
         self.url='http://127.0.0.1:'+str(self.api.server_port)
-        self.cases=json.loads((CASES).read_text())
+        from vision_g5_plan import cases
+        from build_vision_encoder_packet import red_png
+        self.cases=cases(json.loads(CASES.read_text()),1500)
+        for image in CASES.parent.glob('*.png'):shutil.copy2(image,self.tmp/image.name)
+        (self.tmp/'red1024.png').write_bytes(red_png(1024))
+        self.cases_path=self.tmp/'cases.json';self.cases_path.write_text(json.dumps(self.cases))
     def cli(self,args):
         r=subprocess.run([sys.executable,'-B',str(ROOT/'harness/vision_w27_read.py'),*args],capture_output=True,text=True,timeout=10)
         self.assertIn('W27_',r.stdout);return r
-    def test_g5_actual_argv_all_four_images_final_reader_and_reference_mutant(self):
-        cases=CASES
+    def test_g5_actual_argv_all_seven_cases_final_reader_and_reference_mutant(self):
+        cases=self.cases_path
         for phase in ('reference','production'):
             args=['--base-url',self.url,'--key-file',str(self.key),'--cases',str(cases),'--phase',phase,'--out',str(self.tmp/(phase+'.json'))]
             r=subprocess.run([sys.executable,'-B',str(ROOT/'harness/vision_g5_probe.py'),*args],capture_output=True,text=True,timeout=15)
             self.assertEqual(r.returncode,0,r.stderr);self.assertIn('COMPLETE',r.stdout)
         production=json.loads((self.tmp/'production.json').read_text());start=min(c['started_wall_ns'] for c in production['cases']);end=max(c['finished_wall_ns'] for c in production['cases'])
         speech=dict(verdict='RUNNING',physical_peak_mib=1468,speech_overlap_images=[dict(id='real-encoder-load-leaf')],speech=dict(pre_asr=dict(correct=True,elapsed_s=1.14,observed_wall_ns=start-100),post_load_asr=dict(correct=True,elapsed_s=1.16),asr_history=[dict(correct=True,elapsed_s=1.16,observed_wall_ns=end+100)],last_health=dict(observed_wall_ns=end+101)))
-        (self.tmp/'speech.json').write_text(json.dumps(speech));args=['g5','--record',str(self.tmp/'production.json'),'--reference',str(self.tmp/'reference.json'),'--speech',str(self.tmp/'speech.json')]
-        self.assertEqual(self.cli(args).returncode,0)
+        (self.tmp/'speech.json').write_text(json.dumps(speech));(self.tmp/'boundary.json').write_text(json.dumps(dict(verdict='PASS')));args=['g5','--record',str(self.tmp/'production.json'),'--reference',str(self.tmp/'reference.json'),'--speech',str(self.tmp/'speech.json'),'--boundary',str(self.tmp/'boundary.json')]
+        result=self.cli(args);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         reference=json.loads((self.tmp/'reference.json').read_text());reference['cases'][0]['answer']='wrong';(self.tmp/'reference.json').write_text(json.dumps(reference))
         self.assertIn('FAIL',self.cli(args).stdout)
-        production['cases'][0]['image_sha256']='0'*64;(self.tmp/'production.json').write_text(json.dumps(production));self.assertIn('HOLD',self.cli(args).stdout)
+        production['cases'][0]['image_sha256s']=['0'*64];(self.tmp/'production.json').write_text(json.dumps(production));self.assertIn('HOLD',self.cli(args).stdout)
     def test_g5_client_missing_case_mutant_is_incomplete_at_final_reader(self):
         source=(ROOT/'harness/vision_g5_probe.py').read_text();mutant=self.tmp/'mutant.py'
-        mutant.write_text(source.replace('for case in cases:', 'for case in cases[:-1]:').replace("sys.path.insert(0,str(Path(__file__).resolve().parent))", "sys.path.insert(0,"+repr(str(ROOT/'harness'))+")"))
-        cases=CASES
+        mutant.write_text(source.replace('for case in cases:', 'for case in cases[:-1]:').replace("sys.path.insert(0,str(Path(__file__).resolve().parent))", "sys.path.insert(0,"+repr(str(ROOT/'harness'))+");sys.path.insert(0,"+repr(str(ROOT/'tools'))+")"))
+        cases=self.cases_path
         argv=['--base-url',self.url,'--key-file',str(self.key),'--cases',str(cases),'--phase','production','--out',str(self.tmp/'mutant.json')]
         result=subprocess.run([sys.executable,'-I','-B',str(mutant),*argv],capture_output=True,text=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
-        value=json.loads((self.tmp/'mutant.json').read_text());self.assertEqual(len(value['cases']),3)
+        value=json.loads((self.tmp/'mutant.json').read_text());self.assertEqual(len(value['cases']),6)
         self.assertEqual(read.g5_read(value,value,{})['verdict'],'HOLD')
+
+    def test_g5_boundary_actual_argv_complete_and_missing_peer_mutant(self):
+        path=ROOT/'tools/vision_g5_boundary_read.py';record=self.tmp/'production.json';log=self.tmp/'engine.log';out=self.tmp/'boundary.json'
+        record.write_text(json.dumps(dict(cases=[dict(id='four-native-boundary',kind='native-boundary',request_id='request',response_id='chatcmpl-request')])))
+        rows=[dict(schema='native-mm-boundary/1',worker_rank=r,stage=r//2,request_sha256=hashlib.sha256(b'chatcmpl-request').hexdigest(),free_bytes=100*2**20,rows=2048 if r<2 else 0,native_mm=dict(tower_registered_cuda_bytes=0,cache_storage_bytes=40*2**20)) for r in range(4)]
+        def run():
+            log.write_text(''.join('flash-s5 native-mm-boundary '+json.dumps(x)+'\n' for x in rows))
+            return subprocess.run([sys.executable,'-I','-B',str(path),'--engine-log',str(log),'--record',str(record),'--out',str(out)],capture_output=True,text=True)
+        self.assertEqual(run().returncode,0);self.assertEqual(json.loads(out.read_text())['verdict'],'PASS')
+        rows.pop();self.assertEqual(run().returncode,2);self.assertEqual(json.loads(out.read_text())['verdict'],'HOLD')
+        rows.append(dict(rows[-1],worker_rank=3,free_bytes=39*2**20));self.assertEqual(run().returncode,2);self.assertEqual(json.loads(out.read_text())['verdict'],'FAIL')
 
     def test_g6_complete_actual_reader_argv_missing_caller_and_probe_only_negative(self):
         calls={name:dict(status='PASS',application_path=True,wall_s=1,output_tokens=5,fixture_sha256='c'*64,receipt_path='/private/owner/call.json',caller_timeout_contract='owner own config; no timeout observed',timed_out=False) for name in read.CALLERS}
@@ -87,7 +106,7 @@ class WholeProtocol(unittest.TestCase):
             self.assertEqual(a3.main(argv),0)
         self.assertEqual(len(self.seen),100);self.assertTrue(all(b['chat_template_kwargs']==dict(enable_thinking=False) for b in self.seen))
         args=['a3','--record',str(out),'--quality-packet',str(Q),'--selection',str(SEL)]
-        self.assertEqual(self.cli(args).returncode,0)
+        result=self.cli(args);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         values=[json.loads(x) for x in (out/'scores/main.jsonl').read_text().splitlines()];values=values[:-1];(out/'scores/main.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in values));self.assertIn('HOLD',self.cli(args).stdout)
     def test_service_owner_exact_argv_owned_stop_and_admission_refusals(self):
         packet=self.tmp/'packet';packet.mkdir();clear=self.tmp/'clearance.json';clear.write_text('{}')

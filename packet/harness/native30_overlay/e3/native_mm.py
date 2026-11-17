@@ -5,12 +5,16 @@ No imports of torch/vLLM on the text path. Bytes never appear in repr/logs.
 from dataclasses import dataclass, field
 import hashlib
 import logging
+import json
 import os
 
 from e3_types import E3ContractError, TransactionId
 
 WIDTH = 2560
 MAX_IMAGE_ROWS = 1024
+MAX_IMAGES = 8
+MAX_REQUEST_ROWS = MAX_IMAGES * MAX_IMAGE_ROWS
+MAX_CHUNK_MM_ROWS = 2048
 CACHE_ROWS = 8 * MAX_IMAGE_ROWS
 ROW_BYTES = WIDTH * 2
 
@@ -47,7 +51,7 @@ class MMChunk:
                 or type(self.state_epoch) is not int or self.state_epoch < 1 or self.state_epoch != state_epoch):
             raise NativeMMError('MM chunk owner differs')
         size = transaction.chunk_end - transaction.chunk_start
-        if (type(self.rows) is not tuple or not 0 < len(self.rows) <= MAX_IMAGE_ROWS
+        if (type(self.rows) is not tuple or not 0 < len(self.rows) <= MAX_CHUNK_MM_ROWS
                 or any(type(i) is not int or not 0 <= i < size for i in self.rows)
                 or self.rows != tuple(sorted(set(self.rows)))):
             raise NativeMMError('MM chunk rows are not unique ordered positions')
@@ -79,45 +83,56 @@ def request_plan(request):
     if not enabled():
         raise NativeMMError('native MM switch is off')
     features = request.mm_features
-    if len(features) != 1:
-        raise NativeMMError('one image per request required')
-    feature = features[0]
-    place = feature.mm_position
-    item = feature.data
-    if feature.modality != 'image' or item is None or set(item) != {'image_embeds', 'image_grid_thw'}:
-        raise NativeMMError('explicit image embeddings and grid required; no tower or cached-data guess')
-    tensor, grid = item['image_embeds'].data, item['image_grid_thw'].data
-    signature = (request.request_id, id(feature), id(item), id(tensor), id(grid),
-                 feature.identifier, place.offset, place.length, id(place.is_embed))
+    if not isinstance(features, (list, tuple)) or not 1 <= len(features) <= MAX_IMAGES:
+        raise NativeMMError('one to eight images per request required')
+    signatures = []
+    for feature in features:
+        place, item = feature.mm_position, feature.data
+        if feature.modality != 'image' or item is None or set(item) != {'image_embeds', 'image_grid_thw'}:
+            raise NativeMMError('explicit image embeddings and grid required; no tower or cached-data guess')
+        tensor, grid = item['image_embeds'].data, item['image_grid_thw'].data
+        signatures.append((request.request_id, id(feature), id(item), id(tensor), id(grid),
+                           feature.identifier, place.offset, place.length, id(place.is_embed)))
+    # Keep the original one-image identity and payload byte-for-byte.
+    signature = signatures[0] if len(signatures) == 1 else (request.request_id, tuple(signatures))
     old = getattr(request, '_flash_s5_mm_plan', None)
     if old is not None:
         if type(old) is not ImagePlan or old.signature != signature:
             raise NativeMMError('MM request metadata changed after snapshot')
         return old
     import torch
-    image_tensor(tensor)
-    if (not isinstance(grid, torch.Tensor) or grid.device.type != 'cpu'
-            or grid.dtype != torch.int64 or grid.numel() != 3):
-        raise NativeMMError('MM image grid must be three CPU int64 values')
-    t, h, w = grid.reshape(-1).tolist()
-    if t != 1 or h <= 0 or w <= 0 or h % 2 or w % 2 or h*w//4 != tensor.shape[0]:
-        raise NativeMMError('MM image grid disagrees with BF16 rows')
-    if (type(place.offset) is not int or place.offset < 0 or type(place.length) is not int
-            or not 0 < place.length <= 4*MAX_IMAGE_ROWS
-            or place.offset + place.length > request.num_prompt_tokens):
-        raise NativeMMError('MM placeholder is outside prompt')
-    mask = place.is_embed
-    if mask is None:
-        selected = tuple(range(place.length))
-    else:
-        if (not isinstance(mask, torch.Tensor) or mask.device.type != 'cpu'
-                or mask.dtype != torch.bool or tuple(mask.shape) != (place.length,)):
-            raise NativeMMError('MM placeholder mask must be CPU bool vector')
-        selected = tuple(i for i, use in enumerate(mask.tolist()) if use)
-    if len(selected) != tensor.shape[0]:
-        raise NativeMMError('MM placeholder mask disagrees with BF16 rows')
-    plan = ImagePlan(signature, tuple(place.offset+i for i in selected),
-                     tensor.contiguous().view(torch.uint8).numpy().tobytes())
+    positions, pieces = [], []
+    previous_end = 0
+    for feature in features:
+        place, item = feature.mm_position, feature.data
+        tensor, grid = item['image_embeds'].data, item['image_grid_thw'].data
+        image_tensor(tensor)
+        if (not isinstance(grid, torch.Tensor) or grid.device.type != 'cpu'
+                or grid.dtype != torch.int64 or grid.numel() != 3):
+            raise NativeMMError('MM image grid must be three CPU int64 values')
+        t, h, w = grid.reshape(-1).tolist()
+        if t != 1 or h <= 0 or w <= 0 or h % 2 or w % 2 or h*w//4 != tensor.shape[0]:
+            raise NativeMMError('MM image grid disagrees with BF16 rows')
+        if (type(place.offset) is not int or place.offset < previous_end or type(place.length) is not int
+                or not 0 < place.length <= 4*MAX_IMAGE_ROWS
+                or place.offset + place.length > request.num_prompt_tokens):
+            raise NativeMMError('MM placeholders overlap, reorder, or fall outside prompt')
+        previous_end = place.offset + place.length
+        mask = place.is_embed
+        if mask is None:
+            selected = tuple(range(place.length))
+        else:
+            if (not isinstance(mask, torch.Tensor) or mask.device.type != 'cpu'
+                    or mask.dtype != torch.bool or tuple(mask.shape) != (place.length,)):
+                raise NativeMMError('MM placeholder mask must be CPU bool vector')
+            selected = tuple(i for i, use in enumerate(mask.tolist()) if use)
+        if len(selected) != tensor.shape[0]:
+            raise NativeMMError('MM placeholder mask disagrees with BF16 rows')
+        positions.extend(place.offset+i for i in selected)
+        if len(positions) > MAX_REQUEST_ROWS:
+            raise NativeMMError('MM request exceeds total image-row budget')
+        pieces.append(tensor.contiguous().view(torch.uint8).numpy().tobytes())
+    plan = ImagePlan(signature, tuple(positions), b''.join(pieces))
     request._flash_s5_mm_plan = plan
     return plan
 
@@ -226,9 +241,19 @@ def prefix_inputs(lane, admission, torch):
     return embeds
 
 
-def note_prefix(admission, stage):
+def note_prefix(admission, stage, *, runner=None, worker_rank=None, torch_module=None):
     payload = admission.mm
     logging.getLogger(__name__).info(
         'flash-s5 native-mm-prefix txn=%d generation=%d stage=%d rows=%d device_feature_bytes=%d digest=%s',
         admission.transaction.txn_seq, admission.transaction.request_generation, stage,
         len(payload.rows), len(payload.data) if stage == 0 else 0, payload.sha256)
+
+    if runner is not None:
+        torch = torch_module if torch_module is not None else __import__('torch')
+        free, total = torch.cuda.mem_get_info(runner.device)
+        mm = inventory(runner)
+        row = dict(schema='native-mm-boundary/1',worker_rank=worker_rank,stage=stage,
+            txn=admission.transaction.txn_seq,chunk_start=admission.transaction.chunk_start,chunk_end=admission.transaction.chunk_end,
+            request_sha256=hashlib.sha256(admission.transaction.request_uid.encode()).hexdigest(),
+            rows=len(payload.rows),free_bytes=int(free),total_bytes=int(total),native_mm=mm)
+        logging.getLogger(__name__).info('flash-s5 native-mm-boundary %s',json.dumps(row,sort_keys=True,separators=(',',':')))

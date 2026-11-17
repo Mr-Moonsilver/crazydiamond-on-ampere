@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 CASES=(
  ('gateway-auth','vision_public_gateway.py',"if (post or self.path not in ('/health','/metrics','/v1/models')) and not self.authenticated():", "if False and not self.authenticated():",'test_vision_public_gateway.Protocol.test_full_text_image_tool_messages_sse_and_keyless_metadata'),
- ('g5-all-four','vision_g5_probe.py','for case in cases:','for case in cases[:-1]:','test_vision_w27_protocol.WholeProtocol.test_g5_actual_argv_all_four_images_final_reader_and_reference_mutant'),
+ ('g5-all-four','vision_g5_probe.py','for case in cases:','for case in cases[:-1]:','test_vision_w27_protocol.WholeProtocol.test_g5_actual_argv_all_seven_cases_final_reader_and_reference_mutant'),
  ('a3-all100','vision_prod_a3.py','todo=[items[i] for i in selected]','todo=[items[i] for i in selected[:-1]]','test_vision_w27_protocol.WholeProtocol.test_a3_frozen_runner_actual100_requests_and_scorer_leaf_to_final_verdict'),
  ('g6-duplicate-owner','vision_g6_capture.py',"if name not in CALLERS or name in result['calls']:","if name not in CALLERS:",'test_vision_w27_protocol.WholeProtocol.test_g6_complete_actual_reader_argv_missing_caller_and_probe_only_negative'),
  ('reader-real-caller','vision_w27_read.py'," or c.get('application_path') is not True",'','test_vision_w27_protocol.WholeProtocol.test_g6_complete_actual_reader_argv_missing_caller_and_probe_only_negative'),
@@ -26,7 +26,7 @@ def main():
   (folder/'baseline.log').write_text(baseline.stdout+baseline.stderr)
   if baseline.returncode:raise ValueError('mutant baseline not green:'+name)
   path=h/module;text=path.read_text()
-  if text.count(before)!=1:raise ValueError('mutation anchor not unique:'+name)
+  if text.count(before)!=(2 if name=='encoder-memory' else 1):raise ValueError('mutation anchor not unique:'+name)
   path.write_text(text.replace(before,after))
   mutant=subprocess.run(argv,env=env,cwd=folder,capture_output=True,text=True,timeout=120)
   output=mutant.stdout+mutant.stderr;(folder/'mutant.log').write_text(output)
