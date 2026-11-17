@@ -11,11 +11,11 @@ from build_vision_serve import sums,repin_params,once
 from vision_fit_8x200k import plan
 PARENT_SHA='3fa651383cb1dc97c81dbf137cb6477d0084808bc66c9e20b86780ebe6242ee8'
 EXTRA=('fit_memory','graph_event_floor','decode_graph_events','startup_vram_budget')
-TAG='vision-fit-8x200k-20261116a'
+TAG='vision-fit-8x200k-20261117b'
 OVERLAY='overlay-v16s5-'+TAG
-NAME='q18a-vision-fit-8x200k-a'
+NAME='q18a-vision-fit-8x200k-b'
 CLIENTS=('vision_fit_8x200k.py','fit_8x200k.py','packet_client_contract.py','test_fit_memory.py','test_vision_fit_8x200k.py',
- 'fit_w21_auto_tick.py.src','fit_w21_repro.json','fit_8x200k_w20.json','test_fit_8x200k.py','test_vision_answer_protocol.py','fit_death.py','test_vision_fit_owner.py','test_vision_fit_owner_protocol.py','vision_fit_tokenizer_proof.py','test_vision_fit_guards.py','test_vision_fit_stage.py','test_vision_fit_package.py')
+ 'fit_w21_auto_tick.py.src','fit_w21_repro.json','fit_8x200k_w20.json','test_fit_8x200k.py','test_vision_answer_protocol.py','fit_death.py','test_vision_fit_owner.py','test_vision_fit_owner_protocol.py','vision_fit_tokenizer_proof.py','test_vision_fit_guards.py','test_vision_fit_stage.py','test_vision_fit_package.py','test_vision_fit_repairs.py','vision_fit_checkpoint_proof.py','test_append_no_block_stop_stack.py')
 sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def dump(p,v):Path(p).write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')
 
@@ -68,26 +68,25 @@ def build(parent,out):
         owner_sha256=sha(ROOT/'deploy/vision-fit/owner.sh'),
         public_identity_flags=('enable-mm-embeds','mm-processor-cache-gb','skip-mm-profiling'),
         vision_identity_word_split='matches unquoted Bash variable expansion; literal JSON quotes preserved',
-        reviewed_by='Codex',scope='fit-D observer plus MM implementation closure only; CPU qualification recorded in delivery',
+        reviewed_by='Codex',scope='fit-D observer plus MM closure, first-admission cache statistics and bounded hit metadata; CPU qualification recorded in delivery',
         fit_parent='f5c9db7676f59eecc418006505bac933c6bbd89d',default_off='FLASH_S5_FIT_MEMORY',changes=changes,
         transform_sha256=sha(ROOT/'tools/fit_8x200k_source.py'),added_graphs_events_streams_tensors=0,hardware_qualified=False,
         source_shas={n+'.py':sha(ROOT/'patches/s5_engine'/(n+'.py')) for n in EXTRA})
-    review['vision_fit_20261116']=receipt
+    review['vision_fit_b_20261117']=receipt
     closure['review_sha256']=nr.digest(review);closure['generated_source_shas']=generated;dump(o/'e3'/nr.CLOSURE,closure)
     evidence=json.loads((o/'e3/decode-probe-evidence.json').read_text());evidence['generated_source_shas']=generated;dump(o/'e3/decode-probe-evidence.json',evidence)
     dump(h/'vision-fit-engine-review.json',receipt)
     shutil.copy2(ROOT/'deploy/vision-fit/owner.sh',out/'owner.sh')
     shutil.copy2(ROOT/'deploy/vision-fit/seq.sh',out/'seq.sh')
-    shutil.copy2(ROOT/'deploy/vision-fit/w26-slot-update.md',out/'w26-slot-update.md')
+    shutil.copy2(ROOT/'deploy/vision-fit/later-window.md',out/'later-window.md')
     for name in ('vision_fit_identity.py','vision_fit_finish.py','vision_fit_stage_inputs.py','vision_fit_declaration_proof.py'):shutil.copy2(ROOT/'tools'/name,out/'tools'/name)
     binding=Path('<hub-dir>/cargo-target/flash-next/vision-native-mm-20261116/vision-fit-inputs-v<vm-id>-b-20261116.json')
     if sha(binding)!=plan()['inputs_binding_sha256']:raise ValueError('input-binding-sha')
     shutil.copy2(binding,out/'vision-fit-inputs.json')
-    for src,dst in (('<hub-dir>/agents/flash-next/tmp/final-engine/OPERATOR-GRANT-w26-vision-addendum-20261116.md','w26-grant.md'),
-                    ('<hub-dir>/agents/flash-next/tmp/final-engine/PLAN-vision-fit-8x200k-b-20261116.md','vision-fit-plan-b.md')):shutil.copy2(src,out/dst)
+    shutil.copy2(ROOT/'deploy/vision-fit/protocol-b.md',out/'protocol-b.md')
     rule=Path('<hub-dir>/agents/flash-next/tmp/final-engine/RULE-vision-fit-M-w26-20261116.md')
     shutil.copy2(rule,out/'vision-fit-rule.md')
-    dump(out/'fit-plan.json',dict(plan(),rule_sha256=sha(rule)))
+    dump(out/'fit-plan.json',dict(plan(),rule_sha256=sha(rule),protocol_sha256=sha(out/'protocol-b.md')))
     (out/'image-id.txt').write_text('sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b\n')
     # Compatibility with the existing CPU owner proof; does not alter the model payload.
     delta=json.loads((out/'vision-delta.json').read_text());delta.update(overlay_name=OVERLAY,fit_observer=True,fit_plan_sha256=sha(out/'fit-plan.json'));dump(out/'vision-delta.json',delta)

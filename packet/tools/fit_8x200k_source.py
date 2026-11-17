@@ -73,6 +73,13 @@ def transform(rel,text):
         return record
 '''
         text=once(text,anchor,replacement)
+        anchor='        self.admitted += 1\n'
+        text=once(text,anchor,anchor+
+            "        # Native's first admission bypasses stock's initial PrefillStats.set.\n"
+            "        _stats = getattr(request, 'prefill_stats', None)\n"
+            "        if request.num_computed_tokens == 0 and _stats is not None and request.num_preemptions <= 0:\n"
+            "            _stats.set(num_prompt_tokens=request.num_prompt_tokens,\n"
+            "                       num_local_cached_tokens=num_new_computed, num_external_cached_tokens=0)\n")
     else:raise ValueError('unlisted-fit-source-file')
     ast.parse(text)
     return text,dict(path=rel,before=hashlib.sha256(original.encode()).hexdigest(),after=hashlib.sha256(text.encode()).hexdigest())

@@ -12,12 +12,14 @@ def complete():
     with patch.object(old.fit,'PREFIXES',fit.PREFIXES),patch.object(old.fit,'OUTPUT',8192),patch.object(old.fit,'OUTPUT_CAPS',fit.OUTPUT_CAPS),patch.object(old.fit,'COLD_HISTORY',190000):
         row=old.complete()
     row.update(input_binding_sha256=fit.BINDING_SHA,cache_shas=fit.CACHE_SHAS,
-        cancel=dict(retired=True),reuse=dict(same_image_cached=4048,different_image_verified=True),
+        calibration_lease=dict(manual_owned=True),cancel=dict(retired=True,cancelled_stream=dict(outcome='expected-cancel',output_tokens=0)),reuse=dict(same_image_cached=4048,different_image_verified=True),
         host=dict(samples=100,errors=[],oom_delta=0,oom_kill_delta=0),semantic=dict(verdict='MATCH'))
     row['tail']=dict(complete=True,native_admissions=8,conversations=[dict(prompt_tokens=190320,output_tokens=8192,output_cap=8192,image_tail_overlap=54) for _ in range(8)])
     for stage in row['stages']+[row['tail'],row['cold']]:
         for m in stage['conversations']:
             m.update(prompt_verified=True,image_rows=1024,output_cap=m['output_tokens'])
+    for i,m in enumerate(row['cold']['conversations']):m['uid']='fixture-'+str(i)
+    row['cold']['cache_readiness']=[dict(uid='fixture-'+str(i),start=190080,prompt_tokens=190320,engine_epoch=row['memory']['engine_epoch']) for i in range(7)]
     row['memory'].update(mm_peaks={str(r):dict(tower_registered_cuda_bytes=0,cache_storage_bytes=5*2**20 if r<2 else 0) for r in range(4)},
         host_rss_peaks={str(r):dict(VmRSS=100,RssAnon=80,RssShmem=20,VmHWM=120) for r in range(4)})
     row['memory']['simultaneous_resident_token_peak'].update(eight_at_190k_seen=True,eight_minimum_peak=190320)

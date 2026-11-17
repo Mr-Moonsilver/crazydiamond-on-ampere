@@ -20,7 +20,7 @@ from packet_client_contract import report_exception
 from vision_answer_probe import validate_embedding, embedding_content
 from vision_answer_read import read as read_answers
 
-NAME='q18a-vision-fit-8x200k-a'
+NAME='q18a-vision-fit-8x200k-b'
 PREFIXES=(60000,120000,160000,190320)
 OUTPUT_CAPS={60000:2048,120000:2048,160000:2048,190320:8192,190000:8192}
 OUTPUT=8192
@@ -35,7 +35,7 @@ def plan():
     return dict(schema='vision-fit-plan/1',name=NAME,agents=8,max_model_len=200000,
         prefixes=list(PREFIXES),staged_output_caps={str(k):v for k,v in OUTPUT_CAPS.items()},
         image_tail_cohort=dict(prompt_tokens=190320,output_tokens=8192,members=8),
-        cold_beside_seven=dict(prompt_tokens=190000,output_tokens=8192),
+        cold_beside_seven=dict(prompt_tokens=190000,output_tokens=8192,companion_prime_output=1,required_hit=190080),
         native_workload_cap_s=2700,startup_cap_s=900,start_identity_cap_s=900,end_identity_cap_s=1200,stop_cap_s=300,
         outer_cap_s=6000,owned_cleanup_grace_s=330,floor_mib=40,inputs_binding_sha256=BINDING_SHA,
         growth_protocol='fit-D exact token-prefix continuation in trusted text; no normal chat-history rerender',
@@ -123,10 +123,24 @@ def prepare(args,feature,target,uid,previous=None,tail=False):
     return Stream(uid,ids,candidate,feature,OUTPUT_CAPS.get(target,128),tail)
 
 
+def companion_prime(args,stream,index):
+    # Preserve the previous chat prefix, but checkpoint one hash unit before its final tail.
+    messages=copy.deepcopy(stream.messages)
+    part=next(p for p in messages[-1]['content'] if p['type']=='text')
+    suffix=' x'*176+' Keep responding until the output cap.'
+    if not part['text'].endswith(suffix):raise base.Hold('companion-prime-filler-geometry')
+    part['text']=part['text'][:-len(suffix)]+' Keep responding until the output cap.'
+    ids=tokenize(args,messages)
+    if len(ids)!=190144 or ids[:190080]!=stream.prompt[:190080]:
+        raise base.Hold('companion-prime-checkpoint-prefix-differs')
+    return Stream('vf-cold-prime-'+str(index),ids,messages,stream.feature,1)
+
+
 class Stream:
     def __init__(self,uid,prompt,messages,feature,cap,tail=False):
         self.uid,self.prompt,self.messages,self.feature,self.output_cap=uid,prompt,messages,feature,cap
         self.tail=tail;self.first=threading.Event();self.done=threading.Event();self.tokens=[];self.text=''
+        self.cancel_requested=False;self.outcome='pending'
         self.error=None;self.open_ns=self.first_ns=self.end_ns=None;self.socket=None
         self.cached_tokens=self.usage=self.finish_reason=self.http_status=None;self.prompt_verified=False
     def record(self):
@@ -137,7 +151,8 @@ class Stream:
             image_tail_overlap=sum(i>=len(self.prompt)-64 for i in positions) if self.tail else 0,
             output_tokens=len(self.tokens),output_cap=self.output_cap,output_sha256=base.sha(self.tokens),
             resume_ns=self.open_ns,first_ns=self.first_ns,end_ns=self.end_ns,cached_tokens=self.cached_tokens,
-            finish_reason=self.finish_reason,http_status=self.http_status,error=self.error,prompt_verified=self.prompt_verified)
+            finish_reason=self.finish_reason,http_status=self.http_status,error=self.error,prompt_verified=self.prompt_verified,
+            outcome=self.outcome,cancel_requested=self.cancel_requested)
 
 
 def generate(args,stream):
@@ -172,8 +187,15 @@ def generate(args,stream):
                 if text:stream.text+=text
                 if choice.get('finish_reason') is not None:stream.finish_reason=choice['finish_reason']
         if (not ended or len(stream.tokens)!=stream.output_cap or stream.finish_reason!='length'
-                or not stream.prompt_verified):raise base.Hold('incomplete-fixed-chat-or-unverified-prompt')
-    except Exception as exc:stream.error=report_exception(exc)
+                or not stream.prompt_verified):
+            if stream.cancel_requested and stream.first_ns is None and stream.http_status==200:
+                stream.outcome='expected-cancel'
+            else:raise base.Hold('incomplete-fixed-chat-or-unverified-prompt')
+        else:stream.outcome='complete'
+    except Exception as exc:
+        if (stream.cancel_requested and stream.first_ns is None and stream.http_status==200
+                and isinstance(exc,(OSError,base.http.client.IncompleteRead))):stream.outcome='expected-cancel'
+        else:stream.outcome='error';stream.error=report_exception(exc)
     finally:
         stream.end_ns=time.monotonic_ns();stream.first.set();stream.done.set();conn.close()
 
@@ -196,7 +218,17 @@ def assess(record):
             if (member.get('prompt_verified') is not True or member.get('image_rows')!=1024
                     or member.get('error') or member.get('output_tokens')!=member.get('output_cap')):reasons.append('MM-stream-unproven')
             if stage is tail and (member.get('image_tail_overlap',0)<=0 or member.get('prompt_tokens')!=190320):reasons.append('tail-image-geometry-unproven')
-    if record.get('cancel',{}).get('retired') is not True:reasons.append('cancel-retirement-unproven')
+    cancel=record.get('cancel',{})
+    if (cancel.get('retired') is not True or cancel.get('cancelled_stream',{}).get('outcome')!='expected-cancel'
+            or cancel.get('cancelled_stream',{}).get('output_tokens')!=0):reasons.append('cancel-retirement-unproven')
+    if record.get('calibration_lease',{}).get('manual_owned') is not True:reasons.append('FULL-calibration-lease-unproven')
+    cold=record.get('cold') or {}
+    hits=cold.get('cache_readiness',[])
+    if (len(hits)!=7 or len({h.get('uid') for h in hits})!=7
+            or {h.get('uid') for h in hits}!={m.get('uid') for m in cold.get('conversations',[])[:-1]}
+            or any(h.get('start')!=190080 or h.get('prompt_tokens')!=190320
+                   or h.get('engine_epoch')!=record.get('memory',{}).get('engine_epoch') for h in hits)):
+        reasons.append('cached-companions-unproven')
     if record.get('reuse',{}).get('same_image_cached',0)<=0 or record.get('reuse',{}).get('different_image_verified') is not True:reasons.append('MM-prefix-reuse-unproven')
     mm=record.get('memory',{}).get('mm_peaks',{})
     if set(mm)!=set(map(str,range(4))):reasons.append('MM-peer-inventory-missing')
@@ -256,14 +288,21 @@ def run(args):
     pool=ThreadPoolExecutor(max_workers=8);all_streams=[];current=[];host=HostMemory();started=time.monotonic()
     def save():
         record['elapsed_s']=time.monotonic()-started;record['host']=host.record()
-        pending=args.out.with_suffix('.next.json');pending.write_text(json.dumps(record,indent=2)+'\n');pending.replace(args.out)
+        for stage in record.get('stages',[])+[record.get('tail'),record.get('cold')]:
+            if stage and '_streams' in stage:
+                stage['conversations']=[stream.record() for stream in stage['_streams']]
+        record['streams']=[stream.record() for stream in all_streams]
+        saved=dict(record,stages=[{k:v for k,v in stage.items() if k!='_streams'} for stage in record['stages']])
+        for name in ('tail','cold'):
+            if record.get(name):saved[name]={k:v for k,v in record[name].items() if k!='_streams'}
+        pending=args.out.with_suffix('.next.json');pending.write_text(json.dumps(saved,indent=2)+'\n');pending.replace(args.out)
     def status():
         host.sample();value=post(args.url,base.CONTROL,dict(action='status'))
         record['memory']=value;base.check_status(value,'e6');return value
     def wait(streams,first=False):
         while True:
             if time.monotonic()-started>=args.timeout_s:raise base.Hold('declared-native-workload-cap')
-            status()
+            status();save()
             if any(s.error for s in streams):raise base.Hold('chat-stream-error')
             if all((s.first if first else s.done).is_set() for s in streams):return
             time.sleep(.1)
@@ -283,7 +322,20 @@ def run(args):
     try:
         host.sample();inputs=load_inputs(args);record['auth']=base.keyed_serve(args.url);status()
         record['launch_native_coverage']=record['memory']['native_coverage']
-        # Serve launcher already performs cxfx42's typed select_and_release once.
+        # Calibration is already allowed on FULL; keep its manual lease until stress.
+        from e3_native_runtime_client import NativeRuntimeClient
+        import e3_compose5_box as box
+        lease=dict(statuses=[])
+        session=post(args.url,'/v1/flash_s5_native_overlap',dict(schema=1,action='status'))
+        if (session.get('schema')!=1 or session.get('action')!='status' or not session.get('run_id')
+                or session.get('engine_epoch')!=record['memory']['engine_epoch']):
+            raise base.Hold('existing-native-session-missing-or-foreign')
+        client=NativeRuntimeClient(args.url,session['run_id'],epoch=record['memory']['engine_epoch'],timeout_s=60)
+        try:
+            record['calibration_prepare']=client.prepare('full')
+            box.keep_lease(client,lease)
+        finally:record['calibration_control']=list(client.history)
+        record['calibration_lease']=lease['native_off']
         answers=dict(verdict='COMPLETE',cases=[])
         for case in inputs['semantic']:
             answer=post(args.url,'/v1/chat/completions',dict(model=args.model,temperature=0,max_tokens=128,
@@ -302,7 +354,13 @@ def run(args):
         image_start=first.record()['image_start']
         record['reuse']=dict(same_image_cached=again.cached_tokens,different_image_cached=different.cached_tokens,
             different_image_verified=different.prompt==first.prompt and type(different.cached_tokens) is int and different.cached_tokens<=image_start,
-            images_differ=first.feature['image_sha256']!=different.feature['image_sha256'])
+            images_differ=first.feature['image_sha256']!=different.feature['image_sha256'],
+            conversations=[s.record() for s in (first,again,different)])
+        import n3j2_packet
+        table=n3j2_packet.configure();row=next(r for r in table.arms() if r['label']=='n3.g2-live-0')
+        selection=record['native_selection']=dict(role='e6',selection=row,statuses=[])
+        with box._bound():box.select_and_release(client,row,selection)
+        selection['control']=client.history
         record['initial_native_coverage']=status()['native_coverage']
         record['coverage_scope']='native stress after semantic/cache calibration; whole protocol also reported'
         cancel=prepare(args,feature,60000,'vf-cancel-reuse');before=status()['native_admissions'];start(cancel)
@@ -311,7 +369,7 @@ def run(args):
             time.sleep(.05)
         if cancel.first_ns is not None:raise base.Hold('cancel-first-output-already-served')
         if cancel.socket is None:raise base.Hold('cancel-owned-socket-missing')
-        cancel.socket.shutdown(socket.SHUT_RDWR)
+        cancel.cancel_requested=True;cancel.socket.shutdown(socket.SHUT_RDWR)
         deadline=time.monotonic()+120
         while time.monotonic()<deadline:
             current_status=status()
@@ -326,20 +384,43 @@ def run(args):
             stage,previous=cohort('grow-'+str(target),features,target,previous)
             record['stages'].append(stage);save()
         record['tail'],tail_streams=cohort('tail-images',features,190320,tail=True);save()
+        # Tokenize cold before any timed decoder consumes its 8192-token runway.
+        cold=prepare(args,features[7],190000,'vf-cold-probe')
+        record['cold']=dict(live_at_arrival=0,complete=False,conversations=[],cache_readiness=[],priming=[],admission_baseline=None)
+        for i in range(7):
+            old=previous[i]
+            prime=start(companion_prime(args,old,i));wait([prime])
+            record['cold']['priming'].append(prime.record());save()
         before=status()['native_admissions'];current=[]
+        record['cold']['admission_baseline']=before
+        record['cold']['_streams']=current
         for i in range(7):
             old=previous[i];current.append(start(Stream('vf-cold-companion-'+str(i),old.prompt,old.messages,features[i],8192)))
         wait(current,first=True)
+        snapshot=status()
+        for stream in current:
+            hits=[v for uid,v in snapshot.get('first_admissions',{}).items() if uid.startswith('chatcmpl-'+stream.uid+'-')]
+            if (len(hits)!=1 or hits[0].get('start')!=190080 or hits[0].get('prompt_tokens')!=190320
+                    or hits[0].get('engine_epoch')!=snapshot['engine_epoch']
+                    or type(hits[0].get('transaction')) is not int or hits[0]['transaction']<1):
+                raise base.Hold('cached-companion-checkpoint-not-ready')
+            record['cold']['cache_readiness'].append(dict(uid=stream.uid,**hits[0]))
         if any(s.done.is_set() for s in current):raise base.Hold('seven-decoders-not-live-at-cold-arrival')
-        cold=prepare(args,features[7],190000,'vf-cold-probe');current.append(start(cold));wait(current)
+        record['cold']['live_at_arrival']=7;current.append(start(cold));wait(current)
+        record['cold']['native_admissions']=status()['native_admissions']-before;save()
         if any(s.end_ns<=cold.first_ns for s in current[:-1]):raise base.Hold('seven-decoders-did-not-span-cold-prefill')
-        record['cold']=dict(live_at_arrival=7,conversations=[s.record() for s in current],native_admissions=status()['native_admissions']-before)
+        record['cold']['complete']=True
         if record['cold']['native_admissions']<=0:raise base.Hold('no-native-execution')
         record.update(complete=True,verdict='FIT',reason='fixed-image-growth-tail-and-cold-under-seven-complete')
     except Exception as exc:record.update(verdict='HOLD',reason=report_exception(exc))
     finally:
+        if record.get('cold') is not None:
+            baseline=record['cold'].get('admission_baseline')
+            record['cold']['native_admissions']=(record.get('memory',{}).get('native_admissions',0)-baseline if type(baseline) is int else None)
+        save()
         try:
-            settled=post(args.url,base.CONTROL,dict(action='finish' if record['complete'] else 'stop'))
+            record['cleanup']=dict(action='finish' if record['complete'] else 'stop',workload_reason=record['reason'])
+            settled=post(args.url,base.CONTROL,dict(action=record['cleanup']['action']))
             end=time.monotonic()+120
             while not settled.get('settled') and time.monotonic()<end:
                 host.sample();time.sleep(.1);settled=post(args.url,base.CONTROL,dict(action='status'))
@@ -351,6 +432,9 @@ def run(args):
                 try:stream.socket.shutdown(socket.SHUT_RDWR)
                 except OSError:pass
         pool.shutdown(wait=True,cancel_futures=False)
+        for stage in record.get('stages',[])+[record.get('tail'),record.get('cold')]:
+            if stage and '_streams' in stage:
+                stage['conversations']=[stream.record() for stream in stage.pop('_streams')]
         record['errors400']=sum(s.http_status==400 for s in all_streams);host.sample();save()
     return record
 

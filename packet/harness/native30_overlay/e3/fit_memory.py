@@ -118,6 +118,7 @@ class FitFloor(Floor):
         self.finishing=False
         self.coverage=dict(decode_rounds=0,decode_checked=0,chunks=0,chunk_checked=0,checks=0)
         self.pending_chunk=None
+        self.first_admissions={}
         self.permit_samples={'native-arm':[],'chunk':[]}
         self.resident_peak=dict(tokens=0,members=[],samples=0,unknown=0,eight_at_190k_seen=False,eight_minimum_peak=0,
             basis='sum min(num_computed_tokens,num_tokens) over unfinished scheduler requests; includes allocated in-flight frontiers, excludes freed prefix cache and compression')
@@ -273,6 +274,10 @@ class FitFloor(Floor):
         tx=record.transaction;key=(tx.request_uid,tx.chunk_start,tx.chunk_end)
         if self.checked is None or self.checked[0]!=key:raise ValueError('fit-chunk-without-exact-floor-permit')
         self.checked=None;self.pending_chunk=None
+        if tx.request_uid not in self.first_admissions:
+            if len(self.first_admissions)>=128:raise ValueError('fit-first-admission-budget')
+            self.first_admissions[tx.request_uid]=dict(start=record.committed_end,prompt_tokens=record.prompt_end,
+                transaction=tx.txn_seq,engine_epoch=self.driver.engine_epoch)
 
     def quiet_tick(self):
         # Every stock schedule is marked explicitly, including outside chunks.
@@ -353,7 +358,7 @@ class FitFloor(Floor):
                     active_request_ids=[str(uid) for uid,r in getattr(self.engine.scheduler,'requests',{}).items()
                         if not str(getattr(getattr(r,'status',None),'name','')).startswith('FINISHED')],
                     preemptions=self.preemptions,ooms=self.ooms,fatal=None,errors400=None,
-                    native_coverage=native,
+                    native_coverage=native,first_admissions=dict(self.first_admissions),
                     native_admissions=self.driver.controller.admitted if self.driver is not None else 0,
                     permit_latency=self.permit_summary(),simultaneous_resident_token_peak=dict(self.resident_peak),
                     stop_proof=dict(route='full' if self.settled else None,all_rank_stop=self.settled,

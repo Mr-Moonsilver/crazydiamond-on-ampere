@@ -422,7 +422,8 @@ def assess(record):
                 reasons.append('unexplained-stock-prefill')
             handback,geometry=native['handback'],native['geometry_tail']
             if (not handback['every_row_after_a_native_turn'] or handback['excess_rows']
-                    or geometry['turns']>native['native_turns']
+                    or geometry['requests']>geometry['turns']
+                    or geometry['rows']>64*geometry['turns']
                     or (geometry['rows'] and (geometry['max_r'] is None or geometry['max_r']>64
                                              or geometry['max_rows'] is None or geometry['max_rows']>64))):
                 reasons.append('registered-exception-proof-missing')

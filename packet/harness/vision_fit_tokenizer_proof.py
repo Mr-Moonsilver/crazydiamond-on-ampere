@@ -86,6 +86,9 @@ def main():
             stream.tokens=reply*stream.output_cap
             growth.append(dict(prompt_tokens=len(stream.prompt),output_cap=stream.output_cap,retained_prefix_equal=True))
             previous=stream
+        prime=fit.companion_prime(args,previous,0)
+        assert len(prime.prompt)==190144 and prime.prompt[:190080]==previous.prompt[:190080]
+        assert prime.output_cap==1
         tail=fit.prepare(args,feature_case,190320,'tail-real-codec',tail=True)
         assert 0<tail.record()['image_tail_overlap']<=64
     assert not torch.cuda.is_initialized()
