@@ -21,7 +21,8 @@ def main():
     for i in range(7):
         tokens=[50,51,52,53]+[248056]*1024+list(range(1028,190320))
         prompts.append(tokens)
-        hit,pieces=stack.native_turn(request(tokens[:190144],i),reply=1)
+        # The one output comes from the handback; its own token is never decoded at cap1.
+        hit,pieces=stack.native_turn(request(tokens[:190144],i),reply=0)
         assert hit==0
     hits=[]
     for i,tokens in enumerate(prompts):
