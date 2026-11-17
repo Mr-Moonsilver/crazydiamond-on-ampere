@@ -90,6 +90,25 @@ class NativeOverlapSession:
                 os.environ.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst'
                 and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
             handler = None
+        if action == 'native_qsa_fused' and not (
+                os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
+                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
+            handler = None
+        if action == 'native_append_yield' and not (
+                os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
+                and all(os.environ.get(name) is not None for name in (
+                    'FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES'))):
+            handler = None
+        if action == 'native_layer_group' and not (
+                os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1'
+                and os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
+                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
+            handler = None
+        if action == 'native_stage_local' and not (
+                os.environ.get('FLASH_S5_STAGE_LOCAL', '0') == '1'
+                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
+            handler = None
         if handler is None:
             raise NativeOverlapSessionError('session-action-not-exposed')
         if self.run_id is not None and run_id is not None and run_id != self.run_id:
@@ -120,7 +139,85 @@ class NativeOverlapSession:
     async def _action_native_progress(self, command):
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('native-progress-with-open-measurement')
-        return await self.control.native_progress(command.get('mode'))
+        replies = command.get('replies')
+        if replies is not None:
+            # Held-g L4: the arm's reply format, with its idle selection if named.
+            return await self.control.native_progress(command.get('mode'), command.get('idle'), replies)
+        idle = command.get('idle')
+        if idle is None:
+            return await self.control.native_progress(command.get('mode'))
+        return await self.control.native_progress(command.get('mode'), idle)
+
+    async def _action_native_qsa_fused(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-qsa-fused-with-open-measurement')
+        return await self.control.native_qsa_fused(command.get('fused'))
+
+    async def _action_native_append_yield(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-append-yield-with-open-measurement')
+        return await self.control.native_append_yield(command.get('enabled'))
+
+    async def _action_native_layer_group(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-layer-group-with-open-measurement')
+        return await self.control.native_layer_group(command.get('size'))
+
+    async def _action_native_stage_local(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-stage-local-with-open-measurement')
+        if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') != '1':
+            # alpha-next-c1: a requested deferred bind is never dropped silently where it is not installed.
+            raise NativeOverlapSessionError('native-stage-overlap-defer-bind-not-installed')
+        if 'early_successor' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-early-successor-needs-inwait')
+        if 'chunk_bound' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-chunk-bound-needs-inwait')
+        if 'native_hold' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-native-hold-needs-inwait')
+        if 'native_residue' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-native-residue-needs-inwait')
+        if 'exact_successor' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-exact-successor-needs-inwait')
+        if 'terminal_successor' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-terminal-successor-needs-inwait')
+        if 'o3_split' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-o3-split-needs-inwait')
+        if 'ahead_nosync' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-ahead-nosync-needs-inwait')
+        if 'k2_settle' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-k2-settle-needs-inwait')
+        if 'lazy_recv' in command or 'decode_merge' in command or 'inwait' in command:
+            # stage1-step: never dropped silently; rides on C1's command with the deferred bind, or is refused here.
+            if 'inwait' in command and os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeOverlapSessionError('native-stage-inwait-not-installed')
+            if 'lazy_recv' in command and os.environ.get('FLASH_S5_LAZY_RECV', '0') != '1':
+                raise NativeOverlapSessionError('native-stage-lazy-recv-not-installed')
+            if 'decode_merge' in command and os.environ.get('FLASH_S5_DECODE_MERGE', '0') != '1':
+                raise NativeOverlapSessionError('native-stage-decode-merge-not-installed')
+            if 'overlap' not in command or 'defer_bind' not in command:
+                raise NativeOverlapSessionError('native-stage-decode-step-needs-defer-bind')
+            return await self.control.native_stage_overlap(command.get('local'), command['overlap'], command['defer_bind'],
+                                                           lazy_recv=command.get('lazy_recv'),
+                                                           decode_merge=command.get('decode_merge'),
+                                                           inwait=command.get('inwait'),
+                                                           early_successor=command.get('early_successor'),
+                                                           exact_successor=command.get('exact_successor'),
+                                                           **({'chunk_bound': command['chunk_bound']} if 'chunk_bound' in command else {}),
+                                                           **({'native_hold': command['native_hold']} if 'native_hold' in command else {}),
+                                                           **({'native_residue': command['native_residue']} if 'native_residue' in command else {}),
+                                                           **({'terminal_successor': command['terminal_successor']} if 'terminal_successor' in command else {}),
+                                                           **({'o3_split': command['o3_split']} if 'o3_split' in command else {}),
+                                                           **({'ahead_nosync': command['ahead_nosync']} if 'ahead_nosync' in command else {}),
+                                                           **({'k2_settle': command['k2_settle']} if 'k2_settle' in command else {}))
+        if 'overlap' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1':
+            # C1 only; with the switch off the command is C0's, field and all, as before.
+            if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1':
+                # alpha-next-c1: the deferred bind rides on C1's command only where it is installed.
+                return await self.control.native_stage_overlap(command.get('local'), command['overlap'],
+                                                               command['defer_bind'])
+            return await self.control.native_stage_overlap(command.get('local'), command['overlap'])
+        return await self.control.native_stage_local(command.get('local'))
 
     async def _action_prepare(self, command):
         target = command.get('target_route')

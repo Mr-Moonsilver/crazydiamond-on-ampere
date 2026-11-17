@@ -51,13 +51,14 @@ if not OVERLAY.is_dir():
 def package_inventory():
     """Bind the historical O fixture's version, without changing validation.
 
-    Hub tests intentionally use frozen native35 O; it predates native41's
-    opt-in module. Frozen native41 bundle tests use their own complete overlay.
+    Hub tests intentionally use frozen native35 O; it predates native41's,
+    C0's, the stage-1 anatomy's and C1's opt-in modules. Frozen native41 bundle tests use their own complete overlay.
     Every historical module/library/hash is still checked by the real gate.
     """
     import decode_probe
     expected=tuple(name for name in decode_probe.GENERATED_SOURCES
-                   if name!='native_auto_arm' or (OVERLAY/'e3/native_auto_arm.py').is_file())
+                   if name not in ('native_auto_arm','stage_wire','stage_progress','handler_anatomy','stage_overlap','attn_meta_batch','attn_meta_select')
+                   or (OVERLAY/('e3/%s.py'%name)).is_file())
     with patch.object(decode_probe,'GENERATED_SOURCES',expected):
         yield
 
@@ -365,32 +366,52 @@ class TwoRoundComposition(unittest.TestCase):
                 session_run_id=RUN_ID,aggregate_verdict=graded['verdict'],both_rounds_retained=True))
 
 
-def packet(stack,entries,generation_index=0):
+def begin_call(stack):
+    """One client-bracketed engine sample taken before the journal runs (the prefill_begin call).
+
+    Fixture leaf (native43 reuse clock): replaces the session's status read inside prefill_begin;
+    the sample is the real driver's own ``_monotonic_ns()`` and ``_clock_record()``, the two values
+    engine_driver._status_record puts in ``observed_clock_ns``/``clock``, bracketed by this
+    process's monotonic clock as e3_native_performance.prefill brackets the call.
+    """
+    import time
+    send=time.monotonic_ns();now=int(stack.driver._monotonic_ns())
+    sample={'observed_clock_ns':now,'clock':stack.driver._clock_record(now)}
+    return send,sample,time.monotonic_ns()
+
+
+def packet(stack,entries,call,generation_index=0):
     """The actual driver's queried evidence over ``entries`` (NativeWindowSource shape)."""
+    import time
     import native_overlap_metrics as metrics
     import test_e3_native_measurement as source
     start,stop=source.window_of(entries)
+    send,sample,recv=call
+    end_send=time.monotonic_ns()
     raw=stack.driver.overlap_evidence(start,stop);raw['start_ns'],raw['end_ns']=start,stop
+    end_recv=time.monotonic_ns()
     generation=raw['measurement']['route_generations'][generation_index]
     begin={'schema':1,'engine_epoch':stack.driver.engine_epoch,'route':'split','route_generation':generation,'ranks':list(stack.driver.ranks),
-           'storage_epochs_by_rank':{r:stack.worker(r).state.decode_owner.storage_epoch for r in stack.driver.ranks}}
+           'storage_epochs_by_rank':{r:stack.worker(r).state.decode_owner.storage_epoch for r in stack.driver.ranks},**sample}
     proof=dict(metrics.clock_identity(),proved=True)
     return {'begin':{'engine_epoch':stack.driver.engine_epoch,'snapshot':begin,'measure_start_ns':start},
             'end':{'engine_epoch':stack.driver.engine_epoch,'measure_end_ns':stop,'raw_journal_evidence':raw,'clock':{'begin':proof,'end':proof}},
-            'client_bracket':{'start_ns':start-1,'end_ns':stop+1}}
+            'client_bracket':{'start_ns':send,'begin_recv_ns':recv,'end_send_ns':end_send,'end_ns':end_recv}}
 
 
 def source_packets():
     """Fresh: a fresh-only real journal. Append: the uid-append request after its own route transition."""
     import test_e3_native_measurement as source
     fresh_stack=source.make_long_stack(tokens=2050,layers=4)
-    fresh=packet(fresh_stack,source.run_journal(fresh_stack))
+    fresh_call=begin_call(fresh_stack)
+    fresh=packet(fresh_stack,source.run_journal(fresh_stack),fresh_call)
     stack=source.make_long_stack(tokens=2050,layers=4)
     append=source.bridge_suite.Request(uid='uid-append',tokens=2350,computed=2050,generation=1)
+    append_call=begin_call(stack)
     entries=source.run_journal(stack,extra_requests=(append,))
     first=min(i for i,e in enumerate(entries) if e.get('kind')=='chunk_open' and e.get('request')=='uid-append')
     transition=max(i for i,e in enumerate(entries[:first]) if e.get('kind')=='transition')
-    appended=packet(stack,entries[transition:])
+    appended=packet(stack,entries[transition:],append_call)
     assert fresh_stack.driver.engine_epoch==stack.driver.engine_epoch
     return {'fresh':fresh,'append':appended},stack.driver.engine_epoch
 

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# self-run shim: the box's /tmp/setcfg.py (byte-identical copy at $R/tmp/setcfg.py, sha-checked by the launch) runs with its
+# two absolute /etc/default paths prefixed by $R; every other python3 call is the real interpreter unchanged.
+if [[ ${1:-} == "$R/tmp/setcfg.py" ]]; then
+  src=$(sed "s#'/etc/default/#'$R/etc/default/#g" "$1"); shift
+  exec /usr/bin/python3 -c "$src" "$@"
+fi
+exec /usr/bin/python3 "$@"

@@ -21,7 +21,8 @@ import e3_overlap_grade as legacy_grade
 from e3_native_runtime_client import NativeRuntimeClient
 from e3_native_qualification_driver import exception_details
 from native_measurement import select_window_evidence
-from native_overlap_metrics import clock_identity, throughput, target_marker
+from native43_boundary_clock import prove
+from native_overlap_metrics import throughput, target_marker
 
 
 def native_window(record, family, epoch):
@@ -38,14 +39,25 @@ def native_window(record, family, epoch):
     if (begin.get('engine_epoch') != epoch or end.get('engine_epoch') != epoch
             or type(start) is not int or type(stop) is not int or stop <= start):
         missing.append('native-window-identity')
-    expected = clock_identity()
-    for name in ('begin','end'):
-        proof = (end.get('clock') or {}).get(name) or {}
-        if (proof.get('proved') is not True or expected.get('proved') is not True
-                or proof.get('boot_id') != expected.get('boot_id')
-                or proof.get('time_namespace') != expected.get('time_namespace')):
-            missing.append('client-engine-clock:'+name)
+    # native43: the client and the engine read /proc through different views
+    # (container boot_id and time namespace), so identity strings are
+    # provenance only.  Each boundary is proved by the engine's own monotonic
+    # sample lying inside this client's bracket of that same call; the
+    # engine-internal proof of its control reply is still required.  One
+    # implementation: harness/native43_boundary_clock.py, Codex 109313a bytes
+    # (sha256 7337558ab350f786f9b3ec77264a03983efe02d219b2af0b6ec801687b8efcda).
     bracket = record.get('client_bracket') or {}
+    calls = (('begin', snapshot, bracket.get('start_ns'), bracket.get('begin_recv_ns')),
+             ('end', raw, bracket.get('end_send_ns'), bracket.get('end_ns')))
+    client_clock = {}
+    for name, sample, send, recv in calls:
+        proof = (end.get('clock') or {}).get(name) or {}
+        # prove() needs both client stamps as ints (it computes their difference).
+        client_clock[name] = (prove(sample, send, recv)
+                              if type(sample) is dict and type(send) is int and type(recv) is int
+                              else {'proved': False, 'reason': 'client-call-bracket-or-engine-sample-missing'})
+        if proof.get('proved') is not True or client_clock[name]['proved'] is not True:
+            missing.append('client-engine-clock:'+name)
     if not (type(bracket.get('start_ns')) is int and type(bracket.get('end_ns')) is int
             and type(start) is int and type(stop) is int
             and bracket['start_ns'] <= start < stop <= bracket['end_ns']):
@@ -67,7 +79,7 @@ def native_window(record, family, epoch):
     return {'complete':not missing,'reasons':sorted(set(missing)),
             'binding':binding,'group':group,'prefill_tokens_per_s':rate,
             'headline_basis':'first accepted native work .. final first-queried STATE_WRITE observation',
-            'raw_journal_retained':True,'view':view}
+            'raw_journal_retained':True,'client_clock':client_clock,'view':view}
 
 
 def _stream_ok(state):
@@ -131,6 +143,7 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
         local_start = time.monotonic_ns()
         if native:
             record['begin'] = client.call('prefill_begin',phase=phase)
+            begin_recv = time.monotonic_ns()
         spec = cfg['prefill'][family]
         state,workload = shared._send_prefill(url,model,cfg,lane,0 if family=='fresh' else 1,
             prompts[family],spec['generation_budget'],spec['seed'],salt)
@@ -141,10 +154,15 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
         if sampler:
             sampler.snapshot()
         if native:
+            end_send = time.monotonic_ns()
             record['end'] = client.call('prefill_end')
         local_end = time.monotonic_ns()
         refusal = (record.get('end') or {}).get('refusal') if native else None
         record['client_bracket'] = {'start_ns':local_start,'end_ns':local_end}
+        if native:
+            # Per-call brackets: the begin and end engine samples are each proved
+            # inside their own call (native43_boundary_clock.prove, <= 10 s).
+            record['client_bracket'].update(begin_recv_ns=begin_recv,end_send_ns=end_send)
         record['request'] = {'prompt_sha256':prompts[family+'_sha256'],
             'prompt_tokens_declared':prompts[family+'_tokens'],
             'prompt_tokens_observed':state.prompt_tokens,

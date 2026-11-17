@@ -22,7 +22,9 @@ copies, produced while no compact fill is outstanding.
 """
 import hashlib
 import json
+import os
 import time
+import types
 from dataclasses import dataclass, field
 
 from e3_types import E3ContractError, E3Pending, LaneId, LaneRole, TransactionId
@@ -38,6 +40,100 @@ _OUTPUT_OPERATION = 'qsa_output_before_moe'
 
 class Row1OracleError(E3ContractError):
     """A native row1 byte/output comparison failed or could not be completed."""
+
+
+# -- the expected reference route as a function of the transport policy ----
+#
+# The native transport policy (FLASH_S5_NATIVE_QSA_POLICY, latched per
+# operation) changes the native route only where the pinned threshold already
+# admits the sparse branch: num_pages > pages_in_arena
+# (QsaPrefillOperation.sparse_selection_eligible).  There, under 'dense', the
+# native route is dense_dma, so the oracle runs the pinned reference on its own
+# existing dense branch (dense_branch below) and compares dense with dense.
+# Everywhere else the reference runs unchanged and the mapping is the pinned
+# one.
+#
+#   policy   pages               native route   reference branch   expected
+#   current  any                 sparse_dma     its own            sparse_uva
+#   current  any                 dense_dma      its own            dense_dma
+#   current  any                 empty          its own            empty
+#   dense    <= pages_in_arena   dense_dma      its own            dense_dma
+#   dense    >  pages_in_arena   dense_dma      forced dense       dense_dma
+#   dense    >  pages_in_arena   other          (refused: the policy forbids it)
+#
+# Below the threshold neither policy reaches the policy test, so the dense
+# policy's routes there are the current policy's (rows 1-3 and 4 coincide).
+TRANSPORT_POLICIES = ('current', 'dense')
+_PINNED_EXPECTED = {'sparse_dma': 'sparse_uva', 'dense_dma': 'dense_dma',
+                    'empty': 'empty'}
+# The pinned reference's sparse switch (ops_qsa.flash_e2_arena_attention:
+# ``os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1"``).
+DENSE_SWITCH = 'VLLM_QSA_KVO_SPARSE_PREFILL'
+
+
+def expected_reference(policy, actual_route, num_pages, pages_in_arena):
+    """Return ``(expected_reference_route, force_dense)`` for one layer call."""
+    if policy not in TRANSPORT_POLICIES:
+        raise Row1OracleError('row1 expected route has an unknown policy')
+    if actual_route not in _PINNED_EXPECTED:
+        raise Row1OracleError('row1 expected route has an unknown native route')
+    _bounded(num_pages, 'expected route pages', minimum=1)
+    _bounded(pages_in_arena, 'expected route arena pages', minimum=1)
+    force_dense = policy == 'dense' and num_pages > pages_in_arena
+    if force_dense and actual_route != 'dense_dma':
+        raise Row1OracleError('dense policy beyond the arena declared a non-dense route')
+    return _PINNED_EXPECTED[actual_route], force_dense
+
+
+class _DenseEnviron:
+    """``os.environ`` for the forced reference: its sparse switch reads '0'.
+
+    Read-only; every other key is the process environment's own value.  The
+    process environment is never written.
+    """
+    __slots__ = ()
+
+    def get(self, key, default=None):
+        if key == DENSE_SWITCH:
+            return '0'
+        return os.environ.get(key, default)
+
+
+class _DenseOs:
+    """The one ``os`` surface the pinned reference reads (``os.environ.get``).
+
+    Any other attribute raises, so a reference that read more of ``os`` would
+    fail loudly instead of silently differing.
+    """
+    __slots__ = ()
+    environ = _DenseEnviron()
+
+
+def dense_branch(reference):
+    """The pinned reference itself, entered on its own existing dense branch.
+
+    The returned function has the original's code object, defaults, keyword
+    defaults and closure; its globals are a per-call copy of the original
+    module's globals in which only ``os`` answers the sparse switch with '0'.
+    No byte of the reference is changed and no new math exists: the branch
+    it takes is the one it takes whenever ``VLLM_QSA_KVO_SPARSE_PREFILL`` is
+    not '1'.  The process environment is never mutated.
+    """
+    if type(reference) is not types.FunctionType:
+        raise Row1OracleError('dense reference branch needs the plain original function')
+    code = reference.__code__
+    scope = reference.__globals__
+    if (DENSE_SWITCH not in code.co_consts or 'os' not in code.co_names
+            or scope.get('os') is not os):
+        raise Row1OracleError('reference does not read the pinned sparse switch')
+    forced_scope = dict(scope)
+    forced_scope['os'] = _DenseOs()
+    forced = types.FunctionType(code, forced_scope, reference.__name__,
+                                reference.__defaults__, reference.__closure__)
+    forced.__kwdefaults__ = reference.__kwdefaults__
+    forced.__qualname__ = reference.__qualname__
+    forced.__doc__ = reference.__doc__
+    return forced
 
 
 def _digest(kind, payload):
@@ -622,5 +718,5 @@ class Row1Qualifier:
 __all__ = [
     'Row1Bucket', 'Row1Comparison', 'Row1Failure', 'Row1Identity',
     'Row1LayerRecord', 'Row1OracleError', 'Row1Qualifier', 'Row1RecordStore',
-    'Row1ReferenceSession',
+    'Row1ReferenceSession', 'TRANSPORT_POLICIES', 'dense_branch', 'expected_reference',
 ]

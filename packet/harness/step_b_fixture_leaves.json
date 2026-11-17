@@ -1,0 +1,184 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Step B: engine tests, the connected CPU probe, the queue suite and the VM record",
+ "inherits": [
+  "step_a_fixture_leaves.json",
+  "native41_progress_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "step-b-connected-network",
+   "test": "test_e3_native_layer_groups.GroupNetwork",
+   "replaces": "CUDA devices, streams, event buses, the model forward and the MQ transport around NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, LaneForward, QsaLayerDriver and QsaPrefillOperation",
+   "equivalence": "Step A's FusedNetwork leaves, with real stacks on all four ranks and several QSA layers per stage. Events resolve only when the test completes them, so a host wait or a wrong order inside a group shows as a stuck or refused command",
+   "cannot_prove": "device order, bytes, NCCL behaviour, real timing",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-fake-layers",
+   "test": "test_e3_native_layer_groups.equip_stack",
+   "replaces": "The generated Qwen GDN and QSA decoder layers",
+   "equivalence": "c.FakeGdnLayer and c.FakeQsaLayer with c.FakeAttention, the connected suite's declared layers: they enter the real private scope, real driver and real attention seams, at the positions PREPARE names",
+   "cannot_prove": "that the real generated layers' kernels are bytewise unchanged by a group: tools/step_b_vm_input.py compares hidden-state hashes on a real 3090",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-tp-communicators",
+   "test": "test_e3_native_layer_groups.GroupNetwork.install_tp",
+   "replaces": "PyNcclCommunicator, the TP torch module, the TP group and the top-k selection entering the collective",
+   "equivalence": "Step A's LeafPynccl and TP_TORCH under the real PrefillTpCommunicator and CollectiveLedger, entered at the seam the generated attention enters them",
+   "cannot_prove": "NCCL behaviour or real collective ordering: the box's TP arms",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-pending-peer",
+   "test": "test_e3_native_layer_groups.PendingPeer",
+   "replaces": "A real worker that returned one typed pending acceptance for a chosen command",
+   "equivalence": "A real SegmentAcceptance(pending=True) in front of the real peer bridge. A real group never returns pending: this forces the cancel-between-acceptances order so the driver's retained TP obligation is proved, as in Step A's pending peer",
+   "cannot_prove": "that a real worker can reach this state; the test proves what happens if it does",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-injected-failures",
+   "test": "test_e3_native_layer_groups.Failure",
+   "replaces": "A layer that raises inside a group, a device copy that fails in a later bucket, a peer that refuses before enqueue, a LaneForward.layer that reports a paused record",
+   "equivalence": "Each raises from the seam the real failure raises from, so the real quarantine, retained ownership and bounded stop paths run",
+   "cannot_prove": "which real device faults occur",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-reports",
+   "test": "test_e3_native_layer_groups.RunAhead",
+   "replaces": "Worker poll reports' pending_op_seqs in the direct bound checks",
+   "equivalence": "The one field the real _fused_hold reads; the connected run-ahead tests drive the same rule through real polls with unresolved events",
+   "cannot_prove": "nothing beyond the connected tests",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "Burst progress meta and direct submit",
+   "test": "test_e3_native_layer_groups.Burst",
+   "replaces": "NativeProgress.with_meta and the direct= argument of the transport submit",
+   "equivalence": "The worker seam pops the meta key before dispatch (executor_hooks) and no worker seam runs here. Direct replies change the wire path only, which test_e3_native_reply_hol proves",
+   "cannot_prove": "the direct wire path with a group in the wait",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "s5_startup._enabled",
+   "test": "test_e3_native_layer_groups.Startup",
+   "replaces": "The overlap composition's settings read by _enabled",
+   "equivalence": "The switch guards run after _enabled, so the real guards decide. The engine self-run starts the real startup with the settings",
+   "cannot_prove": "a real engine start",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-router-frontend",
+   "test": "test_e3_native_layer_groups.RouterCase",
+   "replaces": "The API frontend, FastAPI, the Request, and the engine utility transport",
+   "equivalence": "test_native41_progress_queue.RouterBase's declared leaves under the real attach_native_router, session, control client and driver",
+   "cannot_prove": "the HTTP server itself: the queue's arm client and the box",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-client-utility",
+   "test": "test_e3_native_layer_groups.Exposure",
+   "replaces": "AsyncLLM.engine_core.call_utility_async and the session's control client, in the direct guard tests",
+   "equivalence": "Records what would reach the channel; the guard under test runs before it. The Router classes run the same paths without this leaf",
+   "cannot_prove": "nothing beyond the Router classes",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-vm-dummy-weights",
+   "test": "tools/step_b_vm_input.py",
+   "replaces": "The real model weights and its 48 layers, with 4 layers of seeded dummy weights on one rank",
+   "equivalence": "The real worker, real kernels and real attention on a real 3090. Hidden-state hashes compare device work across sizes; the size-1 repeat is the determinism control",
+   "cannot_prove": "real weights, TP, PP, the engine driver, decode quality or speed on the real model",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-b-vm-wait-probe",
+   "test": "tools/step_b_wait_probe.py",
+   "replaces": "The lane's queued work and scope state, with queued matmul kernels on the current stream and the exact statements under test",
+   "equivalence": "The same tensor forms on the same device kind and image, with the brief's measured forms as positive and negative controls",
+   "cannot_prove": "that the engine's real queue behaves as matmul kernels do: the record's host_submit_ns reads that",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "connected-group-driver",
+   "test": "e3_step_b_probe (cases step-b-*)",
+   "replaces": "QsaLayerDriver and QsaPrefillOperation in a group, through the dispatcher driver_factory",
+   "equivalence": "Step A's declared LeafQsaDriver, granting QSA only on each stage's last layer instead of on every layer: with a grant on every layer every group would close at one layer. The dispatcher's group path calls exactly fused_profiles and arm_fused on it. test_e3_native_layer_groups runs the real driver and operation in a group",
+   "cannot_prove": "The real QSA driver under the real Core step, or size 4: this model has 2 layers per stage, so size 4 forms the same groups as size 2 here (group_layers_max 2). The suite and the VM hold size 4",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "connected-lane-end",
+   "test": "e3_step_b_probe (cases step-b-*)",
+   "replaces": "LaneForward.end_layer, which the real dispatcher's group path reads and the parent probe's FakeLane does not have",
+   "equivalence": "The stage end the connected fixture's plan uses (2 layers on stage 0, 4 on stage 1): the same value the real lane's end_layer has for that stage",
+   "cannot_prove": "The real lane geometry: test_e3_native_layer_groups and the VM use it",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-control-replies",
+   "test": "test_step_b_queue.Selection",
+   "replaces": "The serving router and engine replies to the arm's control sequence, for the refusal and ordering cases",
+   "equivalence": "The reply rows are the shapes the real router, session and driver produce, and the positive shapes are compared with them over the real control plane in test_step_b_queue.Arm and test_e3_native_layer_groups.Router",
+   "cannot_prove": "A reply shape the real engine stops producing: Router and Arm hold that",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-http-no-scheduler",
+   "test": "test_step_b_queue.Arm",
+   "replaces": "The scheduler behind the real router, and the fresh request and append clients",
+   "equivalence": "Step A's declared arm leaf: the real router, session, control client and driver answer the arm's typed control over HTTP on loopback",
+   "cannot_prove": "A real prefill behind the control plane: the box",
+   "box_evidence": false
+  },
+  {
+   "name": "grade-synthetic-run",
+   "test": "test_step_b_queue.Grade, test_step_b_queue.Tears, test_step_b_queue.ArmLoop",
+   "replaces": "Sixteen arms' engine streams, client logs, watch records and ingress receipts",
+   "equivalence": "Step A's synthetic run over Step B's labels. Progress lines are written by the real nm.ProgressTrace emitters, memory receipts in the engine's format, group commands in the rows the real worker writes for a group. Grade code is real",
+   "cannot_prove": "Real values; that the box's lines have this shape: the connected probe and the first box run read that",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_step_b_queue.ArmLoop",
+   "replaces": "The arm client and the FULL-entry and health clients inside the derived arm loop",
+   "equivalence": "Stubs print or exit as the real clients do; the bash body, draft functions, death watch and grade are real",
+   "cannot_prove": "The clients themselves, which Arm and alpha-perf's suites hold",
+   "box_evidence": false
+  },
+  {
+   "name": "test-scale-workloads",
+   "test": "test_step_b_queue.Arm",
+   "replaces": "Band 1 and band 2 prompts at their real length",
+   "equivalence": "Same manifest schema and refusal checks with test-scale token ids; the real manifests are alpha-perf's, by name, in the frozen bundle",
+   "cannot_prove": "Real tokenization and chunk counts on the box",
+   "box_evidence": false
+  },
+  {
+   "name": "grade-seam-stubs",
+   "test": "test_step_b_queue.Grade",
+   "replaces": "sa.read_nothing: an attribute e3_step_a_box does not have, set with create=True inside grade_seams; sa.chunk_kinds: e3_step_a_box.chunk_kinds, the real reader of one progress row's command kinds (chunks, profile and layer counts)",
+   "equivalence": "sa.read_nothing replaces no engine object: no grade reads it, it only proves grade_seams restores Step A's module after an exception inside it. sa.chunk_kinds returns the same kinds shape the real reader returns for a progress row (chunks, per-chunk profile and layer counts) with profile queries present, so the real Step B engagement rule runs unchanged and refuses the arm as arm-sent-profile-queries",
+   "cannot_prove": "Real progress rows carrying profile queries on the box",
+   "box_evidence": false
+  }
+ ]
+}

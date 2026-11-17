@@ -1354,6 +1354,9 @@ class RetainedRowClosureTests(unittest.IsolatedAsyncioTestCase):
             requests.append(req)
             factory.request = req
             factory.release = types.MethodType(LaneChunkFactory.release, factory)
+            # coverage-throughput build-2 (a): the real release drops a staged prepare-ahead chunk first (none here)
+            factory._staged = None
+            factory.drop_ahead = types.MethodType(LaneChunkFactory.drop_ahead, factory)
         driver.stop('pause', drain=False)
         stack.drive(lambda: not driver.active, limit=400)
         self.assert_rows_closed(stack)

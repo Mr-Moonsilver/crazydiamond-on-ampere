@@ -1,0 +1,88 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "C0 and C1 stage-local proofs: test_e3_stage_local, test_e3_stage_local_qsa",
+ "inherits": ["native41_progress_fixture_leaves.json"],
+ "leaves": [
+  {
+   "name": "ring-buffer",
+   "test": "stage_net.FakeRing, stage_net.FakeBuffer",
+   "replaces": "vllm MessageQueue writer and ShmRingBuffer (rpc_broadcast_mq)",
+   "equivalence": "same slot rule as acquire_write (written flag, per-reader read flags, one index per reader), read through the same get_metadata/current_idx surface BoundedSender uses; every envelope is pickled and each reader gets its own copy; the ring has the pinned default of 10 slots",
+   "cannot_prove": "shared memory, ZMQ overflow, memory ordering between processes",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "reply-queue",
+   "test": "stage_net.ReplyQueue",
+   "replaces": "each worker's response MessageQueue",
+   "equivalence": "single-writer single-reader FIFO with a timeout that raises TimeoutError; the wire tuple is pickled; the real ReplyTransport and its receiver threads read it",
+   "cannot_prove": "real queue latency",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "worker-loop",
+   "test": "stage_net.RingNetworkMixin.step, stage_net.FakeProc",
+   "replaces": "generated WorkerProc.worker_busy_loop and handle_output/enqueue_output",
+   "equivalence": "the same hook calls in the same order as the generated text at executor_hooks._EXECUTOR_FORWARD (worker_rpc_begin, the method, worker_rpc_returned, the output-rank guard, worker_handle_output, worker_enqueue_reply); the generated source itself runs in test_e3_native_reply_hol; replies are written synchronously, without the async output thread, so head-of-line blocking behind decode is not modelled here",
+   "cannot_prove": "decode occupancy of the worker main thread; that is a box receipt",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stock-rpc",
+   "test": "stage_net.RingNetworkMixin.stock_send",
+   "replaces": "a stock execute_model or sample_tokens enqueue on the same ring",
+   "equivalence": "takes one slot under the same rule and asserts it would not block; its reply path (output_rank -1) is not under test",
+   "cannot_prove": "stock future handling; test_e3_stock_rpc_credits and test_e3_native_reply_hol cover it",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "device-ledger",
+   "test": "stage_net.RingStack._wrap_device_leaves",
+   "replaces": "nothing: it records around the real dispatcher handlers and the PP channel leaf",
+   "equivalence": "an observer of per-rank command order and PP identity; numerics follow from equal per-rank order only if each handler is deterministic in that order",
+   "cannot_prove": "numerics; the matched box arms compare real bytes",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "worker-owners",
+   "test": "r4.Stack._add_worker (via stage_net.RingStack)",
+   "replaces": "CUDA events and streams, the lane forward, the chunk factory, the PP channel's NCCL calls",
+   "equivalence": "as declared in test_e3_r4_worker_bridge: events resolve only when the test completes them, and the PP channel leaf withholds a send's completion until its receive is posted (rendezvous); LaneDispatcher, NativeWorkerBridge, WorkerState, route controller and graph router are real",
+   "cannot_prove": "device order, NCCL behaviour, memory",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "qsa-stack",
+   "test": "test_e3_stage_local_qsa.RingProfile",
+   "replaces": "the device, the model and the communicator under the real generated QSA source, QsaLayerDriver and QsaPrefillOperation",
+   "equivalence": "ProfileNetwork's declared leaves in test_e3_native_schedule_profile, on the per-rank ring",
+   "cannot_prove": "TP collective liveness on multiple GPUs",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "auto-arm-state",
+   "test": "test_e3_stage_local.BurstInWait.burst",
+   "replaces": "AutoArmPolicy.manual_owned/phase/active and the armed admission intent",
+   "equivalence": "the real _progress_owned predicate reads exactly these fields; the real policy is in test_native41_autoarm",
+   "cannot_prove": "the auto-arm cycle",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "scheduler-and-manager",
+   "test": "r4.Scheduler, r4.Manager, r4.Request",
+   "replaces": "stock Scheduler and KVCacheManager for C0's protocol proofs",
+   "equivalence": "C0 calls allocate_slots and cache_blocks at the same points with the same arguments as the frozen path (compared in Identity); the real manager proof is the C1 provisional-allocation proof",
+   "cannot_prove": "allocator behaviour",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

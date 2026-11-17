@@ -75,6 +75,10 @@ class Shape:
 
 
 class FakeOperation:
+    def boundary_evidence(self, tensor, *, selection=False):
+        # Device readback leaf: this fixture has no device or diagnostic env.
+        return None
+
     def __init__(self, buckets=2, pending_before=(1,)):
         self.calls = []
         self.buckets = buckets

@@ -1,0 +1,104 @@
+{
+ "base": "b82b832a43477e1a2f865d0c52a2cc9d77a1abc5",
+ "blocks": [
+  {
+   "index": 0,
+   "marked_sha256": "e84f397a56ac85275ebe64b36ad3b955616e11d6e5517ef9abd20e19851fe101",
+   "merge": "e51daeb3af5f3c00d0ba21caf188fc3a73505831",
+   "path": "patches/s5_engine/engine_driver.py",
+   "text": "        self._replies = self._open_replies()\n        self._lean_streams = {}\n        if self._replies == 'lean' and self.progress is not None:\n            self.progress.counters['lean_chunks'] += 1\n        self._tx_fused = (self.qsa_fused is not None and self.qsa_fused.selected\n                          and self._progress_owned())\n        self._fused_mark = self._fused_mark_at = self._fused_stop_at = None\n        if self._tx_fused:\n            self.qsa_fused.counters['chunks'] += 1\n        self._tx_group = (self.layer_groups.size\n                          if self._tx_fused and self.layer_groups is not None else 1)\n        if self._tx_group != 1:\n            self.layer_groups.counters['chunks'] += 1\n        self.open_request = OpenRequest(admission, self.ranks,\n                                        admission.state_epoch, 1, self._replies,\n                                        qsa_fused=self._tx_fused,\n                                        layer_group=self._tx_group)\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "4b5b10842064b8481d9c1f37bdc61dc062dff1c57a4c820ff65348d63b156182",
+   "merge": "e51daeb3af5f3c00d0ba21caf188fc3a73505831",
+   "path": "patches/s5_engine/lane_dispatch.py",
+   "text": "        spans = self.spans\n        mark = None\n        ledger = self._ledger() if self.qsa_fused else None\n        if ledger is not None:\n            ledger.begin()\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "147c5482d478ad71345dea4e9adddf56d864415bdce0f45edd7a56c47995bc01",
+   "merge": "e51daeb3af5f3c00d0ba21caf188fc3a73505831",
+   "path": "patches/s5_engine/wire_v1.py",
+   "text": "    # Held-g L4: the reply format of this transaction (REPLIES).\n    replies: str = 'full'\n    # Step A: this transaction runs each dense QSA layer as one bounded command.\n    qsa_fused: bool = False\n    # Step B: this transaction's group size; above 1 only with qsa_fused.\n    layer_group: int = 1\n"
+  },
+  {
+   "index": 1,
+   "marked_sha256": "895937be2792fbf574cea40c20df36eadc647a5f6173316d1fb7fdbba799b2bc",
+   "merge": "e51daeb3af5f3c00d0ba21caf188fc3a73505831",
+   "path": "patches/s5_engine/wire_v1.py",
+   "text": "        if type(self.replies) is not str or self.replies not in REPLIES:\n            raise E3ContractError('unknown open reply format')\n        if type(self.qsa_fused) is not bool:\n            raise E3ContractError('open qsa_fused must be bool')\n        if self.layer_group != 1 and (type(self.layer_group) is not int or not self.qsa_fused\n                                      or self.layer_group not in LAYER_GROUP_SIZES):\n            raise E3ContractError('open layer_group needs a known size and the fused selection')\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "ca197e5f9535e744d54d3dcbfc1b5e16f30672409b5774f3e59c79bbed1d29ba",
+   "merge": "31f8de4c48f602f04c681727447244301e343f58",
+   "path": "harness/selftest.py",
+   "text": "                     ('test_step_a_queue.py', 'Step A queue, fused against stepped on the composed engine: native_qsa_fused forwarded by the real router and session only with both settings, 409 otherwise, 400 when running; startup refusals; both selections and bands through the exact arm CLI over the real control plane; the per-arm and overall grade over real progress emitters (PASS/FAIL/INC, HARNESS or ENGINE, engagement both ways, memory, three report sections); the derived arm loop under real bash with the real death watch and grade; every command through its real parser; everything kept is alpha-perf line for line; the 9,000 s budget and the window at real clock.'),\n                     ('test_step_b_queue.py', 'Step B queue, group sizes against size 1 with fused selected in every arm: native_layer_group forwarded by the real router and session only with the setting, 409 otherwise, the arm control, engagement, torn-line rule and three report sections.'),\n                     ('test_e3_native_layer_groups.py', 'Step B layer groups: consecutive layers of one stage as one bounded worker command over the real driver, worker bridge, dispatcher, QSA driver and operation with declared device leaves; run-ahead, cancel, failure, ledger, control, startup guard, mutants.'),\n                     ('test_step_a_torn_lines.py', 'Step A torn progress line rule, registered before any run: real-format lines through the real assemble and progress_receipts.'),\n                     ('test_step_a_report.py', 'Step A post-run report: owner time, main-thread occupancy, decode delay and the service model from real progress lines.'),\n                     ('test_e3_native_qsa_fused.py', 'Step A fused dense QSA layer: one bounded worker command per layer over the real driver, worker bridge, dispatcher, QSA driver and operation with declared CPU leaves: peer skew, cancel, the collective ledger, refusals, the per-arm selection and its latch, mutants.'),\n                     ('test_alpha_c0_queue.py', 'C0 queue: the typed serial or local selection through the exact arm CLI over the real control plane, the grade over real emitters, numerics, the arm loop under real bash (CPU only)'),\n                     ('test_alpha_c0_report.py', 'C0 post-run report over real emitter lines (CPU only)'),\n"
+  },
+  {
+   "index": 1,
+   "marked_sha256": "8eb65646d111fd2a93ea1b0088d8afa8dd243344bbd3eb6155c5beae55c9ce32",
+   "merge": "31f8de4c48f602f04c681727447244301e343f58",
+   "path": "harness/selftest.py",
+   "text": "    # Step B / C0: a module holding a declared clock-bound frozen window test runs through step_b_clock_bound, which leaves out\n    # only those ids (CLOCK_BOUND_FROZEN, each with its reason; a superset of C0's clock_bound list); the test files are unchanged.\n    command = ([sys.executable, os.path.join(HERE, 'step_b_clock_bound.py'), suite] if suite[:-3] in STEP_B_CLOCK_BOUND_MODULES\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "092009121b34e287c40425b0301369293bd48a0721533e04612cc062ab5fd05a",
+   "merge": "31f8de4c48f602f04c681727447244301e343f58",
+   "path": "patches/s5_engine/native_overlap_control.py",
+   "text": "def _qsa_fused():\n    \"\"\"The Step A switch is exposed only where the engine installed it.\"\"\"\n    return (os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'\n            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')\n\n\ndef _layer_groups():\n    \"\"\"The Step B switch is exposed only where the engine installed it.\"\"\"\n    return os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1' and _qsa_fused()\n\n\ndef _stage_local():\n    \"\"\"The C0 switch is exposed only where the engine installed it.\"\"\"\n    return (os.environ.get('FLASH_S5_STAGE_LOCAL', '0') == '1'\n            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')\n\n\n"
+  },
+  {
+   "index": 1,
+   "marked_sha256": "f97f74a1d128efd5e90b61514796e6be664eeeb218bf15d49e8f5ee4797d42bc",
+   "merge": "31f8de4c48f602f04c681727447244301e343f58",
+   "path": "patches/s5_engine/native_overlap_control.py",
+   "text": "                    or action == 'native_qsa_fused' and _qsa_fused()\n                    or action == 'native_layer_group' and _layer_groups()\n                    or action == 'native_stage_local' and _stage_local()):\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "329671920d12444c13b5a6c04d2c3c20683d3b0a74cf29c84c6687fc1d8689b3",
+   "merge": "31f8de4c48f602f04c681727447244301e343f58",
+   "path": "patches/s5_engine/native_overlap_session.py",
+   "text": "        if action == 'native_qsa_fused' and not (\n                os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'\n                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):\n            handler = None\n        if action == 'native_layer_group' and not (\n                os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1'\n                and os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'\n                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):\n            handler = None\n        if action == 'native_stage_local' and not (\n                os.environ.get('FLASH_S5_STAGE_LOCAL', '0') == '1'\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "f181ea037b25f7ab274cf233e9fcef3cc99ff6f68ae26d9f7e030074c5dabe66",
+   "merge": "31f8de4c48f602f04c681727447244301e343f58",
+   "path": "patches/s5_engine/probe_control.py",
+   "text": "    # Step A: the per-arm native_qsa_fused switch, only where it is installed.\n    if auto_actions and env.get('FLASH_S5_QSA_FUSED', '0') == '1':\n        auto_actions += ('native_qsa_fused',)\n    # Step B: the per-arm native_layer_group size, only where it is installed.\n    if auto_actions and env.get('FLASH_S5_QSA_FUSED', '0') == '1' and env.get('FLASH_S5_LAYER_GROUPS', '0') == '1':\n        auto_actions += ('native_layer_group',)\n    # C0: the per-arm native_stage_local switch, only where it is installed.\n    if auto_actions and env.get('FLASH_S5_STAGE_LOCAL', '0') == '1':\n        auto_actions += ('native_stage_local',)\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "2bd616f6ba3256ab0860fb0701501c66d11e16ed9320a420d50f5f4f01dfcaae",
+   "merge": "5990af80c0b2924a097a19e0466427fc03b278c0",
+   "path": "harness/test_e3_package.py",
+   "text": "        # Stage-1 anatomy: handler_anatomy is exempt for the same reason (C0's stage_wire/stage_progress before it).\n        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy'))\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "d9fd79661b9fd6635b5f53f333491ec1c6583badb640188c15cc28f0eaff25ad",
+   "merge": "5990af80c0b2924a097a19e0466427fc03b278c0",
+   "path": "patches/s5_engine/decode_probe.py",
+   "text": "GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm', 'admission_metadata', 'worker_bridge', 'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma', 'native_source', 'row1_oracle', 'row1_exactness', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers', 'native_overlap_metrics', 'native_overlap_worker', 'native_overlap_control', 'native_overlap_session', 'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness', 'stage_wire', 'stage_progress', 'handler_anatomy')\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "1ec668787cf78c7b740538cb51f2fd0ced52ffd20f0eae08541e6dca4f79bb28",
+   "merge": "5990af80c0b2924a097a19e0466427fc03b278c0",
+   "path": "patches/s5_engine/make_s5_overlap.py",
+   "text": "              # C0: stage-local prefill progress (FLASH_S5_STAGE_LOCAL).\n              'stage_wire', 'stage_progress',\n              # Stage-1 handler anatomy (FLASH_S5_HANDLER_ANATOMY, default off): imported by executor_hooks only under the switch.\n              'handler_anatomy')\n"
+  },
+  {
+   "index": 1,
+   "marked_sha256": "297d83b1c853beedb0b20d4d7d46feb1f08fa76158414e3cb1b8a353fe71e4e8",
+   "merge": "5990af80c0b2924a097a19e0466427fc03b278c0",
+   "path": "patches/s5_engine/make_s5_overlap.py",
+   "text": "LAUNCHER_LIST_EXEMPT = ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy')\n"
+  }
+ ],
+ "schema": "alpha-next-composition-declaration/1"
+}

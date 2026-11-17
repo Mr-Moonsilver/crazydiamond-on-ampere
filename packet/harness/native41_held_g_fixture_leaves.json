@@ -1,0 +1,78 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Held-g R1/R5 anatomy, L4 lean replies and the held-g probe, as ported onto claude/alpha-next (the held-g twelve-arm queue and its leaves are not part of this build); hub CPU tests; no box or GPU evidence",
+ "inherits": [
+  "native41_progress_fixture_leaves.json",
+  "native41_fixture_leaves.json",
+  "native40_fixture_leaves.json",
+  "native39_fixture_leaves.json",
+  "native38_fixture_leaves.json",
+  "native37_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "anatomy-timing-event",
+   "test": "test_e3_native_anatomy.TimingEvent",
+   "replaces": "torch.cuda.Event(enable_timing=True) on the real lane composition",
+   "equivalence": "As that module's docstring: record stamps a shared fake clock, so a device time is the fake clock at the moment the command's event was recorded; elapsed_time is the stamp difference in ms; synchronize returns at once and logs the lane state; the spans' host clock is the same fake clock (one CLOCK_MONOTONIC domain). The credit harness leaves are native41_fixture_leaves.json's, unchanged. Declared here because that test names this file.",
+   "cannot_prove": "Device timing evidence.",
+   "box_evidence": false
+  },
+  {
+   "name": "lean-reply-format-selection",
+   "test": "test_e3_native_lean_replies (Run)",
+   "replaces": "NativeSegmentDriver._open_replies: the arm's native_progress 'replies' selection and the auto-arm ownership check",
+   "equivalence": "The r4 stack has no NativeProgress and no auto-arm policy; _open_replies returns the format under test, the only value the real method returns. Everything after it is production code: OpenRequest.replies, the worker bridges' lean build/send, the driver's _ingest_lean, LeanStream, the journal, the census and the release streams. The real selection (control reply, status, auto-arm ownership, every chunk opened lean) runs in e3_native41_held_g_probe's -lean modes on the connected Core.",
+   "cannot_prove": "The control-plane path to the selection; that is the held-g probe's.",
+   "box_evidence": false
+  },
+  {
+   "name": "lean-completion-order",
+   "test": "test_e3_native_lean_replies (Run.complete_some)",
+   "replaces": "real device-event completion timing on four ranks",
+   "equivalence": "r4's ControllableEvent completes only when the test sets it; a seeded subset completes per driver tick (all in finalize), so completions land out of op order and pending sets are non-empty. Full and lean runs see the same order because the event creation order and tick structure are identical (asserted: same envelope and reply sequences). Every other r4 leaf is r4's own, declared in test_e3_r4_worker_bridge's docstring.",
+   "cannot_prove": "Real completion timing, PP channel timing or GPU work.",
+   "box_evidence": false
+  },
+  {
+   "name": "held-g-probe-rpc-counter",
+   "test": "e3_native41_held_g_probe (R5 'rpcs' column)",
+   "replaces": "the stock collective_rpc counter",
+   "equivalence": "The probe's execute and sample fixtures do not go through collective_rpc, so the 'rpcs' column is zero by construction there; the counter it reads is the one collective_rpc increments, proven in test_e3_native_reply_hol.",
+   "cannot_prove": "Stock RPC counts on the box.",
+   "box_evidence": false
+  },
+  {
+   "name": "held-g-probe-idle-wait-landed",
+   "test": "e3_native41_held_g_probe (-wait modes)",
+   "replaces": "ReplyTransport.wait_landed",
+   "equivalence": "DirectTransport computes every reply synchronously at submit, so a reply has always landed when the owner waits; the leaf records the call and returns True. The real wait (landed, timeout, closing, failed) is test_e3_native_anatomy.IdleWaitTransport over the real ReplyTransport.",
+   "cannot_prove": "Reply latency or the wait's timeout on the box.",
+   "box_evidence": false
+  },
+  {
+   "name": "held-g-probe-idle-predicate-flips",
+   "test": "e3_native41_held_g_probe (idle-predicate-flips-on-the-real-scheduler)",
+   "replaces": "one stock input a step would carry, per flip",
+   "equivalence": "Each flip adds one sentinel to the real scheduler/manager/encoder-cache container (or one queued batch entry, or an abort queue the CPU engine leaf lacks), checks the real predicate, removes it and checks again, before the step goes on.",
+   "cannot_prove": "That the box scheduler never holds another pending input kind; the predicate's names are pinned against the vllm source in test_e3_native_anatomy.IdleSourceNames.",
+   "box_evidence": false
+  },
+  {
+   "name": "held-g-probe-lean-revalidation",
+   "test": "e3_native41_held_g_probe (-lean modes)",
+   "replaces": "nothing: an observer around wire_v1._accumulated",
+   "equivalence": "The observer returns the production object unchanged and also builds WorkerCompletionReport(**fields) with its validating constructor, counting a mismatch; it changes no state.",
+   "cannot_prove": "Nothing beyond the CPU composition.",
+   "box_evidence": false
+  },
+  {
+   "name": "anatomy-fake-clock-and-spans-emit",
+   "test": "test_e3_native_anatomy (FakeClock, Spans/Steps cases)",
+   "replaces": "time.monotonic_ns and the progress logger",
+   "equivalence": "DeviceSpans and StepAnatomy take the clock and the emit callable as parameters; the fake clock advances by a fixed step per read and emit appends the text, so every sum and class is exact and checkable.",
+   "cannot_prove": "Host timing on the box.",
+   "box_evidence": false
+  }
+ ]
+}

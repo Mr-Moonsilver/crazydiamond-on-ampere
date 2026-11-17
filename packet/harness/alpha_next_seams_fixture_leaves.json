@@ -1,0 +1,159 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "alpha-next: the seams the owner precheck scans (alpha_next_precheck_conf.SEAMS) that no inherited leaves file named (g4 precheck dry run: 16 undeclared), and the probe launcher sink (g4 engine self-run, HARNESS); hub CPU tests and the CPU engine self-run; no box or GPU evidence",
+ "inherits": [
+  "alpha_next_stopfix_fixture_leaves.json",
+  "alpha_next_receipts_fixture_leaves.json",
+  "alpha_next_queue_fixture_leaves.json",
+  "stage1_anatomy_fixture_leaves.json",
+  "native41_held_g_fixture_leaves.json",
+  "alpha_c0_fixture_leaves.json",
+  "step_b_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "fix2-removed-mutant",
+   "test": "test_alpha_next_stopfix_matrix (no_replay); test_e3_stopfix_partial_segment.test_without_the_replay_the_fault_returns",
+   "seams": [
+    "NativeSegmentDriver._drive_partial_stop_submission",
+    "_drive_partial_stop_submission"
+   ],
+   "replaces": "engine_driver.NativeSegmentDriver._drive_partial_stop_submission (stop fix 2, the PREPARE replay at a partial acceptance)",
+   "equivalence": "a declared mutant, not an equivalent: lambda self: False is the pre-fix behaviour (no replay driven); the tests assert the pre-fix refusal returns, which proves the positive tests depend on fix 2"
+  },
+  {
+   "name": "fix1-reach-probe",
+   "test": "test_alpha_next_stopfix_matrix.FusedRefusedOpen / GroupedRefusedOpen (reach checks)",
+   "seams": [
+    "NativeSegmentDriver._drive_retained_cancel",
+    "_drive_retained_cancel"
+   ],
+   "replaces": "engine_driver.NativeSegmentDriver._drive_retained_cancel (stop fix 1, the retained-row cancel after a refused successor open)",
+   "equivalence": "a reach probe, not an equivalent: the replacement raises AssertionError(\"fix 1 reached\"), showing the fused/grouped stop takes this branch at this state; the witness proper is test_e3_stopfix_refused_open on c3f1f64"
+  },
+  {
+   "name": "driver-leaf-clock",
+   "test": "test_alpha_next_stopfix_matrix (fused stop bound exhausted, item-1 stop receipt)",
+   "seams": [
+    "driver.clock"
+   ],
+   "replaces": "the driver's monotonic clock (NativeSegmentDriver.clock, time.monotonic)",
+   "equivalence": "a strictly increasing float iterator: the driver reads clock only to compare against its stop bound (stall_s=0), so the late round exhausts the bound deterministically as it would after real elapsed time; no decision reads absolute time"
+  },
+  {
+   "name": "arm-table-malformed",
+   "test": "test_alpha_next_queue.Arms.test_the_table_refuses_a_malformed_order",
+   "seams": [
+    "T.ARM_TABLE",
+    "ARM_TABLE"
+   ],
+   "replaces": "alpha_next_arms.ARM_TABLE (the approved 22-arm table)",
+   "equivalence": "negative inputs only: out-of-order parts, an unmatched ABBA pair, a repeated arm; T.check() must refuse each; the real table is checked unpatched by the same suite (alpha_next_queue.py --check)"
+  },
+  {
+   "name": "gate-switch-flip",
+   "test": "test_alpha_next_queue (numerics and receipt-integrity reads)",
+   "seams": [
+    "box.NUMERICS_IS_GATE",
+    "NUMERICS_IS_GATE",
+    "box.RECEIPT_INTEGRITY_IS_GATE",
+    "RECEIPT_INTEGRITY_IS_GATE"
+   ],
+   "replaces": "e3_alpha_next_box.NUMERICS_IS_GATE / RECEIPT_INTEGRITY_IS_GATE (both False this run, lead 14:29 and 14:5x)",
+   "equivalence": "flipped to True only to prove each single constant is the whole switch for next run (the same outside/dirty input turns the verdict FAIL/INC); the shipped values are asserted False unpatched"
+  },
+  {
+   "name": "receipt-read-clean-report",
+   "test": "test_alpha_next_queue.ReceiptIntegrity.test_a_clean_log_headline_in_the_report",
+   "seams": [
+    "box.receipt_read",
+    "receipt_read"
+   ],
+   "replaces": "e3_alpha_next_box.receipt_read over the grade's followed engine-stream logs",
+   "equivalence": "the return value is the real box.receipt_read computed in the same test over a clean writer-framed log; patching only routes that exact report into a grade whose fixture logs carry no receipt records"
+  },
+  {
+   "name": "anatomy-bounds-small",
+   "test": "test_stage1_handler_anatomy.Bounds.test_pool_rows_and_unresolved_at_flush",
+   "seams": [
+    "ha.EVENT_PAIRS",
+    "EVENT_PAIRS",
+    "ha.MAX_ROWS",
+    "MAX_ROWS"
+   ],
+   "replaces": "handler_anatomy.EVENT_PAIRS / MAX_ROWS (the event pool and row bounds)",
+   "equivalence": "smaller bounds (2 pairs, 5 rows) make the pool and row limits bite on a 4-step CPU rig; the bounding code is the same, only the constants are smaller"
+  },
+  {
+   "name": "anatomy-cpu-torch",
+   "test": "test_stage1_handler_anatomy (rig)",
+   "seams": [
+    "ha._load_torch",
+    "_load_torch"
+   ],
+   "replaces": "handler_anatomy._load_torch (torch with torch.cuda.Event)",
+   "equivalence": "the stage-1 anatomy fixture torch (stage1_anatomy_fixture_leaves.json, cuda-event leaf): events record and resolve with the same API (record, query, elapsed_time) on CPU"
+  },
+  {
+   "name": "anatomy-leaf-clock",
+   "test": "test_stage1_handler_anatomy (rig)",
+   "seams": [
+    "hooks.time"
+   ],
+   "replaces": "executor_hooks.time (the time module the hooks read monotonic_ns from)",
+   "equivalence": "a scripted monotonic_ns: the hooks only difference two readings for row times; a fixed increasing sequence gives exact expected rows"
+  },
+  {
+   "name": "receipt-fallback-logger",
+   "test": "test_alpha_next_receipts (logger fallback and worker progress sites)",
+   "seams": [
+    "hooks._progress_log",
+    "_progress_log",
+    "nm._RECEIPT_WRITER",
+    "_RECEIPT_WRITER"
+   ],
+   "replaces": "executor_hooks._progress_log (the worker progress logger) and native_measurement._RECEIPT_WRITER (the process writer slot)",
+   "equivalence": "the logger is a Mock to assert which lines take the logger route; the slot is set to None (no writer: the documented fallback) or to a real ReceiptWriter whose write seam records bytes; both are the emit sites' only two routes"
+  },
+  {
+   "name": "held-g-probe-capture",
+   "test": "e3_native41_held_g_probe (held-g frozen probe, its own Capture subclass)",
+   "seams": [
+    "pp.Capture",
+    "Capture"
+   ],
+   "replaces": "e3_native41_progress_probe.Capture (the progress probe's logging handler)",
+   "equivalence": "held-g's frozen probe (native41_held_g_fixture_leaves.json): its Capture subclass records the same 'flash-s5 progress ' messages and adds the wait/lean bookkeeping; the checks are the progress probe's own"
+  },
+  {
+   "name": "ring-reader-raises",
+   "test": "test_alpha_next_c0_ring.test_the_reading_never_decides",
+   "seams": [
+    "sp.ring_limiting_readers",
+    "ring_limiting_readers"
+   ],
+   "replaces": "stage_progress.ring_limiting_readers (the C0 ring limiting-reader query, a read for the stage line)",
+   "equivalence": "a mutant-parity probe: raising there must change none of the driver counters (the reading never decides); the real query runs unpatched in the same test"
+  },
+  {
+   "name": "lean-digest-forged",
+   "test": "test_e3_native_lean_replies.test_mutant_without_the_chain_accepts_the_substitution",
+   "seams": [
+    "w.lean_digest",
+    "lean_digest"
+   ],
+   "replaces": "worker_bridge.lean_digest (the lean reply chain digest)",
+   "equivalence": "held-g's declared mutant: a digest equal to everything shows that without the chain a substituted reply is accepted, proving the chain check is what refuses it"
+  },
+  {
+   "name": "probe-launch-receipt-sink",
+   "test": "harness/alpha_next_probe_launch.py (every engine self-run probe case)",
+   "seams": [
+    "ReceiptWriter.write",
+    "probe_launch"
+   ],
+   "replaces": "native_measurement.ReceiptWriter's write seam (os.write on the private dup of fd 1, i.e. the container stdout / box engine-stream pipe)",
+   "equivalence": "a real ReceiptWriter with write=sink: the sink takes the exact bytes of each record (also copied to fd 2), reads them back with receipt_lines.parse_line, the parser box.receipt_read uses over the engine-stream log, and hands the bare text to the probe's capture handlers; missing seq, bad sha or incomplete records exit 3; unsafe:not-fifo is reported (stdout is a file in the container; the box FIFO proof is owed)"
+  }
+ ]
+}

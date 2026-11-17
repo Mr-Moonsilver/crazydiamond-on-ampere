@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""self-run shim: the docker CLI calls the packet and the launchers make; one container = the stub engine process."""
+import json, os, signal, subprocess, sys, time
+SR = os.environ['SR']; D = os.path.join(SR, 'docker'); os.makedirs(D, exist_ok=True)
+a = sys.argv[1:]
+def state(name):
+    p = os.path.join(D, name + '.json')
+    if not os.path.exists(p):
+        return None
+    s = json.load(open(p))
+    return s if stub_pid(s) or s['State']['Pid'] == os.getpid() else None
+def stub_pid(s):
+    try:
+        ok = b'stub_engine.py' in open('/proc/%d/cmdline' % s['State']['Pid'], 'rb').read()
+    except OSError:
+        return None
+    return s['State']['Pid'] if ok else None
+def term(s):
+    pid = stub_pid(s)
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+    return pid
+def gone(name):
+    p = os.path.join(D, name + '.json')
+    if os.path.exists(p):
+        os.rename(p, p + '.gone-%d' % time.time_ns())
+def fmt(s, f):
+    return (f.replace('{{.Id}}', s['Id']).replace('{{.State.Status}}', s['State']['Status']).replace('{{.State.StartedAt}}', s['State']['StartedAt']))
+if a[:2] == ['image', 'inspect']:
+    if a[2] == os.environ.get('STUB_IMAGE'):
+        print(a[2]); sys.exit(0)
+    sys.exit(1)
+if a[:1] == ['rm']:
+    name = a[-1]; s = state(name)
+    if s:
+        term(s)
+    gone(name); sys.exit(0)
+if a[:1] == ['stop']:
+    name = a[-1]; s = state(name)
+    if s and term(s):
+        for _ in range(50):
+            if not stub_pid(s):
+                break
+            time.sleep(0.1)
+    gone(name); sys.exit(0)
+if a[:1] == ['inspect']:
+    f = None; rest = []
+    i = 1
+    while i < len(a):
+        if a[i] == '--format':
+            f = a[i + 1]; i += 2; continue
+        rest.append(a[i]); i += 1
+    s = state(rest[-1])
+    if not s:
+        print('Error: No such object: %s' % rest[-1], file=sys.stderr); sys.exit(1)
+    print(fmt(s, f) if f else json.dumps([s])); sys.exit(0)
+if a[:1] == ['logs']:
+    name = a[-1]; p = os.path.join(D, name + '.log')
+    if '-f' not in a:
+        sys.stdout.write(open(p).read() if os.path.exists(p) else ''); sys.exit(0)
+    pos = 0
+    while True:
+        if os.path.exists(p):
+            with open(p) as h:
+                h.seek(pos); data = h.read(); pos = h.tell()
+            if data:
+                sys.stdout.write(data); sys.stdout.flush()
+        if not state(name):
+            time.sleep(0.5)
+            if not state(name):
+                sys.exit(0)
+        time.sleep(0.5)
+if a[:1] == ['run']:
+    # the image's own env first (docker: image Config.Env, then the run's -e/--env-file override it)
+    env = json.load(open(os.environ['STUB_IMAGE_ENV'])) if os.environ.get('STUB_IMAGE_ENV') else {}
+    mounts, name, i = [], None, 1
+    flags_with_value = {'--name', '--label', '--gpus', '-e', '--env-file', '-v'}
+    while i < len(a) and a[i].startswith('-'):
+        w = a[i]
+        if w in ('--rm', '--init'):
+            i += 1; continue
+        if '=' in w:
+            i += 1; continue
+        v = a[i + 1]
+        if w == '--name': name = v
+        elif w == '-e':
+            k, _, val = v.partition('='); env[k] = val
+        elif w == '--env-file':
+            for line in open(v).read().splitlines():
+                if '=' in line and not line.startswith('#'):
+                    k, val = line.split('=', 1); env[k] = val
+        elif w == '-v':
+            src, dst = v.split(':')[:2]
+            if not os.path.exists(src):
+                print('docker: Error response from daemon: invalid mount config: bind source path does not exist: %s' % src, file=sys.stderr)
+                sys.exit(125)
+            # the box sees its own paths: the fake root prefix R is not part of the recorded mount source
+            box_src = src[len(os.environ['R']):] if os.environ.get('R') and src.startswith(os.environ['R'] + '/') else src
+            if any(m['Destination'] == dst for m in mounts):
+                print('docker: duplicate mount point: ' + dst, file=sys.stderr)
+                sys.exit(125)
+            mounts.append(dict(Type='bind', Source=box_src, Destination=dst, RW=not v.endswith(':ro')))
+        i += 2
+    image, args = a[i], a[i + 1:]
+    cid = '%064x' % time.time_ns()
+    s = dict(Id=cid, Name='/' + name, Image=image, Args=args, Config=dict(Env=['%s=%s' % kv for kv in env.items()], Cmd=args, Image=image),
+             Mounts=mounts, State=dict(Status='running', StartedAt=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), Pid=os.getpid()))
+    with open(os.path.join(D, name + '.json'), 'w') as h:
+        json.dump(s, h)
+    # real default (RULE-STUB-REAL-DEFAULTS-V1): the container's key comes ONLY from the image env / -e / --env-file, never the
+    # caller's environment (the c packet's mutant M3 found the stub keyed by serve-launch's exported VLLM_API_KEY)
+    child = {k: v for k, v in os.environ.items() if k != 'VLLM_API_KEY'}; child.update({k: v for k, v in env.items() if k not in ('PATH', 'PYTHONPATH', 'LD_LIBRARY_PATH')})
+    os.execvpe(sys.executable, [sys.executable, '-B', os.environ['STUB_ENGINE'], '--state', SR, '--log', os.path.join(D, name + '.log'),
+                                '--recorded', os.environ.get('STUB_RECORDED', ''), '--recorded-arm', os.environ.get('STUB_RECORDED_ARM', ''),
+                                '--overlay', os.environ.get('STUB_OVERLAY', ''), '--port', os.environ['SERVE_PORT'], '--'] + args, child)
+print('shim docker: unsupported %s' % a[:2], file=sys.stderr); sys.exit(1)

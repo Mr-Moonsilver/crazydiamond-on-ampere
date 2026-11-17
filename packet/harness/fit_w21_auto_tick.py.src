@@ -1,0 +1,221 @@
+def tick(self):
+        """One bounded tick. True bypasses stock; False allows existing Core work."""
+        d = self.driver
+        self._settle_declines()
+        if not self.active:
+            if self.cooldown:
+                self.cooldown = False
+                self._decline('cooldown')
+                return False
+            if not self._select():
+                return False
+        if self.phase == 'native':
+            request = self._request()
+            if d.append_yield_active():
+                return self._yield_native(request)
+            if (d._split_ready and not d.active and request is not None and d._return_pending is None
+                    and d.o3_handback_uid() == request.request_id):
+                self._o3_enter_tail(request)
+                return False
+            if not d._split_ready and not d.active:
+                self.phase = 'tail'
+                self._note('full_handback')
+                self._tail_ack()
+            elif (request is None or (self.controller._schedule_seq > self.schedule_before
+                    and self.controller.admitted == self.admitted_before)):
+                if not d.active:
+                    self._pause(type(self.old_pause).PAUSED_ALL)
+                    if getattr(self.engine, 'batch_queue', None):
+                        self.deadline = d.clock() + d._control_timeout_s
+                        self.phase = 'rollback_drain'
+                        return False
+                    self._rollback('request-changed-or-admission-refused')
+                return False
+            else:
+                return False
+        if self.phase == 'tail' and self.o3_tail:
+            if not (self._o3_yield_tail() if self.o3_yield else self._o3_tail()):
+                return False
+        if self.phase == 'tail':
+            request = self._request()
+            self.tail_ticks += 1
+            settle = getattr(self.controller, 'k2_settle', False) is True
+            if (settle and request is not None and not self._finished(request) and self._handback_scheduled(request)
+                    and not self._decode_scheduled(request)):
+                # lane-o3-fix (c): the handback step's row still reads as prefill on the workers; the barrier would refuse it
+                # (2 refusals per run end on nt). Wait for its first decode, bounded as the O3 tail; past it, today's K2.
+                if self.tail_ticks <= O3_TAIL_TICKS:
+                    self.k2_counts['settle_ticks'] += 1
+                    self._decline('tail')
+                    return False
+                self.k2_counts['bound'] += 1
+            if request is not None and (request.num_output_tokens == 0 or settle) and self._handback_scheduled(request):
+                if settle and self._decode_scheduled(request):
+                    self.k2_counts['settled'] += 1
+                # coverage-throughput build-2 (b) K2 (lead, 6 Nov): every handback row is scheduled on FULL, so the
+                # request is a decoder; close with no cooldown and select the next head in this tick. PAUSED_ALL
+                # stops further stock steps, the drain lands the handback step, and the barrier proves the cohort
+                # with this request in it (prefill 0), as for any decoder. A failed selection leaves the policy idle.
+                self._tail_end('full-tail-scheduled', request)
+                self._restore('full-tail-scheduled')
+                self.cooldown = False
+                if not self._select():
+                    return False
+                # a fresh selection: the drain below, as from idle
+            else:
+                if request is None or request.num_output_tokens > 0:
+                    self._tail_end('full-tail-completed', request)
+                    self._restore('full-tail-completed')
+                self._decline('tail')
+                return False
+        if self.phase == 'drain_wait':
+            # One scheduler pass with the pause released between re-entry attempts.
+            if self.controller._schedule_seq <= self.drain_wait_seq and self.driver.append_yield_active():
+                return False
+            d.append_yield_set_drain_wait(False)
+            self._pause(type(self.old_pause).PAUSED_ALL)
+            self.deadline = d.clock() + d._control_timeout_s
+            self.phase = 'drain'
+            return True
+        if self.deadline is not None and d.clock() > self.deadline:
+            raise E3ContractError('auto-arm-entry-or-return-deadline-expired; ownership retained')
+        if self.phase == 'control_observe':
+            return self.control_inwait.poll()
+        if self.phase in ('control_o3_observe', 'control_o3_cut', 'control_o3_rollback'):
+            return self.control_inwait.poll_o3()
+        if self.phase == 'o3_drain':
+            if self.control_inwait is not None and self.control_inwait.o3:
+                return self.control_inwait.begin_o3()
+            if getattr(self.engine, 'batch_queue', None):
+                return False                   # the handback step (and any decode step) lands first
+            self._gap('drain_empty')
+            if not self._o3_census_begin():
+                return False
+        if self.phase in ('drain', 'rollback_drain'):
+            observation = (self.control_inwait if self.phase == 'drain' else None)
+            if (getattr(self.engine, 'batch_queue', None)
+                    and (observation is None or observation.certified)):
+                return False
+            if not getattr(self.engine, 'batch_queue', None):
+                self._gap('drain_empty')
+            if self.phase == 'rollback_drain':
+                why, self._o3_return_reason = self._o3_return_reason, None
+                self._rollback(why or 'request-changed-or-admission-refused')
+                return True
+            if self.reentry:
+                if self._reentry_lost_yield():
+                    return True
+                request = self._request()
+                if request is None:
+                    self._restore('yielded-bulk-left')
+                    return True
+                if self._reentry_plan(request) != self.plan:
+                    self._restore('yielded-bulk-frontier-moved')
+                    return True
+                cohort = self._reentry_cohort()
+                if cohort is None:
+                    # a decoder is mid-prefill or the cohort is over the slot bound:
+                    # drain again, at most the launch bound of times
+                    return self._reentry_refused('drain', self._yrs_cohort_why())
+                self.cohort = cohort
+            elif self._request() is None or self._cohort() != self.cohort or self._plan(self._request()) != self.plan:
+                self._restore('selection-changed-during-output-drain')
+                return True
+            if observation is not None:
+                if not observation.certified or not observation.current():
+                    observation.begin()
+                    return False
+                observation.switching()
+                self.pending = self._control('enter_split')
+                self.phase = 'split'
+            else:
+                self.pending = self._control('barrier')
+                self.phase = 'barrier'
+        d.control_tick()
+        if self.pending is None or not self.pending.done():
+            return True
+        result = self.pending.result()
+        if self.phase in ('barrier', 'identity') and self._reentry_lost_yield():
+            self.pending = None
+            return True
+        if self.phase == 'barrier':
+            if not self._proof(result):
+                if self.reentry:
+                    self.pending, self.phase = None, 'drain'   # the cohort moved: re-read it
+                    return self._reentry_refused('barrier', self._yrs_proof_why(result))
+                self._rollback('worker-barrier-cohort-refused')
+            else:
+                if self.reentry:
+                    self._yrs_barrier_pass()                  # yield-reentry (1)
+                self.pending = self._control('identity')
+                self.phase = 'identity'
+        elif self.phase == 'identity':
+            if not self._proof(result, capability=True):
+                if self.reentry:
+                    self.pending, self.phase = None, 'drain'
+                    return self._reentry_refused('identity', self._yrs_proof_why(result, capability=True))
+                self._rollback('worker-graph-support-refused')
+            else:
+                self.pending = self._control('enter_split')
+                self.phase = 'split'
+        elif self.phase == 'split':
+            if (result.get('typed_acks') is not True or result.get('route_after') != 'split'
+                    or len(result.get('transition_acks', ())) != len(d.ranks)):
+                raise E3ContractError('auto-arm-split-ack-incomplete; ownership retained')
+            if self.control_inwait is not None:
+                self.control_inwait.acknowledge(result)
+            if self.reentry and not d.append_yield_active():
+                self.pending = None
+                self._rollback('yield-ended-during-reentry')
+                return True
+            if self.reentry and self._request() is not None:
+                if self._reentry_plan(self._request()) != self.plan:
+                    self._rollback('yielded-bulk-frontier-moved')
+                    return True
+            elif self._request() is None or self._plan(self._request()) != self.plan:
+                self._rollback('selection-changed-before-arm')
+                return True
+            d._control_route = None  # policy owns this route, not a manual session
+            self._internal = True
+            try:
+                d._arm_admission(PHASE)
+            finally:
+                self._internal = False
+            if self.control_inwait is not None:
+                self.control_inwait.close(True)
+            # lane-o3: this split residency's proven cohort and the generation the identity counts hold for
+            self.o3_ledger, self.o3_split_generation, self.o3_joined = frozenset(self.cohort), d.route_generation, None
+            self.phase = 'native'
+            self.schedule_before = self.controller._schedule_seq
+            self.admitted_before = self.controller.admitted
+            self.pending = None
+            if self.reentry:
+                self._yrs_armed()                             # yield-reentry (1)
+                self.reentry = False
+                if not (self._yield_window() and d.append_yield_window_begin()):    # yield-rules Y2: the window's next append
+                    d.append_yield_set_phase('resume')
+            else:
+                self.decline_totals['armed'] += 1
+                self._o3_gap_close()
+            self._note('armed', route_generation=d.route_generation)
+            self._pause(self.old_pause)
+        elif self.phase == 'o3_census':
+            self.pending = None
+            if not self._o3_proof(result):
+                return self._o3_refuse('census')
+            if self._request() is None or self._o3_plan(self._request()) != self.plan or self._cohort() != self.cohort:
+                return self._o3_refuse('selection-changed-after-census')
+            self._o3_arm()
+        elif self.phase == 'return':
+            if result.get('typed_acks') is not True or result.get('route_after') != 'full':
+                raise E3ContractError('auto-arm-full-ack-incomplete; ownership retained')
+            self._restore('returned-before-native-admission')
+        elif self.phase == 'o3_yield_return':
+            # lane-o3-fix (b): FULL again; today's re-entry of the bulk from its drain (barrier, identity, enter_split, arm)
+            if result.get('typed_acks') is not True or result.get('route_after') != 'full':
+                raise E3ContractError('auto-arm-full-ack-incomplete; ownership retained')
+            self.pending, self.o3_yield, self.o3_joined = None, False, None
+            self.cohort = self._reentry_cohort() or ()
+            self.deadline = d.clock() + d._control_timeout_s
+            self.phase = 'drain'
+        return True

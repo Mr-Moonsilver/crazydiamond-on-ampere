@@ -1,0 +1,27 @@
+{
+ "definitions": {
+  "patches/s5_engine/decode_probe.py": [
+   "module:GENERATED_SOURCES"
+  ],
+  "patches/s5_engine/executor_hooks.py": [
+   "_anatomy",
+   "module:_ANATOMY",
+   "worker_enqueue_reply",
+   "worker_handle_output",
+   "worker_rpc_begin",
+   "worker_rpc_returned"
+  ],
+  "patches/s5_engine/make_s5_overlap.py": [
+   "module:E3_MODULES",
+   "module:LAUNCHER_LIST_EXEMPT"
+  ]
+ },
+ "parent": "5f46c07",
+ "paths": [
+  "A\tpatches/s5_engine/handler_anatomy.py",
+  "M\tpatches/s5_engine/decode_probe.py",
+  "M\tpatches/s5_engine/executor_hooks.py",
+  "M\tpatches/s5_engine/make_s5_overlap.py"
+ ],
+ "schema": "stage1-anatomy-freeze-declaration/1"
+}

@@ -28,6 +28,7 @@ Admission is fail-closed.  The E2 scheduler integration that would emit
 optimistic publication) is not implemented in this increment; without that
 marker this driver never parks anything.  See the pass report's Open items.
 """
+import json
 import math
 import time
 import copy
@@ -46,6 +47,7 @@ from async_handoff import (
     TransactionLease,
 )
 from e3_types import (
+    ARENA_PAGES,
     CompletionKind,
     CompletionProof,
     DependencyRole,
@@ -53,14 +55,15 @@ from e3_types import (
     E3Pending,
     LaneRole,
     OperationTicket,
+    PAGE_TOKENS,
     TransactionId,
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from native_measurement import (PROGRESS_N,NativeMeasurementCensus, encode_report_vector,
+from native_measurement import (PROGRESS_N, emit_receipt_lines,NativeMeasurementCensus, encode_report_vector,
                                 decode_report_vector, ControlPathCounters, QsaControlCounters,
                                 PROGRESS_DIRECT_METHODS, PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
-                                ProgressTrace, encode_progress_meta)
+                                ProgressTrace, StepAnatomy, encode_progress_meta)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -78,7 +81,10 @@ from wire_v1 import (
     PeerBinding,
     PeerBindingAck,
     PollRequest,
+    QsaProfileGrant,
     QsaProfileQuery,
+    QsaScheduleShape,
+    LAYER_GROUP_SIZES,
     qsa_profile_agreement,
     ReleaseRequest,
     ReleaseAck,
@@ -95,6 +101,8 @@ from wire_v1 import (
     TransitionCommand,
     TransitionPending,
     WorkerCompletionReport,
+    LeanCompletionReport,
+    LeanStream,
 )
 
 
@@ -104,6 +112,12 @@ def _wire_ready():
 
 
 # Reported when a chunk cannot be parked; the engine then runs the stock path.
+# returning-append: the yield's row close uses the existing wire reason whose meaning
+# is "close the row, keep the route" (control_route_pause_kept); no wire change.
+YIELD_CANCEL_REASON = 'pause'
+YIELD_HISTORY = 16                       # finished yields kept in the status record (bounded, no UIDs)
+# a1-trunk: the arrival classes of the review's section 8, read at selection.
+YIELD_ARRIVALS = ('before-admission', 'reserved-unopened', 'stage0-ahead', 'transfer-retirement', 'in-chunk')
 _STOP_KINDS = ('abort', 'cancel', 'disconnect', 'preempt', 'reset', 'pause',
                'shutdown')
 
@@ -798,6 +812,10 @@ class TPTailSubmissionObligation:
 
 
 _PROGRESS_LOG = None
+# alpha-next item 1: one engine line per stop partial replay or exhausted stop bound
+# (receipts only; the progress row table is unchanged, so inherited graders read as before).
+STOP_RECEIPT_LINE = 'flash-s5 stop '
+STOP_RECEIPT_SCHEMA = 's5-stop-receipt/1'
 # Plan entries a burst owner wait may advance; every other kind stays on the tick.
 _WAIT_SEGMENT_KINDS = frozenset((SegmentKind.PREFIX, SegmentKind.LAYER, SegmentKind.SUFFIX))
 
@@ -839,6 +857,80 @@ def _progress_outcome(kind, value):
         return 'unknown'
 
 
+class FusedQsa:
+    """Step A: one bounded worker command per dense QSA layer.
+
+    Installed at startup by FLASH_S5_QSA_FUSED=1, off otherwise. ``selected`` is
+    the per-arm choice, changed only while paused, idle and FULL, and read once
+    per transaction before OPEN. A selected transaction has no stepped fallback.
+    """
+    # At most this many accepted commands not yet host-queried complete, per peer.
+    # Held-g R1: a command takes about 4 ms of device time (12 ms on a QSA layer) against a
+    # cadence of 14 ms live and 5 ms solo, so a deeper queue only lengthens a stop's drain.
+    RUN_AHEAD = 4
+    # No accepted op and no completion on any rank for this long fails closed.
+    # The reply timeout's value: a worker command may legitimately take a while.
+    STALL_S = 300.
+
+    def __init__(self, run_ahead=RUN_AHEAD, stall_s=STALL_S):
+        self.selected = False
+        self.run_ahead = run_ahead
+        self.stall_s = stall_s
+        self.counters = dict(selections=0, chunks=0, grants=0, fused_commands=0,
+                             run_ahead_polls=0, ledger_checks=0, stops=0,
+                             stop_rounds_max=0, stop_ms_max=0)
+
+    def snapshot(self):
+        return dict(selected=self.selected, run_ahead=self.run_ahead, stall_s=self.stall_s,
+                    **self.counters)
+
+
+def fused_expected_shape(valid_tokens):
+    """The engine's own expectation, from the admission alone."""
+    pages = (max(valid_tokens, 1) - 1) // PAGE_TOKENS + 1
+    counts = (1,) * ((pages + ARENA_PAGES - 1) // ARENA_PAGES)
+    return QsaScheduleShape('dense_dma', counts, counts)
+
+
+class LayerGroups:
+    """Step B: consecutive LAYER entries of a stage as one bounded worker command.
+
+    Installed at startup by FLASH_S5_LAYER_GROUPS=1, off otherwise. ``size`` is the per-arm
+    choice, changed only while paused, idle and FULL, read once per transaction before OPEN.
+    Size 1 is Step A's command stream.
+    """
+    # At most this many accepted commands not yet host-queried complete, per peer. The bound
+    # is in commands, so a larger group needs a shallower queue to keep a stop's drain where
+    # Step A has it. Held-g R1 device time per command: about 4 ms a GDN layer, 12 ms a QSA
+    # layer. Worst queue: size 1, 4 commands = 4 layers (up to about 24 ms for 3 GDN + 1 QSA);
+    # size 2, 3 commands = 6 layers (about 40 ms); size 4, 2 commands = 8 layers (about 48 ms).
+    RUN_AHEAD = {1: FusedQsa.RUN_AHEAD, 2: 3, 4: 2}
+
+    def __init__(self):
+        self.size = 1
+        self.counters = dict(selections=0, chunks=0, plan_commands=0, group_commands=0,
+                             group_layers=0, group_layers_max=0)
+
+    def snapshot(self):
+        return dict(size=self.size, run_ahead=self.RUN_AHEAD[self.size], **self.counters)
+
+
+def layer_group_plan(low, high, qsa_layers, size):
+    """[(start, end), ...] over one stage's layers [low, high).
+
+    A group closes at ``size`` or right after a QSA layer, so a group holds at most one QSA
+    layer, last, and the stage end closes whatever is left. QSA positions come from the
+    PREPARE plan, never from the layer number.
+    """
+    groups = []
+    start = low
+    for layer in range(low, high):
+        if layer + 1 - start == size or layer in qsa_layers or layer + 1 == high:
+            groups.append((start, layer + 1))
+            start = layer + 1
+    return groups
+
+
 class NativeProgress:
     """Held-f: native progress receipts and the switchable candidate (owner thread only).
 
@@ -849,14 +941,25 @@ class NativeProgress:
     never changed. Receipts are host CLOCK_MONOTONIC stamps, one line per chunk.
     """
     WAIT_SEND_LIMIT = 8
+    OPEN_SEQS_CAP = 32
     DIRECT_KINDS = frozenset(('segment', 'profile', 'poll'))
     MODES = ('current', 'burst')
+    # Held-g L3, the per-arm ``idle`` selection: ``step`` is held-f's engine
+    # step pacing; ``wait`` lets an owner step that stock work could not use
+    # wait at most IDLE_WAIT_S for a native reply instead (see idle_wait).
+    IDLE = ('step', 'wait')
+    IDLE_WAIT_S = 0.001
+    # Held-g L4, the per-arm ``replies`` selection, applied at each chunk's
+    # OPEN: ``full`` is every earlier reply; ``lean`` sends completion deltas.
+    REPLIES = ('full', 'lean')
 
     def __init__(self, installed, executor, *, driver=None, clock_ns=time.monotonic_ns):
         if installed not in PROGRESS_MODES:
             raise DriverError('invalid native progress setting')
         self.installed = installed
         self.mode = 'current'
+        self.idle = 'step'
+        self.replies = 'full'
         self.executor = executor
         self.driver = driver
         self.clock_ns = clock_ns
@@ -866,6 +969,7 @@ class NativeProgress:
         self.last_stock_kind = None
         self.trace = ProgressTrace('engine')
         self.recording = False
+        self.gap_lines = self.gap_dropped = self.gap_errors = 0
         self.identity = None
         self.native = {}
         # The row whose reply is being applied: the apply that ends the chunk
@@ -873,15 +977,68 @@ class NativeProgress:
         self.applying = None
         self.counters = dict.fromkeys((
             'chunks', 'commands', 'direct_commands', 'stock_rpcs', 'waits',
-            'wait_sends', 'wait_capped', 'line_errors', 'mode_changes'), 0)
+            'wait_sends', 'wait_capped', 'line_errors', 'mode_changes',
+            'idle_steps', 'idle_timeouts', 'lean_chunks', 'lean_reports',
+            'lean_tokens'), 0)
+        # Held-g R5: the engine step loop of the recording chunk.
+        self.steps = StepAnatomy(self.counters, clock_ns=clock_ns)
 
     def snapshot(self):
         return dict(schema='s5-native-progress-status/1', installed=self.installed,
-                    mode=self.mode, recording=self.recording,
+                    mode=self.mode, idle=self.idle, replies=self.replies,
+                    recording=self.recording,
                     wait_send_limit=self.WAIT_SEND_LIMIT,
                     direct_kinds=sorted(self.DIRECT_KINDS),
+                    gap_lines=self.gap_lines, gap_dropped=self.gap_dropped, gap_errors=self.gap_errors,
                     trace_lines=self.trace.lines_out, trace_dropped=self.trace.dropped_total,
                     **self.counters)
+
+    GAP_LIMIT = 32768
+
+    def gap(self, event, fields):
+        """Bounded owner-clock receipts outside chunk recording too; never drive work."""
+        try:
+            self.gap_lines += 1
+            if self.gap_lines > self.GAP_LIMIT:
+                self.gap_dropped += 1
+                if self.gap_dropped != 1:
+                    return
+                event, fields = 'coverage-incomplete', {}
+            d = self.driver
+            row = dict(schema='s5-native-gap/1', event=event, gap_seq=self.gap_lines,
+                       engine_epoch=d.engine_epoch, route_generation=d.route_generation,
+                       clock_basis=d.clock_basis, observed_ns=int(self.clock_ns()),
+                       recording=self.recording, coverage_complete=not (self.gap_dropped or self.gap_errors))
+            tx = getattr(d, 'tx', None)
+            uid = fields.get('request_uid', fields.get('request'))
+            if uid is None:
+                ref = getattr(getattr(d, 'auto_arm', None), 'request_ref', None)
+                request = ref() if callable(ref) else None
+                uid = getattr(request, 'request_id', None)
+            if uid is None and tx is not None:
+                uid = tx.request_uid
+            if type(uid) is str:
+                row['request_key'] = hashlib.sha256(uid.encode()).hexdigest()[:16]
+            if tx is not None and uid == tx.request_uid:
+                row.update(txn=tx.txn_seq, request_generation=tx.request_generation,
+                           chunk_start=tx.chunk_start, chunk_end=tx.chunk_end)
+            for key in ('transaction', 'request_generation', 'chunk_start', 'chunk_end',
+                        'selection_seq', 'sequence', 'prompt_tokens', 'start', 'native_end',
+                        'action', 'phase', 'pause', 'reason', 'terminal', 'retired'):
+                value = fields.get(key)
+                if type(value) in (int, bool):
+                    row[key] = value
+                elif type(value) is str:
+                    row[key] = value[:80]
+            for key in ('arrival_s', 'admit_wall_s'):     # night-pack fix 3: wall-clock stamps of request_admitted
+                value = fields.get(key)
+                if type(value) is float:
+                    row[key] = round(value, 6)
+            if not emit_receipt_lines(['flash-s5 native-gap ' + json.dumps(row, sort_keys=True,
+                                                separators=(',', ':'))], _progress_logger()):
+                self.gap_errors += 1
+        except Exception:
+            self.gap_errors += 1
 
     def burst(self):
         return self.recording and self.mode == 'burst'
@@ -912,6 +1069,7 @@ class NativeProgress:
         self.owner = threading.get_ident()
         self.last_stock_kind = None
         self.executor._flash_s5_progress_recording = self
+        self.steps.reset()
 
     def applied(self, row):
         """Record a native row after its apply, unless the chunk flush took it."""
@@ -935,9 +1093,17 @@ class NativeProgress:
             if row is not None:
                 row[PROGRESS_N['t_apply']] = self.clock_ns()
                 self.trace.record('n', *row)
-            for text in self.trace.lines(**(self.identity or {}), mode=self.mode,
-                                         open_rows=len(self.native)):
-                logger.info(text)
+            # Alpha-next PLAN 2: one atomic write per part through the process receipt writer.
+            # inwait build-4: the boundary itself, and the commands still out at it (in flight, so few; capped anyway).
+            emit_receipt_lines(self.trace.lines(**(self.identity or {}), mode=self.mode,
+                                                open_rows=len(self.native), commit_ns=self.clock_ns(),
+                                                open_seqs=sorted(self.native)[:self.OPEN_SEQS_CAP]), logger)
+        except Exception:
+            self.counters['line_errors'] += 1
+        try:
+            # Held-g R5: the chunk's step anatomy, on its own schema.
+            emit_receipt_lines(self.steps.lines(**(self.identity or {}), mode=self.mode, idle=self.idle,
+                                                replies=self.replies), logger)
         except Exception:
             self.counters['line_errors'] += 1
         self.identity = None
@@ -955,6 +1121,8 @@ class NativeSegmentDriver:
     publication after every rank's host-queried ``STATE_WRITE`` and every PP
     consumer proof; the final token is then handed back to stock decode.
     """
+    # The exact controller type this driver accepts (FLASH_S5_STAGE_OVERLAP names its subclass).
+    CONTROLLER_CLASS = PrefillAdmissionController
 
     def __init__(self, controller, *, executor, scheduler, engine=None,
                  layer_count, layer_split, stage_of, clock=time.monotonic,
@@ -962,7 +1130,7 @@ class NativeSegmentDriver:
                  stop_tick_budget=8, monotonic_ns=None, journal_limit=1024,
                  control_timeout_s=None):
         _wire_ready()
-        if type(controller) is not PrefillAdmissionController:
+        if type(controller) is not self.CONTROLLER_CLASS:
             raise DriverError('native driver needs the admission controller')
         if executor is None or scheduler is None:
             raise DriverError('native driver needs the executor and scheduler')
@@ -1014,6 +1182,14 @@ class NativeSegmentDriver:
             stage_ranks=self.stage_ranks, pp_senders=self.stage_ranks[0],
             pool_chunk_capacity=True)
         self.route_generation = 0
+        import os
+        stop_at = os.environ.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0')
+        if stop_at not in ('0', '101200'):
+            raise DriverError('native43-stop-frontier-invalid')
+        if stop_at != '0' and os.environ.get('FLASH_S5_NATIVE_QSA_TRACE', '0') != '1':
+            raise DriverError('native43-stop-needs-trace')
+        self._native43 = (None if stop_at == '0' else
+            dict(stop_at=int(stop_at), checkpoint=None, cancel_started=False))
         self.tx = None
         self.admission = None
         self.lanes = {}
@@ -1030,6 +1206,9 @@ class NativeSegmentDriver:
         self.last_ticket = {0: None, 1: None}
         self.transfer_seq = 0
         self.reports = {}
+        # Held-g L4: this transaction's reply format and the per-rank streams.
+        self._replies = 'full'
+        self._lean_streams = {}
         self.stop_kind = None
         self.error = None
         self._inflight = {}
@@ -1095,6 +1274,9 @@ class NativeSegmentDriver:
         self._decode_watermarks = {}
         self._split_ready = False
         self._return_pending = None
+        # lane-o3: the run whose one-row handback stays on the split route, and the counters (status row)
+        self._o3_handback = None
+        self.o3_counters = dict(kept=0, passes=0, full={}, cleared={}, transitions={})
         # Host-monotonic journal of real admitted segments, accepted replies,
         # queried STATE_WRITE reports, PP receipts, source holds and committed
         # frontiers.  It is preserved across a chunk reset (only chunk *state*
@@ -1107,6 +1289,9 @@ class NativeSegmentDriver:
         self.journal_limit = journal_limit
         self._journal = deque(maxlen=journal_limit)
         self._journal_dropped = 0
+        # alpha-next item 1: stop receipts, recorded and never consulted.
+        self._stop_partial_replays = 0
+        self._stop_bound_exhausted = 0
         self.clock_basis = CLOCK_BASIS
         self.control_path = ControlPathCounters(self.engine_epoch)
         self.qsa_control = QsaControlCounters(self.engine_epoch, self.stage_layers)
@@ -1139,10 +1324,220 @@ class NativeSegmentDriver:
         # to park a native chunk.  It outlives chunk reset by design.
         self._admission_intent = None
         self._admission_seq = 0
+        # returning-append (Option A, A1): the chunk-boundary yield of an auto-arm
+        # bulk to one short native request.  Inert unless the launch bounds set
+        # controller.append_yield; then at most one yield runs at a time.
+        self._yield = None
+        self._yield_seq = 0
+        self._yield_history = deque(maxlen=YIELD_HISTORY)
+        self._yield_counts = {}
+        # (bulk uid, generation) -> request ids whose append admission was refused
+        # during a yield for that bulk; never selected again for it.
+        self._yield_refused = {}
+        self.append_yield_counters = dict(selected=0, rows_closed=0, admitted=0, handbacks=0,
+                                          reentries=0, reopened=0, abandoned=0,
+                                          handback_expired=0, reentry_refused=0,
+                                          append_refused=0, handbacks_served=0,
+                                          handback_skipped=0)
+        # Engine-lifetime count of each yield end reason (the bounded history keeps 16).
+        self.append_yield_end_reasons = {}
+        # a1-trunk: where the bulk's admitted work stood when each yield was selected.
+        self.append_yield_arrivals = dict.fromkeys(YIELD_ARRIVALS, 0)
+        self._yield_scan = None
+        self._yield_reoffered = None        # FLASH_S5_YIELD_WINDOW_FIX: (bulk key, request ids re-offered once)
         # Held-f: absent unless FLASH_S5_NATIVE_PROGRESS installed it.
         self.progress = None
         self._progress_origin = 'tick'
         self._in_wait = False
+        # Step A: absent unless FLASH_S5_QSA_FUSED installed it.
+        self.qsa_fused = None
+        self._tx_fused = False
+        self._fused_mark = None
+        self._fused_mark_at = None
+        self._fused_stop_at = None
+        # Step B: absent unless FLASH_S5_LAYER_GROUPS installed it.
+        self.layer_groups = None
+        self._tx_group = 1
+
+    def install_layer_groups(self):
+        """Step B startup seam; the per-arm choice is the native_layer_group control."""
+        if self.layer_groups is not None:
+            raise DriverError('layer groups are already installed')
+        if self.qsa_fused is None:
+            raise DriverError('layer groups require the fused QSA switch')
+        self.layer_groups = LayerGroups()
+        return self.layer_groups
+
+    def _layer_group_control(self, command):
+        """Typed per-arm size; only installed, only paused idle FULL, above 1 only fused."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'size', 'engine_epoch'}:
+            raise DriverError('native-layer-group-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        size = command.get('size')
+        if type(size) is not int or size not in LAYER_GROUP_SIZES:
+            raise DriverError('native-layer-group-invalid')
+        if size != 1 and not self.qsa_fused.selected:
+            raise DriverError('native-layer-group-requires-fused')
+        policy = getattr(self, 'auto_arm', None)
+        recording = self.progress is not None and self.progress.recording
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or policy is None or policy.active or recording):
+            raise DriverError('native-layer-group-requires-paused-idle-full')
+        previous = self.layer_groups.size
+        self.layer_groups.size = size
+        self.layer_groups.counters['selections'] += int(previous != size)
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_layer_group', 'size': size, 'previous': previous,
+                'engine_epoch': self.engine_epoch, 'route': 'full',
+                'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _group_stage_plan(self, stage, qsa_layers):
+        """Replace one stage's LAYER entries by its groups, once its peers agreed at PREPARE."""
+        low, high = self.stage_layers[stage]
+        at = [index for index, entry in enumerate(self.plan)
+              if entry['kind'] is SegmentKind.LAYER and entry['stage'] == stage]
+        if at != list(range(at[0], at[0] + high - low)) or at[0] < self.index:
+            raise DriverError('a layer group plan needs the stage whole and unsent')
+        size = self._tx_group
+        groups = layer_group_plan(low, high, qsa_layers, size)
+        self.plan[at[0]:at[-1] + 1] = [
+            dict(kind=SegmentKind.LAYER, stage=stage, layer=start, layer_end=end, group=size)
+            for start, end in groups]
+        self.layer_groups.counters['plan_commands'] += len(groups)
+
+    def install_qsa_fused(self):
+        """Step A startup seam; the per-arm choice is the native_qsa_fused control."""
+        if self.qsa_fused is not None:
+            raise DriverError('fused QSA is already installed')
+        if getattr(self, 'auto_arm', None) is None:
+            raise DriverError('fused QSA requires the auto-arm policy')
+        self.qsa_fused = FusedQsa()
+        return self.qsa_fused
+
+    def _fused_control(self, command):
+        """Typed per-arm selection; only installed, only paused idle FULL."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'fused', 'engine_epoch'}:
+            raise DriverError('native-qsa-fused-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        fused = command.get('fused')
+        if type(fused) is not bool:
+            raise DriverError('native-qsa-fused-invalid')
+        if not fused and self.layer_groups is not None and self.layer_groups.size != 1:
+            raise DriverError('native-layer-group-requires-fused')
+        policy = getattr(self, 'auto_arm', None)
+        recording = self.progress is not None and self.progress.recording
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or policy is None or policy.active or recording):
+            raise DriverError('native-qsa-fused-requires-paused-idle-full')
+        previous = self.qsa_fused.selected
+        self.qsa_fused.selected = fused
+        self.qsa_fused.counters['selections'] += int(previous != fused)
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_qsa_fused', 'fused': fused, 'previous': previous,
+                'engine_epoch': self.engine_epoch, 'route': 'full',
+                'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _append_yield_control(self, command):
+        """returning-append per-arm on/off (installed only, paused idle FULL)."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'enabled', 'engine_epoch'}:
+            raise DriverError('native-append-yield-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        enabled = command.get('enabled')
+        if type(enabled) is not bool:
+            raise DriverError('native-append-yield-invalid')
+        policy = getattr(self, 'auto_arm', None)
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or self._yield is not None or policy is None or policy.active):
+            raise DriverError('native-append-yield-requires-paused-idle-full')
+        config = self.controller.append_yield
+        previous = config.enabled
+        config.enabled = enabled
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_append_yield', 'enabled': enabled,
+                'previous': previous, 'max_new': config.max_new, 'per_bulk': config.per_bulk,
+                'handback_steps': config.handback_steps, 'reentry_retries': config.reentry_retries,
+                'engine_epoch': self.engine_epoch, 'route': 'full',
+                'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _fused_agree(self, descriptor, targets, accepted):
+        """Both stage peers' commitment for this command. PREPARE also grants the layers."""
+        items = [item for item in accepted if item.worker_rank in targets]
+        self.qsa_fused.counters['ledger_checks'] += 1
+        if len({item.collectives for item in items}) != 1 or items[0].collectives is None:
+            raise DriverError('tp-ledger-mismatch' + _agreement_detail(self._command, targets, accepted))
+        if descriptor.kind is SegmentKind.LAYER and self._command.profile is not None:
+            self.qsa_fused.counters['fused_commands'] += 1
+        if self._tx_group != 1 and descriptor.kind is SegmentKind.LAYER:
+            layers = descriptor.layer_end - descriptor.layer_start
+            counters = self.layer_groups.counters
+            counters['group_commands'] += 1
+            counters['group_layers'] += layers
+            counters['group_layers_max'] = max(counters['group_layers_max'], layers)
+        if descriptor.kind is not SegmentKind.PREPARE:
+            return
+        profiles = {item.dense_profiles for item in items}
+        if len(profiles) != 1 or None in profiles:
+            raise DriverError('fused-profile-disagreement' + _agreement_detail(self._command, targets, accepted))
+        expected = fused_expected_shape(self.tx.chunk_end)
+        low, high = self.stage_layers[descriptor.stage]
+        rows = profiles.pop()
+        for layer, shape in rows:
+            if not low <= layer < high or shape != expected:
+                raise DriverError('fused-profile-differs-from-the-admission')
+            query = QsaProfileQuery(self.tx, self.admission.state_epoch, descriptor.stage, layer,
+                                    self._command.op_seq, tuple(targets))
+            self._profile_grants[(descriptor.stage, layer)] = QsaProfileGrant(query, shape, fused=True)
+            self.qsa_fused.counters['grants'] += 1
+        if self._tx_group != 1:
+            self._group_stage_plan(descriptor.stage, {layer for layer, _ in rows})
+
+    def _fused_hold(self, entry):
+        """Run-ahead bound without worker pending: a LAYER waits on the peers' reports."""
+        if entry['kind'] is not SegmentKind.LAYER:
+            return False
+        limit = self.qsa_fused.run_ahead
+        if self._tx_group != 1:
+            limit = LayerGroups.RUN_AHEAD[self._tx_group]
+        return any(rank in self.reports and len(self.reports[rank].pending_op_seqs) >= limit
+                   for rank in self.stage_ranks[entry['stage']])
+
+    def _fused_watchdog(self):
+        """Fail closed on no progress anywhere. A collective stuck on the device has
+        no safe release: ownership stays retained and no device wait is issued."""
+        mark = (len(self.accepted_tickets),
+                tuple(sorted((rank, report.completed_sequence) for rank, report in self.reports.items())))
+        now = self.clock()
+        if mark != self._fused_mark or self._fused_mark_at is None:
+            self._fused_mark, self._fused_mark_at = mark, now
+            return
+        if now - self._fused_mark_at > self.qsa_fused.stall_s:
+            self._record('tp_collective_stall', transaction=self.tx.txn_seq,
+                         accepted=mark[0], completed=[list(row) for row in mark[1]])
+            raise DriverError('tp-collective-stall')
 
     def install_progress(self, installed):
         """Held-f startup seam: receipts (``trace``) or receipts + candidate (``burst``)."""
@@ -1174,6 +1569,8 @@ class NativeSegmentDriver:
         if self.phase != 'segments' or len(inflight) > 1:
             return False
         if inflight:
+            if self._tx_fused and inflight == ('poll',):
+                return True
             return (inflight == ('segment',) and self._command is not None
                     and self._command.kind in _WAIT_SEGMENT_KINDS)
         if self._retry is not None:
@@ -1214,6 +1611,33 @@ class NativeSegmentDriver:
             self._in_wait = False
             self._progress_origin = 'tick'
 
+    def idle_wait_permit(self):
+        """Held-g L3, driver side: an idle-wait arm's open auto-owned chunk owes a reply.
+
+        Everything advance() could do this step is done: no control, route,
+        return, stop or startup exchange is pending, the engine is not paused,
+        and a native reply is owed (the next advance needs it). The engine
+        side (executor_hooks._stock_step_idle) proves a stock step would
+        schedule and send nothing.
+        """
+        progress = self.progress
+        return (progress is not None and progress.idle == 'wait' and progress.recording
+                and self.error is None and self.stop_kind is None
+                and self._profile_failure is None and self._control is None
+                and not self._control_orphans and self._route_exchange() is None
+                and self._return_pending is None and self._bootstrapped
+                and self._split_ready and self.tx is not None and self._progress_owned()
+                and bool(self._inflight) and not self._engine_paused())
+
+    def idle_wait(self):
+        """Held-g L3: block at most IDLE_WAIT_S for any reply to land; never polls."""
+        progress = self.progress
+        transport = getattr(self.executor, '_flash_s5_transport', None)
+        landed = transport.wait_landed(NativeProgress.IDLE_WAIT_S)
+        progress.counters['idle_steps'] += 1
+        progress.counters['idle_timeouts'] += int(not landed)
+        return landed
+
     def _progress_control(self, command):
         """Typed per-arm mode switch; only installed burst, only paused idle FULL."""
         progress = self.progress
@@ -1221,7 +1645,7 @@ class NativeSegmentDriver:
             raise DriverError('native-control-unknown-action')
         if self.error is not None:
             raise DriverError(self.error)
-        if set(command) - {'action', 'mode', 'engine_epoch'}:
+        if set(command) - {'action', 'mode', 'engine_epoch', 'idle', 'replies'}:
             raise DriverError('native-progress-command-fields-differ')
         epoch = command.get('engine_epoch')
         if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
@@ -1229,6 +1653,13 @@ class NativeSegmentDriver:
         mode = command.get('mode')
         if mode not in NativeProgress.MODES:
             raise DriverError('native-progress-mode-unknown')
+        # Held-g: an arm that names no idle selection gets held-f's step pacing.
+        idle = command.get('idle', 'step')
+        if idle not in NativeProgress.IDLE:
+            raise DriverError('native-progress-idle-unknown')
+        replies = command.get('replies', 'full')
+        if replies not in NativeProgress.REPLIES:
+            raise DriverError('native-progress-replies-unknown')
         policy = getattr(self, 'auto_arm', None)
         if (not self._engine_paused() or self._split_ready or self.tx is not None
                 or self.controller.active or self._inflight or self._control is not None
@@ -1239,8 +1670,12 @@ class NativeSegmentDriver:
         previous = progress.mode
         progress.mode = mode
         progress.counters['mode_changes'] += int(previous != mode)
+        previous_idle, progress.idle = progress.idle, idle
+        previous_replies, progress.replies = progress.replies, replies
         now = int(self._monotonic_ns())
         return {'schema': 1, 'action': 'native_progress', 'mode': mode, 'previous': previous,
+                'idle': idle, 'previous_idle': previous_idle,
+                'replies': replies, 'previous_replies': previous_replies,
                 'installed': progress.installed, 'engine_epoch': self.engine_epoch,
                 'route': 'full', 'route_generation': self.route_generation,
                 'observed_clock_ns': now, 'clock': self._clock_record(now)}
@@ -1251,6 +1686,14 @@ class NativeSegmentDriver:
         intent = self._admission_intent
         return (policy is not None and not policy.manual_owned and policy.phase == 'native'
                 and type(intent) is dict and intent.get('origin') == 'auto-arm')
+
+    def _open_replies(self):
+        """Held-g L4: the opening chunk's reply format; lean only when the arm
+        selected it and the auto-arm policy owns the chunk."""
+        if (self.progress is not None and self.progress.replies == 'lean'
+                and self._progress_owned()):
+            return 'lean'
+        return 'full'
 
     def _progress_decode_live(self):
         try:
@@ -1342,6 +1785,13 @@ class NativeSegmentDriver:
             raise DriverError('native bounded command sender is not installed')
         return sender
 
+    def _progress_direct(self, kind, envelope, progress):
+        """Held-f's rule: a burst chunk's command-flow kinds reply direct, on eligible methods only."""
+        direct = progress.burst() and kind in progress.DIRECT_KINDS
+        if direct and envelope[0] not in PROGRESS_DIRECT_METHODS:
+            raise DriverError('native-progress-direct-method-not-eligible')
+        return direct
+
     def _submit(self, kind, envelope, ranks, *, timeout_s=None):
         with self.control_path.span('prepare_ns'):
             return self._submit_observed(kind, envelope, ranks, timeout_s=timeout_s)
@@ -1353,9 +1803,7 @@ class NativeSegmentDriver:
         sender = self._bounded()
         check = getattr(sender, 'check', None)
         progress = self.progress if self.progress is not None and self.progress.recording else None
-        direct = progress is not None and progress.burst() and kind in progress.DIRECT_KINDS
-        if direct and envelope[0] not in PROGRESS_DIRECT_METHODS:
-            raise DriverError('native-progress-direct-method-not-eligible')
+        direct = progress is not None and self._progress_direct(kind, envelope, progress)
         if progress is not None:
             submitted_ns = time.monotonic_ns()
             # Same pickled size as the real meta: the size precheck stays exact.
@@ -1371,6 +1819,8 @@ class NativeSegmentDriver:
                     return sender(envelope)
                 return sender(NativeProgress.with_meta(envelope, progress.meta(_sequence, direct)))
         extra = {'direct': True} if direct else {}
+        if kind == 'open':
+            self._gap_event('open_submit_begin')
         sequence = transport.submit(kind, send,
                                     ranks=tuple(ranks),
                                     timeout_s=(self.reply_timeout_s if timeout_s is None
@@ -1404,6 +1854,8 @@ class NativeSegmentDriver:
                 bucket_commands=int(self._command.profile is not None and not tail_command),
                 tail_commands=int(tail_command))
         self._inflight[sequence] = kind
+        if kind == 'open':
+            self._gap_event('open_sent', sequence=sequence)
         return sequence
 
     def _drain(self):
@@ -1492,6 +1944,7 @@ class NativeSegmentDriver:
             self._split_ready = command.target_bank == ROUTE_BANK_SPLIT
             if command.target_bank == ROUTE_BANK_FULL:
                 self._return_pending = None
+                self.o3_handback_clear('route-returned-full')
                 self._control_route = None
                 if self._admission_intent is not None:
                     # A full return is the end of the native phase: the intent
@@ -1501,6 +1954,11 @@ class NativeSegmentDriver:
                     self._record('admission_disarmed', phase=closed['phase'],
                                  reason='route-returned-full',
                                  route_generation=self.route_generation)
+            bank = 'full' if command.target_bank == ROUTE_BANK_FULL else 'split'
+            started = getattr(self, '_transition_started', None)
+            n, total, worst = self.o3_counters['transitions'].get(bank, (0, 0.0, 0.0))
+            ms = 0.0 if started is None else max(0.0, (self.clock() - started) * 1e3)
+            self.o3_counters['transitions'][bank] = [n + 1, round(total + ms, 3), round(max(worst, ms), 3)]
             self._transition = None
             self._transition_retry = False
             self._transition_deadline = None
@@ -1611,6 +2069,7 @@ class NativeSegmentDriver:
                      prompt_end=self.admission.prompt_end,
                      remaining_tokens=self.admission.remaining_tokens,
                      terminal=self.admission.terminal,
+                     native_end=getattr(self.admission, 'native_end', self.admission.prompt_end - 1),
                      stages=[self.stage_of[rank] for rank in sorted(self.lanes)],
                      lane_storage_epochs=[self.lanes[rank].storage_epoch
                                           for rank in sorted(self.lanes)])
@@ -1686,6 +2145,9 @@ class NativeSegmentDriver:
                 raise DriverError('reply identity differs from the outstanding command')
             if item.report is not None:
                 reports.append(item.report)
+            elif self._replies == 'lean' and self.progress is not None:
+                # Held-g L4: nothing changed on that rank since its last report.
+                self.progress.counters['lean_tokens'] += 1
             if item.worker_rank not in targets:
                 if not item.skipped:
                     raise DriverError('a non-target lane executed the segment')
@@ -1774,6 +2236,8 @@ class NativeSegmentDriver:
             self.index += 1
         if self.index == len(self.plan):
             self.phase = 'finalize'
+        if self._tx_fused:
+            self._fused_agree(descriptor, targets, accepted)
         self._record('segment', transaction=self.tx.txn_seq,
                      op_seq=self._command.op_seq,
                      # Never ``kind``: that field carries the journal entry
@@ -1783,6 +2247,7 @@ class NativeSegmentDriver:
                      stage=descriptor.stage,
                      layer_start=descriptor.layer_start,
                      layer_end=descriptor.layer_end,
+                     **({'layer_group': descriptor.layer_group} if self._tx_group != 1 else {}),
                      targets=list(targets),
                      # The route is checked by the engine at this reply; it is
                      # descriptive of where the operation actually ran, never a
@@ -1879,6 +2344,10 @@ class NativeSegmentDriver:
                              **{field: 1})
         self.stop_kind = 'abort'
         self._return_pending = 'unsupported-profile'
+        if self._yield is not None:
+            # returning-append: the only stop_kind writer outside stop(); during a
+            # yield the refused chunk is the append's, so the yield's abort rule runs.
+            self._yield_stop('abort', cause='profile')
         entry = self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
                      stage=self._profile_query.stage,
                      layer=self._profile_query.layer, reason=reason,
@@ -1908,6 +2377,8 @@ class NativeSegmentDriver:
         }
 
     def _ingest_report(self, report):
+        if type(report) is LeanCompletionReport:
+            return self._ingest_lean(report)
         if type(report) is not WorkerCompletionReport:
             raise DriverError('completion report is mistyped')
         if report.transaction != self.tx:
@@ -1931,6 +2402,9 @@ class NativeSegmentDriver:
                 raise DriverError('proof role is impossible for the issued operation')
         self.controller.note_report(report)
         self.reports[report.worker_rank] = report
+        if self._replies == 'lean':
+            # A full report (a cancel ack) ends this rank's lean stream.
+            self._lean_streams.setdefault(report.worker_rank, LeanStream()).closed = True
         self._record('report', transaction=report.transaction.txn_seq,
                      worker_rank=report.worker_rank,
                      completed_sequence=report.completed_sequence,
@@ -1944,6 +2418,68 @@ class NativeSegmentDriver:
                               'op_seq': proof.ticket.op_seq,
                               'completion_seq': proof.completion_seq}
                              for proof in report.proofs])
+        self._collect_pp_proofs(report)
+
+    def _ingest_lean(self, report):
+        """Held-g L4: check one rank's delta in O(delta) and extend its accumulated report.
+
+        The issued-ticket checks are the full report's, over the new items; the
+        stream checks the delta against everything applied before. Every
+        consumer of ``self.reports`` and the controller reads the cumulative
+        report the stream returns. The journal records the delta and its
+        stream header; the census merges it into the same per-rank sets.
+        """
+        if self._replies != 'lean':
+            raise DriverError('lean report in a full-reply transaction')
+        if report.transaction != self.tx:
+            raise DriverError('completion report belongs to another transaction')
+        rank = report.worker_rank
+        if rank not in self.lanes:
+            raise DriverError('report rank has no opened lane')
+        for op in report.completed_op_seqs + report.pending_op_seqs:
+            if (rank, op) not in self.accepted_tickets:
+                raise DriverError('report names an unaccepted operation')
+        for proof in report.proofs:
+            key = (rank, proof.ticket.op_seq)
+            if proof.ticket != self.accepted_tickets.get(key):
+                raise DriverError('proof differs from the issued ticket or lane epoch')
+            kind = self._accepted_descriptors[key].kind
+            allowed = {CompletionKind.GPU_EVENT}
+            if kind is SegmentKind.STATE_FINALIZE:
+                allowed.add(CompletionKind.STATE_WRITE)
+            if kind is SegmentKind.PP_RECEIVE:
+                allowed.add(CompletionKind.PP_CONSUMER)
+            if proof.kind not in allowed:
+                raise DriverError('proof role is impossible for the issued operation')
+        stream = self._lean_streams.get(rank)
+        if stream is None:
+            stream = self._lean_streams[rank] = LeanStream()
+        try:
+            merged = stream.extend(report)
+        except E3ContractError as exc:
+            raise DriverError('lean report refused: ' + str(exc)) from exc
+        self.controller.note_report(merged)
+        self.reports[rank] = merged
+        if self.progress is not None:
+            self.progress.counters['lean_reports'] += 1
+        completed, proofs, hosts, digest = stream.end()
+        self._record('report', transaction=report.transaction.txn_seq,
+                     worker_rank=rank,
+                     completed_sequence=merged.completed_sequence,
+                     completed_op_seqs=list(report.completed_op_seqs),
+                     pending_op_seqs=list(report.pending_op_seqs),
+                     failed_code=report.failed_code,
+                     state_written=stream.state_written,
+                     proofs=[{'kind': getattr(proof.kind, 'value', str(proof.kind)),
+                              'op_seq': proof.ticket.op_seq,
+                              'completion_seq': proof.completion_seq}
+                             for proof in report.proofs],
+                     # The vectors above are this delta; the census merges it.
+                     lean={'base_completed': report.base_completed,
+                           'base_proofs': report.base_proofs,
+                           'base_hosts': report.base_hosts,
+                           'completed': completed, 'proofs': proofs, 'hosts': hosts,
+                           'digest': digest.hex()[:16]})
         self._collect_pp_proofs(report)
 
     def _apply_poll(self, values):
@@ -2053,11 +2589,27 @@ class NativeSegmentDriver:
                              self._retained['completed_sequences'][rank]
                              for rank in self.ranks])
         self._reset()
+        if self._native43 is not None and transaction.chunk_end >= self._native43['stop_at']:
+            self._native43['checkpoint'] = dict(transaction=transaction.txn_seq,
+                exact=not terminal and transaction.chunk_end == self._native43['stop_at'],
+                chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end,
+                engine_observed_ns=self._monotonic_ns(), worker_releases=released,
+                state_epoch=admission.state_epoch)
         if terminal:
             # The chunk left the final prompt token for stock decode.  Stock
             # work on the full bank may not start before every rank drained
             # the split route and acknowledged the return.
-            self._note_terminal_route('handback')
+            if (self._yield is not None and self._yield['phase'] == 'append'
+                    and transaction.request_uid == self._yield['append'].request_id):
+                # returning-append A1: the yielded request's handback runs on FULL
+                # like every native request's; the bulk re-enters split after it.
+                self._yield['phase'] = 'handback'
+                self.append_yield_counters['handbacks'] += 1
+                self._yield_journal(self._yield, 'handback',
+                                    transaction=transaction.txn_seq, route_generation=self.route_generation)
+                if 'window' in self._yield:      # yield-rules Y2: the in-window gap runs from this terminal commit
+                    self._yield['window']['handback_ns'] = self._journal[-1]['observed_ns']
+            self._note_terminal_route('handback', transaction, admission)
         return
 
     def _send_release(self):
@@ -2070,10 +2622,13 @@ class NativeSegmentDriver:
         # Terminality is the scheduler's admission fact, never inferred from a
         # reply: the chunk that leaves the final prompt token for stock must
         # close the worker request row before it acknowledges.
+        lean_streams = ()
+        if self._replies == 'lean':
+            lean_streams = tuple((r,) + self._lean_streams[r].end() for r in self.ranks)
         self.release_request = ReleaseRequest(
             self.tx, self.admission.state_epoch,
             tuple((r, self.reports[r].completed_sequence) for r in self.ranks),
-            self.admission.terminal)
+            self.admission.terminal, lean_streams)
         self._submit('release', ('flash_s5_release', (self.release_request,), {}, None),
                      self.ranks)
 
@@ -2125,8 +2680,15 @@ class NativeSegmentDriver:
                                          (self._receipts[candidate],))
             self._receipt_inflight = candidate
             self._receipt_last = delivery
-            self._submit('receipt', ('flash_s5_receipt', (delivery,), {}, candidate),
-                         (candidate,))
+            try:
+                self._submit('receipt', ('flash_s5_receipt', (delivery,), {}, candidate),
+                             (candidate,))
+            except Backpressure:
+                # Nothing was sent and no reply is owed: the next tick must retry.  Left
+                # set, the guard above answers "sent" for ever and the chunk never commits.
+                self._receipt_inflight = None
+                self._receipt_last = None
+                raise
             return True
         return False
 
@@ -2182,6 +2744,13 @@ class NativeSegmentDriver:
         try:
             self._drain()
             self.pump_control()
+            if (self._native43 is not None and self._native43['checkpoint'] is not None
+                    and not self._native43['cancel_started']):
+                self._native43['cancel_started'] = True
+                self.stop('cancel')
+                # Keep this very tick out of schedule(): stop_kind is not
+                # itself a stock-step bypass result. Idle ticks finish stop.
+                return (None, False)
             if self._profile_failure is not None and deliver_outputs:
                 output = self._finish_profile_failure()
                 if output is not None:
@@ -2194,15 +2763,27 @@ class NativeSegmentDriver:
                 # switching streams/banks, so no stock work may be launched
                 # into the old route.  The engine skips this step instead.
                 return (None, False)
+            if self._native43 is not None and self._native43['checkpoint'] is not None:
+                # Certified stop progresses above, but no chunk N+1 or stock
+                # continuation may run while the diagnostic client inspects it.
+                return (None, False)
             if self._split_hold_timeout():
                 # native39: stock work held past the bound with no native work
                 # in flight; the FULL return has started, skip this step.
                 return (None, False)
+            if self._yield is not None and self._yield['phase'] == 'closing':
+                # returning-append: close the bulk's worker row; decode continues.
+                self._drive_yield_close()
+                return None
             if self.tx is None:
                 if not self.controller.active:
+                    self._maybe_yield()
                     return None
                 self._begin()
             self._drive()
+            # A commit inside _drive may have left the bulk's row retained: offer
+            # the yield before the scheduler can admit the bulk's next chunk.
+            self._maybe_yield()
             return None
         except Backpressure:
             # Ring full: no expectation was registered; retry on the next tick.
@@ -2376,8 +2957,23 @@ class NativeSegmentDriver:
                 raise DriverError('a retained request row has no newer state epoch')
         self.tx = admission.transaction
         self.admission = admission
+        self._replies = self._open_replies()
+        self._lean_streams = {}
+        if self._replies == 'lean' and self.progress is not None:
+            self.progress.counters['lean_chunks'] += 1
+        self._tx_fused = (self.qsa_fused is not None and self.qsa_fused.selected
+                          and self._progress_owned())
+        self._fused_mark = self._fused_mark_at = self._fused_stop_at = None
+        if self._tx_fused:
+            self.qsa_fused.counters['chunks'] += 1
+        self._tx_group = (self.layer_groups.size
+                          if self._tx_fused and self.layer_groups is not None else 1)
+        if self._tx_group != 1:
+            self.layer_groups.counters['chunks'] += 1
         self.open_request = OpenRequest(admission, self.ranks,
-                                        admission.state_epoch, 1)
+                                        admission.state_epoch, 1, self._replies,
+                                        qsa_fused=self._tx_fused,
+                                        layer_group=self._tx_group)
         self.phase = 'open'
         if self.progress is not None and self._progress_owned():
             transaction = admission.transaction
@@ -2386,6 +2982,8 @@ class NativeSegmentDriver:
                                      chunk_start=transaction.chunk_start,
                                      chunk_end=transaction.chunk_end,
                                      decode_live=self._progress_decode_live()))
+        if self._yield is not None:
+            self._note_yield_begin(admission.transaction)
         self.plan = []
         self.index = 0
         self._profile_query = None
@@ -2421,6 +3019,8 @@ class NativeSegmentDriver:
         self._stop_ticks = 0
 
     def _drive(self):
+        if self._tx_fused:
+            self._fused_watchdog()
         if self.phase == 'profile':
             if not self._inflight:
                 remaining = self._profile_deadline - self.clock()
@@ -2448,6 +3048,13 @@ class NativeSegmentDriver:
                 return
             if self.index >= len(self.plan):
                 self.phase = 'finalize'
+                return
+            if self._tx_fused and self._fused_hold(self.plan[self.index]):
+                self.qsa_fused.counters['run_ahead_polls'] += 1
+                self._submit('poll', ('flash_s5_poll',
+                                      (PollRequest(self.tx, self.admission.state_epoch,
+                                                   self.poll_budget),), {}, None),
+                             self.ranks)
                 return
             self._send_plan_entry(self.plan[self.index])
             return
@@ -2487,8 +3094,8 @@ class NativeSegmentDriver:
         layer = entry.get('layer')
         descriptor = SegmentDescriptor(
             self.tx, kind, stage, depends_on=depends,
-            layer_start=layer, layer_end=None if layer is None else layer + 1,
-            seq=entry.get('seq'))
+            layer_start=layer, layer_end=entry.get('layer_end', None if layer is None else layer + 1),
+            seq=entry.get('seq'), layer_group=entry.get('group', 1))
         targets = self.stage_ranks[stage]
         tracker = self.trackers[targets[0]]
         op_seq = tracker.propose(descriptor)
@@ -2499,7 +3106,8 @@ class NativeSegmentDriver:
         # a missing/stale/foreign hold refuses before any GPU submission.
         source = (self._prepare_source(targets)
                   if kind is SegmentKind.PREPARE else None)
-        profile = self._profile_grants.get((stage, layer)) if kind is SegmentKind.LAYER else None
+        profile = (self._profile_grants.get((stage, descriptor.layer_end - 1))
+                   if kind is SegmentKind.LAYER else None)
         command = SegmentCommand(descriptor, op_seq, targets, source=source, profile=profile)
         boundary = self._tail_boundary
         if kind is SegmentKind.LAYER and boundary is not None:
@@ -2511,6 +3119,22 @@ class NativeSegmentDriver:
             else:
                 self._tail_submission = TPTailSubmissionObligation(
                     command, boundary[3], self.route_generation)
+        if self._tx_fused and profile is not None:
+            # A fused layer contains its TP tail: an accepted peer waits in the
+            # collective, so the same command reaches every peer before any cancel.
+            if self._tail_submission is None:
+                self._tail_submission = TPTailSubmissionObligation(
+                    command, profile.query.boundary_op_seq, self.route_generation)
+            elif self._tail_submission.command != command:
+                raise DriverError('fused layer replaced its retained TP obligation')
+        elif self._tx_group != 1 and kind is SegmentKind.LAYER:
+            # A group without a QSA layer still holds collectives, so it carries the same
+            # obligation. Its boundary is this stage's last accepted command (PREPARE at least).
+            if self._tail_submission is None:
+                self._tail_submission = TPTailSubmissionObligation(
+                    command, self.tickets[targets[0]].op_seq, self.route_generation)
+            elif self._tail_submission.command != command:
+                raise DriverError('layer group replaced its retained TP obligation')
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
             if self._pp_submission is None:
@@ -2567,6 +3191,8 @@ class NativeSegmentDriver:
     def stop(self, kind, *, drain=False):
         if kind not in _STOP_KINDS:
             raise DriverError('unknown stop kind')
+        if self._yield is not None:
+            self._yield_stop(kind)
         route_pending = (self._return_pending is not None
                          or self._transition is not None
                          or self._bootstrap_command is not None)
@@ -2660,6 +3286,15 @@ class NativeSegmentDriver:
             # Nothing is owned and the full route is restored: stop is done.
             self.stop_kind = None
             return
+        if self.phase == 'open' and self._retained is not None:
+            # The ring refused this continuation's open, so no worker saw this
+            # chunk: a sent open is still in _inflight above, and its reply moves
+            # the row.  The workers hold the previous chunk's row and would
+            # quarantine a cancel for a chunk they never opened.  Close that row
+            # first; a later tick retires this chunk as never submitted, through
+            # the ordinary all-rank cancel below (every rank answers never_open).
+            self._drive_retained_cancel()
+            return
         if self._drive_tail_stop_submission():
             return
         if self._drive_pp_stop_submission():
@@ -2667,6 +3302,8 @@ class NativeSegmentDriver:
         if self._receipts_pending():
             self._stop_round()
             self._next_receipt()
+            return
+        if self._drive_partial_stop_submission():
             return
         closed = self._closed_rows()
         if set(closed) == set(self.ranks):
@@ -2684,6 +3321,94 @@ class NativeSegmentDriver:
                                 (CancelRequest(self.tx, self.admission.state_epoch,
                                                reason),), {}, None),
                      self.ranks)
+
+    def _drive_partial_stop_submission(self):
+        """Finish a segment one TP peer accepted while another answered pending.
+
+        The exact retained command (same transaction, op_seq and descriptor) is
+        replayed to its targets under the stop-round bound, as the tail and PP
+        obligations above are, so every target holds it before the cancel.
+        Never a new command.  A rank that already accepted it answers from its
+        existing record.  Without this, a stop after a partial PREPARE closed
+        every rank and then refused retirement (accepted operations without a
+        bound producer), keeping ownership.
+        """
+        command = self._retry
+        if command is None:
+            return False
+        targets = self._targets
+        # op_seq numbering is per lane, so another stage may hold the same number.
+        accepted = {rank for rank, op_seq in self.accepted_tickets
+                    if op_seq == command.op_seq and rank in targets}
+        if not accepted or set(targets) <= accepted:
+            return False
+        if command.transaction != self.tx or self._command != command:
+            raise DriverError('stop found a foreign partially accepted command')
+        self._stop_round()
+        self._record('stop_partial_replay', transaction=self.tx.txn_seq,
+                     op_seq=command.op_seq,
+                     segment_kind=getattr(command.kind, 'value', str(command.kind)),
+                     accepted_ranks=sorted(accepted),
+                     pending_ranks=sorted(set(targets) - accepted),
+                     reason=self.stop_kind)
+        self._note_stop_partial_replay()
+        self._send_segment(command, targets)
+        return True
+
+    _STOP_ROW_KEYS = ('transaction', 'op_seq', 'segment_kind', 'accepted_ranks', 'pending_ranks', 'reason')
+
+    def _note_stop_partial_replay(self):
+        """alpha-next item 1: count the replay just journalled and write its receipt line; never raises."""
+        try:
+            self._stop_partial_replays += 1
+            entry = self._journal[-1]
+            self._stop_receipt('stop_partial_replay', {k: entry.get(k) for k in self._STOP_ROW_KEYS})
+        except Exception:
+            pass
+
+    def _partial_stop_state(self):
+        """(command, accepted, pending) of a partially accepted retry, or None; reads only."""
+        command = self._retry
+        if command is None or not self._targets:
+            return None
+        targets = set(self._targets)
+        accepted = {rank for rank, op_seq in self.accepted_tickets
+                    if op_seq == command.op_seq and rank in targets}
+        if not accepted or targets <= accepted:
+            return None
+        return command, sorted(accepted), sorted(targets - accepted)
+
+    def _note_stop_bound_exhausted(self):
+        """Receipt for a stop that ran out of rounds; recorded before the refusal, never raises."""
+        try:
+            partial = self._partial_stop_state()
+            row = dict(transaction=self.tx.txn_seq if self.tx is not None else None,
+                       reason=self.stop_kind, stop_rounds=self._stop_ticks,
+                       fused=bool(self._tx_fused),
+                       op_seq=partial[0].op_seq if partial else None,
+                       segment_kind=(getattr(partial[0].kind, 'value', str(partial[0].kind))
+                                     if partial else None),
+                       accepted_ranks=partial[1] if partial else [],
+                       pending_ranks=partial[2] if partial else [])
+            self._stop_bound_exhausted += 1
+            self._record('stop_bound_exhausted', **row)
+            self._stop_receipt('stop_bound_exhausted', row)
+        except Exception:
+            pass
+
+    def _stop_receipt(self, kind, row):
+        """One engine receipt line per stop event, only where progress receipts are installed."""
+        progress = self.progress
+        if progress is None:
+            return
+        try:
+            body = dict(schema=STOP_RECEIPT_SCHEMA, side='engine', kind=kind,
+                        observed_ns=int(self._monotonic_ns()), **row)
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            emit_receipt_lines([STOP_RECEIPT_LINE + json.dumps(body, separators=(',', ':'), sort_keys=True)],
+                               _progress_logger())
+        except Exception:
+            progress.counters['line_errors'] += 1
 
     def _drive_pp_stop_submission(self):
         """Finish a partially accepted transfer before cancelling either end.
@@ -2817,8 +3542,9 @@ class NativeSegmentDriver:
                 and report.completed_sequence == expected
                 and ack.completed_sequence == expected)
 
-    def _retire_retained_cancel(self):
+    def _retire_retained_cancel(self, reason=None):
         """Forget a row every rank certified closed; no publication/frontier move."""
+        reason = self.stop_kind if reason is None else reason
         row = self._retained
         acks = self._retained_cancel_acks
         if row is None or set(acks) != set(self.ranks) \
@@ -2830,17 +3556,35 @@ class NativeSegmentDriver:
                      chunk_start=row['transaction'].chunk_start,
                      chunk_end=row['transaction'].chunk_end,
                      ranks=list(self.ranks),
-                     reason=self.stop_kind,
+                     reason=reason,
                      dispositions=sorted({ack.disposition for ack in acks.values()}))
-        self._remember_native_closure(row['transaction'], acks, row['reports'], self.stop_kind)
+        self._remember_native_closure(row['transaction'], acks, row['reports'], reason)
         self._retained = None
         self._retained_cancel_request = None
         self._retained_cancel_acks = {}
 
+    def _fused_stop_round(self):
+        """A fused stop waits for queued device work, and rounds run about every millisecond,
+        so a round count cannot bound it. The stall bound does, with ownership retained."""
+        now = self.clock()
+        if self._fused_stop_at is None:
+            self._fused_stop_at = now
+            self.qsa_fused.counters['stops'] += 1
+        counters = self.qsa_fused.counters
+        elapsed = now - self._fused_stop_at
+        counters['stop_rounds_max'] = max(counters['stop_rounds_max'], self._stop_ticks)
+        counters['stop_ms_max'] = max(counters['stop_ms_max'], int(elapsed * 1e3))
+        if elapsed > self.qsa_fused.stall_s:
+            self._note_stop_bound_exhausted()
+            raise DriverError('cancellation did not close worker ownership within the bound')
+
     def _stop_round(self):
         """Count one submitted stop round; refuse past the bound, keep ownership."""
         self._stop_ticks += 1
+        if self._tx_fused:
+            return self._fused_stop_round()
         if self._stop_ticks > self.stop_budget:
+            self._note_stop_bound_exhausted()
             raise DriverError('cancellation did not close worker ownership within the bound')
 
     def _receipts_pending(self):
@@ -2995,7 +3739,7 @@ class NativeSegmentDriver:
         """
         intent = self._admission_intent
         if (not self._split_ready or self.tx is not None
-                or self.controller.active or self._retained is not None
+                or self.controller.active or self._retained is not None or self._yield is not None
                 or self.stop_kind is not None or self._control is not None or self._inflight
                 or self._return_pending is not None or self._route_exchange() is not None):
             return False
@@ -3027,10 +3771,73 @@ class NativeSegmentDriver:
         unfinished = getattr(scheduler, 'get_num_unfinished_requests', None)
         return callable(unfinished) and unfinished() > 0
 
-    def _note_terminal_route(self, reason):
-        """A chunk retired for good: the split route now owes a full return."""
+    def _note_terminal_route(self, reason, transaction=None, admission=None):
+        """A chunk retired for good: the split route now owes a full return.
+
+        lane-o3: except a native run's one-row handback the auto-arm policy proves the split bank serves (FLASH_S5_O3=1):
+        the route stays split, the intent is disarmed, and stock schedules that row on the split bank beside the decoders.
+        """
         if self._split_ready:
+            if reason == 'handback' and self._o3_keep_split(transaction, admission):
+                return
             self._return_pending = reason
+
+    # -- lane-o3: stay split across runs ------------------------------------------
+    def _o3_keep_split(self, transaction, admission):
+        policy = getattr(self, 'auto_arm', None)
+        keeps = getattr(policy, 'o3_keeps_split', None)
+        if not callable(keeps) or transaction is None or admission is None:      # the policy owns the switch (o3_keeps_split)
+            return False
+        why = keeps(transaction.request_uid, admission.remaining_tokens)
+        if why is not None:
+            self.o3_counters['full'][why] = self.o3_counters['full'].get(why, 0) + 1
+            return False
+        if self._retained is not None or self.tx is not None or self.controller.active:
+            self.o3_counters['full']['driver-owned'] = self.o3_counters['full'].get('driver-owned', 0) + 1
+            return False
+        self._o3_handback = dict(request_uid=transaction.request_uid,
+                                 request_generation=transaction.request_generation,
+                                 route_generation=self.route_generation, transaction=transaction.txn_seq)
+        self.o3_counters['kept'] += 1
+        intent = self._admission_intent
+        if intent is not None:
+            # The run is over: no chunk of it, and nothing for the next selection, may park under this intent.
+            self._admission_intent = None
+            self._record('admission_disarmed', phase=intent['phase'], seq=intent['seq'],
+                         reason='o3-split-handback', route_generation=self.route_generation)
+        self._record('o3_split_handback', transaction=transaction.txn_seq,
+                     request_generation=transaction.request_generation, route_generation=self.route_generation)
+        return True
+
+    def o3_handback_uid(self):
+        return None if self._o3_handback is None else self._o3_handback['request_uid']
+
+    def o3_handback_permits(self, request, kind):
+        """The positive-frontier seam under split: True only for the kept run's own one-row handback, unscheduled, on the
+        route generation it was kept on, with no native chunk or row owned."""
+        h = self._o3_handback
+        try:
+            ok = (h is not None and kind == 'positive-frontier' and self._split_ready
+                  and self.route_generation == h['route_generation'] and self.tx is None and self._retained is None
+                  and getattr(request, 'request_id', None) == h['request_uid']
+                  and request.num_output_tokens == 0
+                  and request.num_tokens - request.num_computed_tokens == 1)
+        except (AttributeError, TypeError):
+            ok = False
+        if ok:
+            self.o3_counters['passes'] += 1
+        return ok
+
+    def o3_handback_clear(self, reason):
+        if self._o3_handback is not None:
+            self._o3_handback = None
+            self.o3_counters['cleared'][reason] = self.o3_counters['cleared'].get(reason, 0) + 1
+
+    def o3_return_full(self, reason):
+        """A kept split handback that cannot be served there: today's FULL return; stock schedules it on FULL."""
+        self.o3_handback_clear(reason)
+        if self._split_ready and self._return_pending is None:
+            self._return_pending = 'o3-' + reason
 
     def pp_sent(self):
         if self.tx is None:
@@ -3064,6 +3871,8 @@ class NativeSegmentDriver:
         """
         if self.progress is not None:
             self.progress.end(_progress_logger())
+        self._tx_fused = False
+        self._tx_group = 1
         self.tx = None
         self.admission = None
         self.phase = 'idle'
@@ -3086,6 +3895,8 @@ class NativeSegmentDriver:
         self.accepted_tickets = {}
         self._accepted_descriptors = {}
         self.reports = {}
+        self._replies = 'full'
+        self._lean_streams = {}
         self.bound_ticket = None
         self.pp_send_ticket = None
         self.receiver_ticket = None
@@ -3158,6 +3969,749 @@ class NativeSegmentDriver:
         """The typed engine-owned admission intent, or ``None`` when off."""
         intent = self._admission_intent
         return None if intent is None else dict(intent)
+
+    # -- returning-append: chunk-boundary yield (Option A, A1) ------------------
+    #
+    # draining  (a1-trunk, review 4 Nov section 8) a yield is pending: no further
+    #           bulk chunk is admitted, every chunk already admitted (C1's successor
+    #           included) runs to its frozen commit; none is cancelled or rolled back.
+    # closing   split; the bulk's retained worker row closes (typed all-rank
+    #           CancelRequest, no publication/frontier move); nothing is admitted.
+    # append    split; the short request runs natively from its cached start.
+    # handback  its terminal commit returned FULL; its one-token handback runs on
+    #           FULL; every other stock prefill (the bulk first) stays held.
+    # reenter   auto-arm's entry sequence (drain, barrier, identity, enter_split,
+    #           arm) for the bulk, bound to its request, plan from its frontier.
+    # resume    split and armed; only the bulk may be admitted; its first chunk
+    #           from the committed frontier ends the yield.
+    def append_yield_active(self):
+        return self._yield is not None
+
+    def append_yield_phase(self):
+        return None if self._yield is None else self._yield['phase']
+
+    def append_yield_record(self):
+        """Bounded status row (no request UID): phase, counters, launch bounds."""
+        config = getattr(self.controller, 'append_yield', None)
+        y = self._yield
+        holds = getattr(self.controller, 'yield_stock_deferrals_by_kind', None)
+        declines = getattr(getattr(self, 'auto_arm', None), 'decline_record', None)
+        return dict(schema='s5-append-yield/1', config=None if config is None else config.record(),
+                    declines=declines() if callable(declines) else None,
+                    phase=None if y is None else y['phase'], seq=self._yield_seq,
+                    counters=dict(self.append_yield_counters),
+                    end_reasons=dict(self.append_yield_end_reasons),
+                    arrivals=dict(self.append_yield_arrivals),
+                    # stock prefill the yield held, by kind (one snapshot with the counters)
+                    holds=None if holds is None else dict(holds),
+                    refusals=dict(getattr(self.controller, 'yield_refusals', None) or {}),
+                    lookups=dict(getattr(self.controller, 'yield_lookups', None) or {}),
+                    split_holds=dict(getattr(self.controller, 'split_stock_deferrals_by_kind', None) or {}),
+                    current=None if y is None else dict(seq=y['seq'], times=dict(y['times'])),
+                    history=[dict(h, times=dict(h['times'])) for h in self._yield_history])
+
+    def append_yield_target(self):
+        """(phase, request) the admission may take while a yield runs, else None."""
+        y = self._yield
+        if y is None:
+            return None
+        if y['phase'] == 'append':
+            return ('append', y['append'])
+        if y['phase'] == 'resume':
+            return ('resume', y['bulk'])
+        return (y['phase'], None)
+
+    def append_yield_is_append(self, request):
+        """True only for the short request of the yield running now, in its append phase."""
+        y = self._yield
+        return y is not None and y['phase'] == 'append' and y['append'] is request
+
+    def append_yield_target_lost(self, phase):
+        """The target left the waiting queues before its admission.
+
+        A lost append (nothing of it ran) hands the armed split straight to the
+        bulk.  A lost bulk is not ended here: the policy's next tick pauses the
+        scheduler, ends the yield and rolls the route back (_yield_native), so no
+        later step of this schedule pass sees an armed intent without its owner.
+        """
+        y = self._yield
+        if y is None or y['phase'] != phase:
+            return
+        if phase == 'append' and not y['append_transactions']:
+            # Finished/aborted while held: nothing of it ran.  The route is still
+            # split and armed, so the bulk resumes without a FULL window.
+            self._yield_enter_resume(y)
+            self._yield_journal(y, 'append_left', route_generation=self.route_generation)
+
+    def append_yield_bulk_uid(self):
+        """The yielded bulk's request UID while a yield owns the route, else None."""
+        return None if self._yield is None else self._yield['bulk'].request_id
+
+    def yield_permits(self, request):
+        target = self.append_yield_target()
+        return target is not None and target[1] is not None and request is target[1]
+
+    def append_yield_holds(self, request, kind):
+        """True while the yield owns a FULL window: only the append's handback runs."""
+        y = self._yield
+        if y is None:
+            return False
+        if (y['phase'] == 'handback' and request is y['append'] and kind == 'positive-frontier'
+                and getattr(request, 'num_tokens', 0) - getattr(request, 'num_computed_tokens', 0)
+                == self._handback_rows(request)):
+            return False                         # coverage-soak-fix: one row, or a geometry tail's r rows
+        if y['phase'] == 'reenter' and y.get('drain_wait') and kind == 'running-prefill':
+            return False                         # the drain wait: a decoder's in-flight prefill finishes
+        return True
+
+    def _handback_rows(self, request):
+        """coverage-soak-fix: the stock rows a native turn of ``request`` hands back (the controller's; 1 without it)."""
+        rows = getattr(self.controller, 'handback_rows', None)
+        value = rows(self.scheduler, request) if callable(rows) else 1
+        return value if type(value) is int and value >= 1 else 1
+
+    def append_yield_handback_done(self):
+        """The append produced its first token on FULL, or it left the scheduler."""
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            return False
+        append = y['append']
+        requests = getattr(self.scheduler, 'requests', None)
+        if type(requests) is dict and requests.get(append.request_id) is not append:
+            return True
+        return (getattr(append, 'num_output_tokens', 0) > 0
+                or getattr(append, 'num_computed_tokens', 0) >= getattr(append, 'num_tokens', 1))
+
+    def append_yield_handback_skip(self):
+        """The FULL window cannot serve the append: skip it (delta review of ae865d44, D-MINOR-1).
+
+        The window releases only a one-token positive-frontier handback.  An append
+        stopped by the abort rule (a profile refusal, the stale guard) is still in
+        the scheduler with more than one prompt token left, so it would sit held
+        until HANDBACK_STEPS ran out.  Then: journal ``append_yield_handback_skipped``
+        and return True; the caller re-enters the bulk at once.  As after an expiry,
+        the yield keeps its binding to the bulk (the held request is ahead of it in
+        the waiting queues) and ends 'handback-skipped' at the reopen; the request
+        then continues on stock after the bulk's FULL return, as without a yield.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            return False
+        append = y['append']
+        requests = getattr(self.scheduler, 'requests', None)
+        if type(requests) is dict and requests.get(append.request_id) is not append:
+            return False
+        left = getattr(append, 'num_tokens', 0) - getattr(append, 'num_computed_tokens', 0)
+        if getattr(append, 'num_output_tokens', 0) > 0 or left <= self._handback_rows(append):
+            return False
+        y['handback_skipped'] = True
+        self.append_yield_counters['handback_skipped'] += 1
+        self._yield_journal(y, 'handback_skipped', tokens_left=left, route_generation=self.route_generation)
+        return True
+
+    def append_yield_set_drain_wait(self, waiting):
+        """auto-arm's re-entry released its pause for one scheduler pass between drain
+        attempts (D-MINOR-2): a decoder's running stock prefill may finish its chunk
+        then; every other stock prefill stays held."""
+        y = self._yield
+        if y is not None and y['phase'] == 'reenter':
+            y['drain_wait'] = bool(waiting)
+
+    def append_yield_handback_step(self):
+        """One engine step on FULL with the yielded request's handback still unscheduled.
+
+        Counted by auto-arm's tick (one per engine step), never timed.  True once
+        FLASH_S5_APPEND_YIELD_HANDBACK_STEPS steps are spent: the FULL window ends
+        (``append_yield_handback_expired``) and the caller re-enters the bulk.  The
+        yield keeps only its binding to the bulk (the held request stays ahead of
+        the bulk in the waiting queues; the binding admits the bulk's reopen) and
+        ends with reason 'handback-expired' at that reopen.  The request waits
+        under the yield's hold, then the split hold, as without a yield.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            raise DriverError('append yield handback step outside the FULL window')
+        y['handback_steps'] = y.get('handback_steps', 0) + 1
+        if y['handback_steps'] < self.controller.append_yield.handback_steps:
+            return False
+        y['handback_expired'] = True
+        self.append_yield_counters['handback_expired'] += 1
+        self._yield_journal(y, 'handback_expired', steps=y['handback_steps'],
+                            route_generation=self.route_generation)
+        return True
+
+    def _yield_enter_resume(self, y):
+        """Every entry into resume (the re-arm, append_left, the append's refused
+        admission, the partial append's row close) snapshots the admission count
+        and the scheduler pass, so the reopen's refused passes count from here."""
+        y['phase'] = 'resume'
+        c = self.controller
+        y['resume_at'] = (getattr(c, 'admitted', None), getattr(c, '_schedule_seq', None))
+
+    def append_yield_reentry_wait(self, admitted, schedule_seq):
+        """auto-arm's tick in resume with nothing native live: the bulk's reopen refused?
+
+        Counted from the first resume tick on the yield itself (delta review of
+        ae865d44, D-MAJOR-1): resume is reached through the re-arm and also on
+        the existing arm (append_left, the append's refused admission, the
+        partial append's row close), so no policy snapshot from the last arm
+        applies.  Resume's entry records (admitted, schedule_seq)
+        (_yield_enter_resume); a tick with ``admitted`` unchanged counts the
+        scheduler passes since.  True once
+        more than FLASH_S5_APPEND_YIELD_REENTRY_RETRIES passed: journal
+        ``append_yield_reentry_refused`` and end the yield; the caller disarms
+        through the existing refused-admission rule.  Never raises, never a clock.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'resume':
+            return False
+        at = y.get('resume_at')
+        if at is None or at[0] != admitted or type(at[1]) is not int:
+            y['resume_at'] = (admitted, schedule_seq)
+            return False
+        passes = schedule_seq - at[1]
+        if passes <= self.controller.append_yield.reentry_retries:
+            return False
+        self.append_yield_counters['reentry_refused'] += 1
+        self._yield_journal(y, 'reentry_refused', passes=passes,
+                            route_generation=self.route_generation)
+        self._end_yield('reentry-refused')
+        return True
+
+    def append_yield_set_phase(self, phase):
+        """auto-arm's re-entry steps: handback -> reenter -> resume."""
+        y = self._yield
+        allowed = {'reenter': ('handback',), 'resume': ('reenter',)}
+        if y is None or phase not in allowed or y['phase'] not in allowed[phase]:
+            raise DriverError('append yield phase change is out of order')
+        if phase == 'resume':
+            self._yield_enter_resume(y)
+        else:
+            y['phase'] = phase
+        if phase == 'reenter':
+            self.append_yield_counters['reentries'] += 1
+        self._yield_journal(y, phase, route_generation=self.route_generation)
+
+    def append_yield_end(self, reason):
+        if self._yield is not None:
+            self._end_yield(reason)
+
+    def append_yield_check_blocks(self, request, written):
+        """The yielded request must never write a block the bulk holds."""
+        y = self._yield
+        if y is None or request is not y['append']:
+            return
+        manager = self.scheduler.kv_cache_manager
+        try:
+            rows = manager.get_block_ids(y['bulk'].request_id)
+        except (KeyError, AttributeError):
+            rows = ()
+        held = {block for row in rows for block in row if block > 0}
+        if held & {block for block in written if block > 0}:
+            raise DriverError('append yield would write a block the yielded bulk holds')
+
+    def _yield_journal(self, y, name, **fields):
+        """One ``append_yield_<name>`` journal record; its engine time stays on the yield.
+
+        The status history carries these times per yield (no request UID), so a
+        client can split the FULL-return and re-entry windows of each yield
+        against its own decode samples (A1 grade: each stall separately).
+        """
+        self._record('append_yield_' + name, seq=y['seq'], **fields)
+        y['times'].setdefault(name, self._journal[-1]['observed_ns'])
+
+    def append_yield_mark_full(self):
+        """auto-arm saw the append's FULL return settled (the FULL window opens)."""
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            return
+        if 'window' in y:                        # yield-rules Y2: one FULL window per append of the window
+            if not y['window'].get('full_marked'):
+                y['window']['full_marked'] = True
+                self._yield_journal(y, 'full', route_generation=self.route_generation)
+        elif 'full' not in y['times']:
+            self._yield_journal(y, 'full', route_generation=self.route_generation)
+
+    def _end_yield(self, reason):
+        y = self._yield
+        self._yield = None
+        if reason not in ('reopened', 'handback-expired', 'handback-skipped', 'drain-no-append'):
+            self.append_yield_counters['abandoned'] += 1     # the bulk did not reopen inside the yield
+        self.append_yield_end_reasons[reason] = self.append_yield_end_reasons.get(reason, 0) + 1
+        self._yield_journal(y, 'end', reason=reason, phase=y['phase'],
+                            route_generation=self.route_generation)
+        self._yield_history.append(dict(seq=y['seq'], reason=reason, times=dict(y['times']),
+                                        arrival=y['arrival'], open_chunks=y['open_chunks'],
+                                        route_generation_selected=y['route_generation'],
+                                        route_generation_end=self.route_generation))
+        if 'window' in y:
+            w = y['window']
+            end = w['end'] or 'yield-' + reason
+            self._yield_history[-1]['window'] = dict(appends=w['admitted'], end=end)
+            self.controller.yield_window_closed(w['admitted'], end)
+            self.controller.yield_window_receipt('closed', seq=y['seq'], appends=w['admitted'], end=end,
+                                                 not_served=w.get('not_served'), reason=reason,
+                                                 route_generation=self.route_generation)
+
+    def _yield_stop(self, kind, cause=None):
+        y = self._yield
+        if kind == 'abort' and y['phase'] == 'append':
+            # before_abort stops only for natively owned work, which in this phase
+            # is the append: its cancel returns FULL, then the bulk re-enters.
+            y['phase'] = 'handback'
+            y['append_aborted'] = True
+            self._yield_journal(y, 'append_aborted', cause=cause or 'abort',
+                                route_generation=self.route_generation)
+        else:
+            # Every other stop, a prefix-cache reset in any yield state included,
+            # ends the yield; the bulk then follows the existing stop rule (lead
+            # resume 5: a reset is FULL plus a stock tail, counted in end_reasons).
+            self._end_yield('stop-' + kind)
+
+    def append_yield_stale(self):
+        """The route left split under a draining/closing/append/resume yield without its stop.
+
+        Backstop for a stop that bypassed stop() (none is known after the
+        profile-refusal fix): an append yield becomes the abort rule's FULL
+        window; any other phase ends ('route-left-split').  Returns the new phase.
+        """
+        y = self._yield
+        if y is None or y['phase'] not in ('draining', 'closing', 'append', 'resume'):
+            return None
+        self._yield_journal(y, 'stale', phase=y['phase'], route_generation=self.route_generation)
+        if y['phase'] == 'append':
+            y['phase'] = 'handback'
+            y['append_aborted'] = True
+            return 'handback'
+        self._end_yield('route-left-split')
+        return None
+
+    def append_yield_append_wait(self, admitted, schedule_seq):
+        """auto-arm's tick in the append phase: the append's admission refused?
+
+        A scheduler pass that ran with the split armed for the append, no chunk
+        in flight and no admission is a refusal (allocation, a changed prefix
+        hit, a memoised no-plan, a slot check).  Before any append chunk ran:
+        the yield goes to resume (the bulk reopens; the append stays held).
+        After a partial append: its retained row closes through the same typed
+        close, then resume; the append later continues from its own frontier
+        (stock, after the bulk's FULL return).  The refused request is not
+        selected again for this bulk.  Returns None, 'resume' or 'closing'.
+        Counts passes, never a clock.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'append':
+            return None
+        if self.live or self.tx is not None:
+            y['idle_at'] = None
+            return None
+        idle = y.get('idle_at')
+        if idle is None or idle[0] != admitted:
+            y['idle_at'] = (admitted, schedule_seq)
+            return None
+        if schedule_seq <= idle[1]:
+            return None
+        self.append_yield_counters['append_refused'] += 1
+        key = (y['bulk_transaction'].request_uid, y['bulk_transaction'].request_generation)
+        self._yield_refused = {key: self._yield_refused.get(key, frozenset()) | {y['append'].request_id}}
+        row = self._retained
+        partial = row is not None and row['transaction'].request_uid == y['append'].request_id
+        self._yield_journal(y, 'append_refused', partial=partial, route_generation=self.route_generation)
+        if not partial:
+            self._yield_enter_resume(y)
+            return 'resume'
+        y['closing_append'] = row['transaction']
+        y['close_rounds'] = 0
+        y['phase'] = 'closing'
+        return 'closing'
+
+    def append_yield_note_handback(self):
+        """The FULL window ended with the append's first token sampled (counted once)."""
+        y = self._yield
+        if (y is not None and not y.get('handback_served')
+                and getattr(y['append'], 'num_output_tokens', 0) > 0):
+            y['handback_served'] = True
+            self.append_yield_counters['handbacks_served'] += 1
+
+    def append_yield_reentry_refused(self, stage, refusals):
+        """A re-entry proof or drain refused ``refusals`` times; past the launch bound
+        journal ``append_yield_reentry_refused`` and end the yield (never a raise)."""
+        y = self._yield
+        if y is None or y['phase'] != 'reenter':
+            return False
+        if refusals <= self.controller.append_yield.reentry_retries:
+            return False
+        self.append_yield_counters['reentry_refused'] += 1
+        self._yield_journal(y, 'reentry_refused', stage=stage, passes=refusals,
+                            route_generation=self.route_generation)
+        self._end_yield('reentry-refused')
+        return True
+
+    # -- yield-rules Y2 (FLASH_S5_YIELD_WINDOW, default 0): the yield window ------------------------------------------
+    # A window is one yield (one selection, one PER_BULK count, one bulk row close, one bulk reopen) whose appends run
+    # back to back. Each append runs exactly as today's single append (admission, chunks, terminal commit, handback on
+    # FULL or kept split by O3); when its handback was served, auto-arm asks append_yield_window_offer before the
+    # re-entry. A staged next append makes the re-entry's arm start that append (phase 'append') instead of the owner's
+    # resume; the owner's binding, frontier and re-entry plan are those of the window. The owner re-enters as today when
+    # no eligible append waits, at YIELD_WINDOW_MAX_APPENDS, after an unserved handback (abort, skip, expiry), or when the
+    # staged append left before the arm.
+    def append_yield_window_offer(self):
+        """yield-rules Y2: the served handback of the current append; stage the next append of this window, or None.
+
+        The candidate is today's (append_yield_candidate: FCFS, max_new, the slot, decode-cover and KV-block gates per
+        candidate, the per-bulk lookup memo and refusals); no PER_BULK count. A geometry-tail append's handback is
+        served only once its r tail rows ran on FULL (the hold releases exactly them; O3 never keeps a tail split), so
+        the next append runs split only after that FULL handback: counted (tail_full_handbacks) at the next begin.
+        Never raises: a fault ends the window (counted) and the owner re-enters as today.
+        """
+        y = self._yield
+        w = None if y is None else y.get('window')
+        if w is None or y['phase'] != 'handback':
+            return None
+        w['next'] = None
+        try:
+            c = self.controller
+            w['offer_path'] = 'o3' if self._split_ready else 'full'   # night-pack fix 5: the handback's path (receipt)
+            # night-pack fix 5: the end stays 'not-served' (as built); why is split for the closed receipt and status.
+            # On the FULL path a handback whose first token is not yet sampled when the FULL window ends is 'unsampled'.
+            # An append that left the scheduler unserved (aborted on FULL, outside the 'append' phase) is 'abort'.
+            requests = getattr(self.scheduler, 'requests', None)
+            left = type(requests) is dict and requests.get(y['append'].request_id) is not y['append']
+            why = ('abort' if y.get('append_aborted') else 'skip' if y.get('handback_skipped')
+                   else 'expiry' if y.get('handback_expired') else None if y.get('handback_served')
+                   else 'abort' if left else 'unsampled')
+            if why is not None:
+                w['end'], w['not_served'] = 'not-served', why
+                c.yield_window_not_served(why)
+                return None
+            if w['appends'] >= c.yield_window_max:
+                w['end'] = 'bound'
+                return None
+            tail = self._handback_rows(y['append']) > 1
+            if tail and self._split_ready:
+                w['end'] = 'tail-on-split'           # never expected: O3 keeps only a one-row handback split
+                return None
+            policy = getattr(self, 'auto_arm', None)
+            refused = self._yield_refused.get(y['key'], frozenset())
+            scan = self._yield_scan
+            if scan is None or scan[0] != y['key']:
+                scan = self._yield_scan = (y['key'], set())
+            candidate = c.append_yield_candidate(self.scheduler, y['bulk'], getattr(policy, 'decode_counts', None),
+                                                 exclude=refused, seen=scan[1])
+            if candidate is None:
+                w['end'] = 'none-waiting'
+                return None
+            w['next'], w['tail'] = candidate, tail
+            self._yield_journal(y, 'window_next', index=w['appends'] + 1, tail_handback=tail,
+                                route_generation=self.route_generation)
+            return candidate
+        except Exception:
+            self.controller.yield_window_counts['errors'] += 1
+            w['next'], w['end'] = None, 'error'
+            return None
+
+    def append_yield_window_begin(self):
+        """yield-rules Y2: at the re-entry's arm, start the staged append (phase 'append') instead of the owner's resume.
+
+        False (the caller resumes the owner as today) when nothing is staged or the staged append is no longer
+        takeable. The per-append state starts fresh; the window's owner binding, frontier and key stay.
+        """
+        y = self._yield
+        w = None if y is None else y.get('window')
+        if w is None or y['phase'] != 'reenter' or w.get('next') is None:
+            return False
+        candidate, w['next'] = w['next'], None
+        fix = getattr(self.controller, 'yield_window_fix', False) is True
+        try:
+            policy = getattr(self, 'auto_arm', None)
+            counts = getattr(policy, 'decode_counts', None)
+            if fix:
+                held = self._yield_window_fixed_held(candidate, policy, counts)
+            else:
+                held = self.controller.append_yield_still_held(self.scheduler, candidate, counts)
+        except Exception:
+            self.controller.yield_window_counts['errors'] += 1
+            held = False
+        if not held:
+            w['end'] = 'next-left'
+            self.controller.yield_window_counts['next_left'] += 1      # night-pack fix 5: a staged candidate left
+            self._yield_journal(y, 'window_next_left', route_generation=self.route_generation)
+            if fix:
+                self._yield_window_reoffer(y, candidate)
+            return False
+        w['path'] = w.get('offer_path')                                # night-pack fix 5: the path it begins after
+        y['append'] = candidate
+        y['append_transactions'] = []
+        y['append_aborted'] = False
+        for name in ('handback_served', 'handback_steps', 'handback_expired', 'handback_skipped', 'idle_at',
+                     'drain_wait', 'closing_append'):
+            y.pop(name, None)
+        w['appends'] += 1
+        w['full_marked'] = False
+        counts = self.controller.yield_window_counts
+        counts['reentries_avoided'] += 1
+        if w['tail']:
+            counts['tail_full_handbacks'] += 1
+        y['phase'] = 'append'
+        self._yield_journal(y, 'window_append', index=w['appends'], tail_handback=w['tail'],
+                            route_generation=self.route_generation)
+        return True
+
+    def _yield_window_fixed_held(self, candidate, policy, counts):
+        """FLASH_S5_YIELD_WINDOW_FIX: the staged append's re-check with the pause auto-arm restores after this arm.
+
+        The begin runs inside auto-arm's own PAUSED_ALL bracket (old_pause saved, PAUSED_ALL set, arm, begin, old_pause
+        restored), so the scheduler's pause always refused it. Every other gate and eligibility rule is unchanged, and an
+        engine or operator pause already in old_pause still refuses. Without a saved old_pause: the scheduler's own.
+        """
+        c = self.controller
+        n = c.yield_window_fix_counts
+        n['begins'] += 1
+        restored = getattr(policy, 'old_pause', None)
+        if restored is None:
+            held = c.append_yield_still_held(self.scheduler, candidate, counts)
+        else:
+            own = c._environment_refuses(self.scheduler)
+            held = c.append_yield_still_held(self.scheduler, candidate, counts, pause_state=restored)
+            if held and own:
+                n['own_pause_passed'] += 1
+        if not held:
+            n['still_refused'] += 1
+        return held
+
+    def _yield_window_reoffer(self, y, candidate):
+        """FLASH_S5_YIELD_WINDOW_FIX: a staged append not takeable at the begin leaves this bulk's lookup memo, once per
+        request per bulk, so the next chunk boundary's lookup may take it (else it waits for the bulk's end)."""
+        scan = self._yield_scan
+        uid = getattr(candidate, 'request_id', None)
+        if scan is None or scan[0] != y['key'] or uid not in scan[1]:
+            return False
+        done = self._yield_reoffered
+        if done is None or done[0] != y['key']:
+            done = self._yield_reoffered = (y['key'], set())
+        if uid in done[1]:
+            return False
+        done[1].add(uid)
+        scan[1].discard(uid)
+        self.controller.yield_window_fix_counts['reoffered'] += 1
+        return True
+
+    def _yield_window_admitted(self, y):
+        """yield-rules Y2: an append of the window admitted; past the first, its gap from the previous terminal commit."""
+        w = y['window']
+        w['admitted'] += 1
+        c = self.controller
+        c.yield_window_counts['appends'] += 1
+        gap = None
+        path = w.get('path') if w['admitted'] >= 2 else None     # night-pack fix 5: o3 | full (None: the first append)
+        if w['admitted'] >= 2 and type(w.get('handback_ns')) is int:
+            gap = round((self._journal[-1]['observed_ns'] - w['handback_ns']) / 1e6, 3)
+            c.yield_window_gap(gap, path)
+        c.yield_window_receipt('append', seq=y['seq'], index=w['admitted'], gap_ms=gap, tail_handback=w['tail'],
+                               path=path, route_generation=self.route_generation)
+
+    def _maybe_yield(self):
+        """Offer the yield; a pending one moves to closing once its drain is over."""
+        y = self._yield
+        if y is None:
+            return self._yield_offer()
+        if y['phase'] == 'draining':
+            self._yield_drain_step(y)
+        return False
+
+    def _yield_open_records(self):
+        """The admission records of chunks admitted and not committed, oldest first."""
+        controller = self.controller
+        return tuple(record for record in (controller.parked, getattr(controller, 'successor', None))
+                     if record is not None)
+
+    def _yield_foreign_command(self):
+        """A non-chunk command is out; a poll or, with a chunk open, its own commands do not count."""
+        return bool(self._inflight) and any(kind != 'poll' for kind in self._inflight.values())
+
+    def _yield_arrival(self, records):
+        """The review's arrival class (a read on the status record, never a decision)."""
+        return 'before-admission' if not records else 'in-chunk'
+
+    def _yield_offer(self):
+        """Mark a yield pending if a short request is held; called before any bulk admission.
+
+        Contract (review 4 Nov, section 8): from here no further bulk chunk is admitted,
+        the chunks already admitted run to their commit, and only then the short request is
+        served.  No chunk is cancelled and no counter rolled back.
+        """
+        controller = self.controller
+        config = getattr(controller, 'append_yield', None)
+        if config is None:
+            return False
+        controller.yield_lookup_timer(self.scheduler)          # a read; with the control off too
+        if not config.enabled or self._yield is not None:
+            return False
+        policy = getattr(self, 'auto_arm', None)
+        if (policy is None or policy.phase != 'native' or not self._split_ready
+                or self.stop_kind is not None or self.error is not None
+                or self._return_pending is not None or self._route_exchange() is not None
+                or self._control is not None or self._profile_failure is not None
+                or self._native43 is not None or self._retained_cancel_request is not None
+                or self._yield_foreign_command()):
+            return False
+        intent = self._admission_intent
+        bulk = policy._request()
+        if intent is None or intent.get('origin') != 'auto-arm' or bulk is None:
+            return False
+        records = self._yield_open_records()
+        if records:
+            if any(record.failed or record.admission is None or record.admission.terminal
+                   or record.transaction.request_uid != bulk.request_id for record in records):
+                return False                     # a terminal chunk returns FULL anyway
+            transaction = records[-1].transaction
+        else:
+            row = self._retained
+            if row is None or row['transaction'].request_uid != bulk.request_id:
+                return False
+            transaction = row['transaction']
+        key = (transaction.request_uid, transaction.request_generation)
+        if self._yield_counts.get(key, 0) >= config.per_bulk:
+            controller._yield_quota_receipts(self.scheduler, bulk, self._yield_counts[key], config.per_bulk)
+            return False
+        # yield-rules Y1 (FLASH_S5_YIELD_NO_APPEND_OWNER, default 0): the owner has an append's rows left: no yield, no lookup.
+        if getattr(controller, 'yield_no_append_owner', False) and controller.yield_owner_refuses(
+                self.scheduler, bulk, transaction, key):
+            return False
+        refused = self._yield_refused.get(key, frozenset())
+        # Each held request is looked up once per bulk: on a 151k prompt a lookup stalls the engine about 0.265 s (box 1).
+        # A request refused here waits behind the bulk, as with the yield off.
+        scan = self._yield_scan
+        if scan is None or scan[0] != key:
+            scan = self._yield_scan = (key, set())
+        candidate = controller.append_yield_candidate(self.scheduler, bulk,
+                                                      getattr(policy, 'decode_counts', None),
+                                                      exclude=refused, seen=scan[1])
+        if candidate is None:
+            return False
+        self._yield_refused = {key: refused}
+        self._yield_counts = {key: self._yield_counts.get(key, 0) + 1}
+        self._yield_seq += 1
+        arrival = self._yield_arrival(records)
+        self._yield = dict(seq=self._yield_seq, phase='draining', append=candidate, bulk=bulk,
+                           bulk_transaction=transaction, frontier=transaction.chunk_end,
+                           append_transactions=[], close_rounds=0, append_aborted=False,
+                           times={}, route_generation=self.route_generation,
+                           arrival=arrival, open_chunks=len(records), key=key)
+        if getattr(controller, 'yield_window', False):
+            # yield-rules Y2: this yield is a window; its appends run back to back before the owner re-enters
+            self._yield['window'] = dict(appends=1, admitted=0, next=None, tail=False, handback_ns=None, end=None)
+        self.append_yield_counters['selected'] += 1
+        self.append_yield_arrivals[arrival] += 1
+        self._yield_journal(self._yield, 'selected',
+                            bulk_transaction=transaction.txn_seq, bulk_frontier=transaction.chunk_end,
+                            arrival=arrival, open_chunks=len(records),
+                            yields_this_bulk=self._yield_counts[key], route_generation=self.route_generation)
+        self._yield_drain_step(self._yield)
+        return True
+
+    def _yield_drain_step(self, y):
+        """The common valid state: nothing admitted, the bulk's row retained at its committed frontier.
+
+        Every chunk commits only after both stages locally released it (state written,
+        Mamba and KV at its end) and every PP receipt was accepted, so no stage is ahead of
+        the other here and no transfer is outstanding.  Checked, then the row may close.
+        """
+        if self._yield_open_records() or self.tx is not None or self._yield_foreign_command():
+            return False
+        row = self._retained
+        bulk = y['bulk']
+        if row is None or row['transaction'].request_uid != bulk.request_id:
+            self._yield_journal(y, 'drain_lost_row', route_generation=self.route_generation)
+            self._end_yield('drain-lost-row')
+            return False
+        transaction = row['transaction']
+        if (getattr(bulk, 'num_computed_tokens', None) != transaction.chunk_end
+                or any(ledger.outstanding(transaction) for ledger in self.pp_ledgers.values())):
+            raise DriverError('append yield drained to a state that is not common to both stages')
+        y['bulk_transaction'], y['frontier'] = transaction, transaction.chunk_end
+        # The drain took time: the selected request may have left; the first still held takes the turn.
+        policy = self.auto_arm
+        refused = self._yield_refused.get(y['key'], frozenset())
+        counts = getattr(policy, 'decode_counts', None)
+        if self.controller.append_yield_still_held(self.scheduler, y['append'], counts):
+            candidate = y['append']              # no second lookup; the admission does its own
+        else:
+            seen = self._yield_scan[1] if self._yield_scan is not None and self._yield_scan[0] == y['key'] else None
+            candidate = self.controller.append_yield_candidate(self.scheduler, bulk, counts, exclude=refused, seen=seen)
+        if candidate is None:
+            self._yield_counts = {y['key']: self._yield_counts.get(y['key'], 1) - 1}
+            self._yield_journal(y, 'drain_no_append', route_generation=self.route_generation)
+            self._end_yield('drain-no-append')
+            return False
+        y['append'] = candidate
+        y['phase'] = 'closing'
+        self._yield_journal(y, 'drained', bulk_transaction=transaction.txn_seq, bulk_frontier=transaction.chunk_end,
+                            route_generation=self.route_generation)
+        return True
+
+    def _drive_yield_close(self):
+        """The existing typed retained-row close, outside any stop and its budget.
+
+        The wire reason is 'pause' (close the row, keep the route: the meaning of
+        control_route_pause_kept); the journal reason is 'yield'.  A stop arriving
+        meanwhile takes over the same immutable command (_drive_retained_cancel).
+        """
+        y = self._yield
+        row = self._retained
+        appending = y.get('closing_append') is not None
+        target = y['closing_append'] if appending else y['bulk_transaction']
+        if row is None or row['transaction'] != target:
+            raise DriverError('append yield lost the row it is closing')
+        if self._inflight and any(kind != 'poll' for kind in self._inflight.values()):
+            return
+        acks = self._retained_cancel_acks
+        if set(acks) == set(self.ranks) and all(ack.closed for ack in acks.values()):
+            self._retire_retained_cancel(reason='yield')
+            self.append_yield_counters['rows_closed'] += 1
+            if appending:
+                # the refused append's partial row closed: the bulk reopens next
+                y['closing_append'] = None
+                self._yield_enter_resume(y)
+                self._yield_journal(y, 'append_row_closed', transaction=target.txn_seq,
+                                    route_generation=self.route_generation)
+                return
+            y['phase'] = 'append'
+            self._yield_journal(y, 'row_closed', bulk_frontier=y['frontier'],
+                                route_generation=self.route_generation)
+            return
+        y['close_rounds'] += 1
+        if y['close_rounds'] > self.stop_budget:
+            raise DriverError('append yield row close did not finish within the bound; ownership retained')
+        request = self._retained_cancel_request
+        if request is None:
+            request = CancelRequest(row['transaction'], row['state_epoch'], YIELD_CANCEL_REASON)
+            self._retained_cancel_request = request
+        self._submit('retained_cancel', ('flash_s5_cancel', (request,), {}, None), self.ranks)
+
+    def _note_yield_begin(self, transaction):
+        y = self._yield
+        if y['phase'] == 'append' and transaction.request_uid == y['append'].request_id:
+            if not y['append_transactions']:
+                self.append_yield_counters['admitted'] += 1
+                self._yield_journal(y, 'admitted', transaction=transaction.txn_seq,
+                                    chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end,
+                                    route_generation=self.route_generation)
+                if 'window' in y:
+                    self._yield_window_admitted(y)
+            y['append_transactions'].append(transaction.txn_seq)
+        elif y['phase'] == 'draining' and transaction.request_uid == y['bulk'].request_id:
+            pass                                 # admitted before the yield was pending: it runs to its commit
+        elif y['phase'] == 'resume' and transaction.request_uid == y['bulk'].request_id:
+            if transaction.chunk_start != y['frontier']:
+                raise DriverError('yielded bulk reopened away from its committed frontier')
+            self.append_yield_counters['reopened'] += 1
+            self._yield_journal(y, 'bulk_reopened', transaction=transaction.txn_seq,
+                                chunk_start=transaction.chunk_start, route_generation=self.route_generation)
+            self._end_yield('handback-expired' if y.get('handback_expired')
+                            else 'handback-skipped' if y.get('handback_skipped') else 'reopened')
+        else:
+            raise DriverError('append yield admitted a transaction outside its target')
 
     def _state_control(self, action, command):
         """Arm/disarm the typed admission intent; never a raw boolean.
@@ -3270,6 +4824,13 @@ class NativeSegmentDriver:
         action = command.get('action')
         if action == 'native_progress' and self.progress is not None:
             return self._progress_control(command)
+        if action == 'native_qsa_fused' and self.qsa_fused is not None:
+            return self._fused_control(command)
+        if action == 'native_layer_group' and self.layer_groups is not None:
+            return self._layer_group_control(command)
+        if (action == 'native_append_yield'
+                and getattr(self.controller, 'append_yield', None) is not None):
+            return self._append_yield_control(command)
         if action not in CONTROL_ACTIONS:
             raise DriverError('native-control-unknown-action')
         if action == 'cancel':
@@ -3309,8 +4870,8 @@ class NativeSegmentDriver:
             raise DriverError('native-control-engine-epoch-differs')
         if action == 'qualification':
             worker_action = command.get('worker_action')
-            from native_overlap_worker import QUALIFICATION_ACTIONS
-            if worker_action not in QUALIFICATION_ACTIONS:
+            from native_overlap_worker import QUALIFICATION_ACTIONS, attn_meta_actions
+            if worker_action not in QUALIFICATION_ACTIONS and worker_action not in attn_meta_actions():
                 raise DriverError('native-qualification-action-unknown')
         if self._route_exchange() is not None or self._return_pending is not None:
             raise DriverError('native-control-route-exchange-outstanding')
@@ -3348,6 +4909,19 @@ class NativeSegmentDriver:
                         + '-requires-paused-empty-engine')
                 return
             if worker_action in CONTROL_LIVE_COHORT_QUALIFICATION:
+                return
+            if worker_action == 'attn_meta_read':
+                return
+            if worker_action == 'attn_meta_select':
+                # attn-meta's per-arm switch: paused idle FULL only, the rule native_layer_group holds (no split
+                # route, no transaction, no native work, no retained row, no armed admission, no active policy, no
+                # recording); the live/inflight and paused checks above already ran.
+                policy = getattr(self, 'auto_arm', None)
+                recording = self.progress is not None and self.progress.recording
+                if (self._split_ready or self.tx is not None or self.controller.active
+                        or self._retained is not None or self._admission_intent is not None
+                        or (policy is not None and policy.active) or recording):
+                    raise DriverError('native-attn-meta-requires-paused-idle-full')
                 return
             raise DriverError('native-qualification-action-unknown')
         if action in CONTROL_LIVE_COHORT_ACTIONS:
@@ -3445,7 +5019,27 @@ class NativeSegmentDriver:
     def _native_admission_record(self):
         """The admission controller's typed counts and newest refusal (native37)."""
         query = getattr(self.controller, 'native_admission_record', None)
-        return query() if callable(query) else None
+        record = query() if callable(query) else None
+        counter = getattr(self, '_ingress_prefix', None)
+        if counter is not None and type(record) is dict:   # ingress prefix counter: present once an engine arm admitted
+            record['ingress_prefix'] = counter.snapshot()
+        observation = getattr(getattr(self, 'auto_arm', None), 'control_inwait', None)
+        if observation is not None and type(record) is dict:
+            record['control_inwait'] = observation.snapshot()
+        return record
+
+    def note_ingress_prefix(self, engine, request):
+        """Log-only common-prefix counter at scheduler acceptance; engine arms only (auto-arm released), never read
+        by a decision. The stock reference arm holds the manual lease and is not recorded."""
+        policy = getattr(self, 'auto_arm', None)
+        if policy is None or policy.manual_owned:
+            return
+        counter = getattr(self, '_ingress_prefix', None)
+        if counter is None:
+            from ingress_incremental import PrefixCounter
+            unit = getattr(getattr(engine, 'scheduler', None), 'hash_block_size', None)
+            counter = self._ingress_prefix = PrefixCounter(unit if type(unit) is int and unit > 0 else 0)
+        counter.record(request)
 
     def note_stock_step_skipped(self):
         """Engine hook bypassed one stock step; utility pumps do not count."""
@@ -3458,7 +5052,20 @@ class NativeSegmentDriver:
             result['auto_arm'] = policy.snapshot()
         if self.progress is not None:
             result['native_progress'] = self.progress.snapshot()
+        if self.qsa_fused is not None:
+            result['native_qsa_fused'] = self.qsa_fused.snapshot()
+        if self.layer_groups is not None:
+            result['native_layer_groups'] = self.layer_groups.snapshot()
+        if getattr(self.controller, 'append_yield', None) is not None:
+            result['append_yield'] = self.append_yield_record()
+        # alpha-next item 1: stop receipts (engine-lifetime counts, never consulted).
+        result['stop_receipts'] = self.stop_receipts()
         return result
+
+    def stop_receipts(self):
+        """alpha-next item 1: engine-lifetime stop receipt counts (never consulted)."""
+        return dict(partial_replays=self._stop_partial_replays,
+                    bound_exhausted=self._stop_bound_exhausted)
 
     def _status_record_base(self, now=None):
         now = int(self._monotonic_ns()) if now is None else now
@@ -3520,6 +5127,7 @@ class NativeSegmentDriver:
             'schedule_profile_timeouts': self._profile_timeouts,
             'schedule_profile_refusals': self._profile_refusal_receipt(),
             'qsa_control': self.qsa_control.snapshot(),
+            'native43_boundary': copy.deepcopy(self._native43),
             'control_pending': None if self._control is None else self._control['action'],
             'admission_intent': self.admission_intent(),
             'control_route': (None if self._control_route is None
@@ -3707,12 +5315,14 @@ class NativeSegmentDriver:
         remaining = self._control_deadline - self.clock()
         if remaining <= 0:
             raise DriverError('native-control-deadline-expired')
+        self._gap_event('control_submit_begin', action=command.get('action'))
         sequence = self._submit(
             'native_overlap',
             ('flash_s5_native_overlap', (command,), {}, None),
             self.ranks, timeout_s=remaining)
         control['stage'] = 'reply'
         self._control_seq = sequence
+        self._gap_event('control_sent', sequence=sequence, action=command.get('action'))
 
     def _advance_inner(self, control, inner):
         if inner['stage'] == 'submit':
@@ -3799,6 +5409,7 @@ class NativeSegmentDriver:
         if self._control_reply is not None:
             raise DriverError('native control already holds an unclaimed reply')
         self._control_reply = values
+        self._gap_event('control_reply', sequence=sequence, action=self._control.get('action'))
 
     def _control_notice(self, kind):
         control = self._control
@@ -3961,7 +5572,21 @@ class NativeSegmentDriver:
                 entry[key] = _bounded_value(value)
         self._journal.append(entry)
         self.measurement_census.ingest(entry)
+        if (entry_kind in ('chunk_open', 'chunk_commit', 'source_hold', 'request_row_closed',
+                           'admission_armed', 'admission_disarmed')
+                or entry_kind.startswith(('auto_', 'append_yield_'))):
+            self._gap_event(entry_kind, **fields)
         return entry
+
+    def _gap_event(self, event, **fields):
+        """Diagnostic only: no installed recorder or a broken sink never changes control."""
+        try:
+            progress = getattr(self, 'progress', None)
+            emit = getattr(progress, 'gap', None)
+            if callable(emit):
+                emit(event, fields)
+        except Exception:
+            pass
 
     # -- overlap evidence from the journal -------------------------------
     def overlap_evidence(self, start_ns, end_ns):
@@ -4009,7 +5634,7 @@ class NativeSegmentDriver:
                 chunk.update({key: entry.get(key) for key in
                               ('request', 'request_generation', 'chunk_start',
                                'chunk_end', 'state_epoch', 'committed_end',
-                               'prompt_end', 'remaining_tokens', 'terminal')})
+                               'prompt_end', 'remaining_tokens', 'terminal', 'native_end')})
                 chunk['begin_ns'] = entry['observed_ns']
                 chunk['segments'] = []
                 chunk['routes'] = set()
@@ -4170,6 +5795,10 @@ class NativeSegmentDriver:
             'refusals': self._profile_refusal_receipt(),
             'basis': 'engine-lifetime-monotonic-count'}
         record['measurement']['qsa_control'] = self.qsa_control.snapshot()
+        record['measurement']['stop_receipts'] = {
+            'partial_replays': self._stop_partial_replays,
+            'bound_exhausted': self._stop_bound_exhausted,
+            'basis': 'engine-lifetime-monotonic-count; recorded, never consulted'}
         record['measurement']['stock_steps_skipped'] = {
             'count': self._stock_steps_skipped,
             'basis': 'engine-lifetime hook bypasses; subtract matching status snapshots'}
@@ -4208,6 +5837,7 @@ class NativeSegmentDriver:
         self._transition = command
         self._transition_retry = True
         self._transition_deadline = self.clock() + self.reply_timeout_s
+        self._transition_started = self.clock()      # lane-o3: the transition's time, send to every rank's ack
         self._send_transition()
         return command
 

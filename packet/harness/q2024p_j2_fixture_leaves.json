@@ -1,0 +1,17 @@
+{
+  "schema": "fixture-leaves/1",
+  "leaves": [
+    {
+      "name": "q2024p-j2-composition",
+      "files": [
+        "harness/test_q2024p_j2.py"
+      ],
+      "seams": [
+        "ARGPARSE_VALUES",
+        "subprocess.run",
+        "check_slot"
+      ],
+      "reason": "Actual shell settings use the existing public argv fixture; no model/box/network/device execution. Sealed j2 queue/capture probe is reused against this candidate draft under the legacy dictionary key only; the actual fresh draft body is not replaced. J2 raw-grade and client/device leaves remain declared in its unchanged fixture ledger. Existing prefetch CUDA tests are CPU event fakes, not physical overlap evidence."
+    }
+  ]
+}

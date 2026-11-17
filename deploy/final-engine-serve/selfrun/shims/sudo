@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# self-run shim: sudo runs the command as the hub user, except rm (the launchers' "sudo -n rm -f <test switches>" is logged, not run).
+[[ ${1:-} == -n ]] && shift
+if [[ ${1:-} == rm ]]; then echo "$(date +%T) sudo-shim refused: $*" >> "$SR/refused.log"; exit 0; fi
+exec "$@"

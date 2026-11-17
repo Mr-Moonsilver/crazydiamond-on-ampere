@@ -381,6 +381,23 @@ class ReplyTransport:
         finally:
             self._broker.release()
 
+    def wait_landed(self, timeout_s):
+        """Held-g L3: block up to ``timeout_s`` until a received reply waits for ``poll``.
+
+        No MQ read, poll, claim or aggregation: receivers put each matched
+        reply on the landed queue under the condition and notify after every
+        receive, so a reply landing during the wait wakes it. Returns True
+        when a landed reply is waiting; a failed or closing transport returns
+        at once (its next poll raises as before).
+        """
+        self._owner()
+        if type(timeout_s) not in (int, float) or not math.isfinite(timeout_s) or timeout_s < 0:
+            raise ValueError('finite nonnegative wait required')
+        with self._condition:
+            if self._done.empty() and not self._closing and self._failure is None:
+                self._condition.wait(timeout_s)
+            return not self._done.empty()
+
     def call_ready(self, sequence):
         """Atomic local observation; no MQ read, implicit poll or claiming."""
         self._owner()

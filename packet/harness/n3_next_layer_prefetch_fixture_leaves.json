@@ -1,0 +1,31 @@
+{
+  "schema": "n3-next-layer-prefetch-fixture-leaves/1",
+  "box_evidence": false,
+  "inherits": ["n3_producer_witness_fixture_leaves.json", "step_a_fixture_leaves.json"],
+  "leaves": [
+    {
+      "name": "logical-stream-copy-and-page-value-shadow",
+      "tests": "test_n3_next_layer_prefetch.PrefixCase",
+      "replaces": "NativeQsaDevice CUDA streams/events/copy_pages and source/arena TensorFacts; attention/model/indexer kernels",
+      "implementation": " Device extends the declared StreamDevice: compute/copy logical clocks obey actual wait_event edges, copy pages cost pages/4 synthetic ms, native producer/model cost10 and attention3 synthetic ms. Copy writes an immediate CPU page-identity shadow, not BF16 tensors or asynchronous device values. Sources have stable distinct fixture addresses. Real QsaPrefillOperation registration, frozen ChunkAdmission, full SparseSourceHold/FakeAllocator lease, CPU plan provider, producer/bucket/consumer/end/drain/release execute. The component local dense grant is SimpleNamespace(fused=True); the separate four-worker case obtains real grants. Looping histories52623/97151/97152/133679/201261 and widths1024/1352/2024 is geometry and descriptor/value-shadow proof only. Arena/source fact, frame and hold mutations are explicit negative leaves. Exact seams: copy_pages, wait_event, _prefix_frame, _last_arena_consumer, _layers, _allocator, record, query, synchronized, host_reads.",
+      "equivalence": "Checks real descriptor identity/order/bytes, full-page write exclusion, last-reader edge, unchanged mutable-producer edge, exact adopted identity/map/address, one pending prefix, bounded local layers, partial enqueue quarantine, cancel retaining prefix owners until its own event and second-chunk isolation. Mutants remove these actual guards. No test patches a device completion to certify hardware.",
+      "cannot_prove": "Real GPU BF16 attention output, physical DMA ordering/performance, initialized cache contents or actual VRAM/event allocations; these remain owner replay gates."
+    },
+    {
+      "name": "four-worker-two-qsa-layer-fused-composition",
+      "tests": "test_n3_next_layer_prefetch.Connected; TwoLayerNetwork",
+      "replaces": "Model/kernel/tensor/MQ/CUDA/stock scheduler leaves inherited from FusedNetwork and ProfileNetwork; CreditServer.begin_prefill_operation/source binder and stack.make_operation/driver_factory construction",
+      "implementation": " TwoLayerNetwork keeps the real Engine NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, QsaLayerDriver, generated dense helper, operation, typed four-rank PREPARE/profile/PP/TP/release flow. Its PP0 model owns two QSA layers sharing the existing fixture arena, with separate pinned source tensors, real holds and the same metadata. PP1 remains the declared no-QSA fake linear model. The constructed server hook registers both real sources/holds before begin_forward, matching native_resources.bind_operation_sources; the real bridge latches the actual frozen admission. CreditBinding itself remains the declared source-binding leaf, not a real registry/layout census. A rank-local cold case removes its frame after binding; the peer still prefetches, descriptors/collective counts and real coordinator commitments agree. PyNccl operations are inherited declared CPU ports. Exact seams: begin_prefill_operation, make_operation, driver_factory, _prefix_frame. Finish closes normally then performs the existing typed cancel of the now-idle cycle; it asserts actual row/source release, never invents a native closure.",
+      "equivalence": "Exercises the real call site and agreement with independently optional DMA. Disabling prefetch in QsaLayerDriver._tail fails this test while component prefetch still works. No new collective/profile or changed PP envelope is introduced.",
+      "cannot_prove": "Four physical GPU stream scheduling, kernels, distributed failure delivery or CUDA-green-context timing; device test is the proven parity replay, eight live agents and matched stock."
+    },
+    {
+      "name": "recorder-atomic-capture-and-negative-ports",
+      "tests": "test_n3_next_layer_prefetch.SwitchAndBudget; test_real_atomic_alloc_receipt_reports_per_layer_counts_and_bytes; test_partial_enqueue_failure_keeps_owners_and_quarantines",
+      "replaces": "Future sampler operation/run metadata via recorder() SimpleNamespace; emit_receipt_lines capture and real ReceiptWriter os.write capture via capture_writer; copy_pages raises RuntimeError on the second descriptor",
+      "implementation": " Real FusedPhaseSpans refreshes future history, fused entry and actual group, requires both optional prefetch phases only for issued prefixes; 418+20 <=512 marker arithmetic covers pinned worst geometry. Real _alloc_receipt, ReceiptWriter and receipt_lines reader validate counts/bytes/reason/host timings and3968-byte atomic writes. Manual namespace inventory has six rows solely to stress formatting. Exact seams: emit_receipt_lines, copy_pages, _RECEIPT_WRITER, _current_run, _layer. Faults preserve ownership and quarantine; logging still inherits its non-throwing writer.",
+      "equivalence": "Serialization, sample completeness, bounded counters, atomic integrity and failure behavior execute unchanged. Stream times are sentinels, never measured GPU benefit.",
+      "cannot_prove": "Real logging pressure, event allocation overhead, device free memory or statistically significant performance."
+    }
+  ]
+}

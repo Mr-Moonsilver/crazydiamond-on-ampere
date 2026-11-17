@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# self-run shim for the PVE ssh route: the remote command 'pct exec <ct-id> -- bash -s' becomes a local bash -s (R prefixes the box paths).
+[[ "$*" == 'pct exec <ct-id> -- bash -s' ]] || { echo "pve shim: unexpected remote command: $*" >&2; exit 1; }
+exec bash -s

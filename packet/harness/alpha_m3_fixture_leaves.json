@@ -1,0 +1,32 @@
+{
+ "schema": "fixture-leaves/1",
+ "suite": "test_alpha_m3_receipts.py",
+ "seams": [],
+ "leaves": [
+  {
+   "fixture": "Sized, a shape-only tensor; torch.empty, triton.cdiv and envs in the namespace of the reference's qsa_select_paged_prefill",
+   "replaces": "torch tensors, torch.empty, triton.cdiv and vllm.envs as that function uses them",
+   "why_equivalent": "The function body is the reference's own source, compiled unchanged. It reads only .shape, .dtype and slices for its sizing; cdiv is triton's ceiling division."
+  },
+  {
+   "fixture": "_prefill_logits and _topk recording stubs",
+   "replaces": "the reference's device kernels launched by those functions",
+   "why_equivalent": "The record is the (num_queries, logits_width) float32 shape the real _prefill_logits passes to torch.empty; that line is asserted from the reference's source. No device work is under test."
+  },
+  {
+   "fixture": "FakeCuda.memory_stats/mem_get_info",
+   "replaces": "torch.cuda.memory_stats and mem_get_info on a worker",
+   "why_equivalent": "worker_bridge.memory_receipt reads named keys with a -1 default and those two calls. The key names are torch's; the box receipts show whether they are populated."
+  },
+  {
+   "fixture": "SimpleNamespace stubs as self for the real _memory_receipt, _alloc_receipt and note_indexer_scores",
+   "replaces": "NativeWorkerBridge and QsaPrefillOperation instances",
+   "why_equivalent": "The methods are the real ones, called unbound; they read only the attributes given. Instances through the real generated attention are in test_e3_sparse_history_dma and test_native41_tp_skew."
+  },
+  {
+   "fixture": "Timestamp and worker prefix added to captured log messages; engine-watch-<name>.json files with started/finished",
+   "replaces": "docker logs --timestamps lines and the records native43_engine_death.py watch writes",
+   "why_equivalent": "The prefix is copied from the held-f run 2 engine stream; the two fields are the names the watch writes."
+  }
+ ]
+}

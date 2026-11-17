@@ -42,6 +42,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 import time
+import os
+import json
+import hashlib
+import logging
+import sys
+from functools import wraps
 
 from sparse_history_dma import (
     MAX_DESCRIPTORS,
@@ -59,7 +65,7 @@ from sparse_history_dma import (
     make_sparse_plan,
     stream_sparse_plan,
 )
-from row1_oracle import Row1Bucket, Row1OracleError
+from row1_oracle import Row1Bucket, Row1OracleError, dense_branch, expected_reference
 from e3_types import (
     ARENA_PAGES,
     CompletionKind,
@@ -81,6 +87,7 @@ MAX_OUTSTANDING_BUCKETS = 1
 MAX_LAYER_PAGES = 128
 MAX_STAGES_PER_LAYER = 1 + 2 * math.ceil(MAX_LAYER_PAGES / MAX_BUCKET_PAGES)
 MAX_TRACKED_TICKETS = 512
+MAX_PREFETCH_LAYERS = 6  # Pinned PP2 model: six local QSA layers; other layouts stay cold.
 # Explicit byte bound for the one operation-owned union buffer set: three
 # int32 vectors over the dense selection capacity, two int32 block totals and
 # the two-word count/route record, plus the inverse-remap buffer.  A geometry
@@ -169,6 +176,20 @@ class BucketPlan:
     @property
     def pages(self):
         return self.hi - self.lo
+
+
+@dataclass
+class PrefixCopy:
+    layer_name: str
+    pages: tuple
+    pieces: tuple
+    source_facts: TensorFacts
+    arena_facts: TensorFacts
+    identity: tuple
+    owners: tuple = field(repr=False)
+    event: object = field(default=None, repr=False)
+    complete: bool = False
+    used: bool = False
 
 
 @dataclass
@@ -389,9 +410,18 @@ class NativeQsaDevice:
     compute = 'compute'
     copy = 'copy'
 
-    def __init__(self, device, *, clock=time.monotonic):
+    def __init__(self, device, *, clock=time.monotonic, env=None):
         import torch
         self.torch = torch
+        self.native_qsa_policy, self.native_qsa_trace = native_qsa_settings(env)
+        self.native_fused_phase_every = fused_phase_every(env)
+        self.native_next_layer_prefetch = next_layer_prefetch(env)
+        declared = os.environ if env is None else env
+        self.native_qsa_boundary = declared.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') == '101200'
+        # M3: per-chunk allocation receipts, on the worker bridge's existing receipt gate.
+        self.native_memory_receipts = declared.get('FLASH_S5_AUTO_ARM', '0') == '1'
+        # S1: retirement frees device buffers and has no box evidence yet; off unless declared.
+        self.native_union_retire = declared.get('FLASH_S5_UNION_RETIRE', '0') == '1'
         # Accept the string/device forms the runner reports; constructing a
         # torch.device on a string is unnecessary and would make the CPU
         # fixtures' minimal torch module part of the contract.
@@ -455,6 +485,35 @@ class NativeQsaDevice:
         if str(event.device) != self.device:
             raise OperationError('stream wait on a foreign-device event')
         self._stream(token).wait_event(event)
+
+    def boundary_digest(self, tensor, *, selection=False):
+        # Diagnostic-only D2H at the final test chunk. No device-wide fence.
+        # These hashes are kept outside timed chunks and contain no payloads.
+        if tensor.numel() * tensor.element_size() > 64 * 1024 * 1024:
+            raise OperationError('native43 boundary tensor exceeds declared 64MiB readback cap')
+        started = time.monotonic_ns()
+        host = tensor.detach().to(device='cpu').contiguous()
+        raw = host.view(self.torch.uint8).numpy()
+        result = dict(sha256=hashlib.sha256(memoryview(raw)).hexdigest(),
+                      shape=list(host.shape), dtype=str(host.dtype),
+                      bytes=host.numel() * host.element_size())
+        if selection:
+            import numpy as np
+            values = host.numpy()[:, :-1]
+            valid = values[values >= 0]
+            result['selected_count'] = int(np.unique(valid).size)
+        if not selection:
+            sample = host.reshape(-1)[:256].to(dtype=self.torch.float32)
+            result['sample_values'] = sample.tolist()
+            result['sample_scope'] = 'first min(256,numel) flattened elements'
+            result['full_tensor_coverage'] = host.numel() <= 256
+        result['readback_cpu_ns'] = time.monotonic_ns() - started
+        return result
+
+    def timing_event(self, token):
+        event = self.torch.cuda.Event(enable_timing=True)
+        event.record(self._stream(token))
+        return event
 
     def copy_pages(self, source, arena, source_page, arena_page, pages):
         if type(pages) is not int or not 1 <= pages <= MAX_PAGES_PER_COPY:
@@ -537,6 +596,145 @@ class NativeQsaDevice:
                 src[source_row:source_row + rows], non_blocking=True)
 
 
+
+NATIVE_QSA_POLICY_ENV = 'FLASH_S5_NATIVE_QSA_POLICY'
+NATIVE_QSA_TRACE_ENV = 'FLASH_S5_NATIVE_QSA_TRACE'
+
+
+def native_qsa_settings(env=None):
+    """Latch an explicit policy once at worker construction, before ready."""
+    env = os.environ if env is None else env
+    policy = env.get(NATIVE_QSA_POLICY_ENV, 'current')
+    trace = env.get(NATIVE_QSA_TRACE_ENV, '0')
+    if policy not in ('current', 'dense') or trace not in ('0', '1'):
+        raise OperationError('invalid native QSA startup policy/trace declaration')
+    return policy, trace == '1'
+
+
+def next_layer_prefetch(env=None):
+    env = os.environ if env is None else env
+    value = env.get('FLASH_S5_NEXT_LAYER_PREFETCH', '0')
+    if value not in ('0', '1'):
+        raise OperationError('FLASH_S5_NEXT_LAYER_PREFETCH must be 0 or 1')
+    return value == '1'
+
+
+def fused_phase_every(env=None):
+    env = os.environ if env is None else env
+    value = env.get('FLASH_S5_FUSED_PHASE_EVERY', '0')
+    try:
+        number = int(value)
+    except (ValueError, TypeError):
+        raise OperationError('invalid fused phase sample interval') from None
+    if str(number) != value or not 0 <= number <= 4096:
+        raise OperationError('invalid fused phase sample interval')
+    return number
+
+
+class NativeQsaTrace:
+    """Bounded per-operation receipts; event elapsed times only after query.
+
+    No CUDA synchronize, scalar readback or wall/device clock conversion.
+    Event spans include the stream's submitted work between markers. CPU
+    times are method costs, inclusive of validation; they are not GPU time.
+    """
+    MAX_MARKERS = 512
+
+    def __init__(self, operation):
+        self.operation = operation
+        self.open_ns = time.monotonic_ns()
+        self.rows = {}
+        self.pairs = []
+        self.opened = {}
+        self.markers = 0
+        self.dropped = 0
+
+    def row(self):
+        name = self.operation._current_run().layer_name
+        return self.rows.setdefault(name, dict(layer=name, cpu_plan_ns=0,
+            cpu_submit_ns=0, descriptors=0, waves=0, bytes=0,
+            union_ms=0.0, copy_ms=0.0, attention_ms=0.0))
+
+    def begin(self, phase, stream):
+        if self.markers + 2 > self.MAX_MARKERS:
+            self.dropped += 1
+            return None
+        event = self.operation.device.timing_event(stream)
+        self.markers += 2  # Reserve both endpoints, so an end cannot overflow.
+        return self.row()['layer'], phase, stream, event
+
+    def end(self, token):
+        if token is not None:
+            name, phase, stream, start = token
+            end = self.operation.device.timing_event(stream)
+            self.pairs.append((name, phase, start, end))
+
+    def emit(self):
+        incomplete = self.dropped + len(self.opened)
+        for name, phase, start, end in self.pairs:
+            if self.operation.device.query(end):
+                self.rows[name][phase + '_ms'] += float(start.elapsed_time(end))
+            else:
+                incomplete += 1
+        op = self.operation
+        released_ns = time.monotonic_ns()
+        for name, row in self.rows.items():
+            run = op._layers[name]
+            sparse = run.sparse
+            row.update(schema='native43-qsa-layer/1', rank=op.lane.worker_rank,
+                transaction=op.transaction.txn_seq,
+                chunk_start=op.transaction.chunk_start,
+                chunk_end=op.transaction.chunk_end, history=run.valid_tokens,
+                policy=op.transport_policy, operation_open_ns=self.open_ns,
+                first_qsa_in_stage=bool(op._forward_layers and op._forward_layers[0] == name),
+                operation_released_ns=released_ns,
+                route=sparse.route if sparse is not None else 'dense_dma',
+                selected_count=sparse.selection_count if sparse is not None else None,
+                selected_count_basis='union-readback' if sparse is not None
+                    and sparse.selection_count is not None else 'NOT_OBSERVED:no-union',
+                gpu_timing_complete=incomplete == 0,
+                timing_markers=self.markers, dropped_markers=self.dropped,
+                timing_basis='stream-event brackets include host launch/idle gaps; not GPU busy time',
+                counters_basis='operation-cumulative', counters=dict(op.stats))
+            logging.getLogger(__name__).info('flash-s5 native43_qsa %s',
+                json.dumps(row, sort_keys=True, separators=(',', ':')))
+
+
+def sparse_active_for_trace(run):
+    return run.sparse is not None and run.sparse.route == 'sparse_dma'
+
+
+def trace_cpu(field):
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if self.trace is None:
+                return method(self, *args, **kwargs)
+            row = self.trace.row()
+            started = time.monotonic_ns()
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                row[field] += time.monotonic_ns() - started
+        return wrapped
+    return decorate
+
+def indexer_score_shape(rows, max_seq_len, compress_ratio, table_columns, page_size, max_logits_mb):
+    """The FP32 score allocations one qsa_select_paged_prefill call makes.
+
+    Same inputs and arithmetic as the reference's sizing in ops/qsa_indexer.py
+    (test_alpha_m3_receipts runs that source against this).  Returns
+    (logits_width, rows_per_chunk, chunks, peak_bytes, total_bytes).
+    """
+    def cdiv(a, b):
+        return -(-a // b)
+    width = cdiv(cdiv(max_seq_len, compress_ratio), 64) * 64
+    width = min(max(64, width), table_columns * page_size)
+    rows_per_chunk = max(1, max_logits_mb * 1024 * 1024 // (width * 4))
+    return (width, rows_per_chunk, cdiv(rows, rows_per_chunk),
+            min(rows, rows_per_chunk) * width * 4, rows * width * 4)
+
+
 class QsaPrefillOperation:
     """One transaction's bounded QSA work, driven by generated call sites."""
 
@@ -554,6 +752,21 @@ class QsaPrefillOperation:
         self.transaction = transaction
         self.lane = lane
         self.device = device
+        self.transport_policy = getattr(device, 'native_qsa_policy', 'current')
+        if self.transport_policy not in ('current', 'dense'):
+            raise OperationError('invalid latched native QSA policy')
+        self.trace = NativeQsaTrace(self) if getattr(device, 'native_qsa_trace', False) else None
+        from native_measurement import FusedPhaseSpans
+        every = getattr(device, 'native_fused_phase_every', 0)
+        self.phase_trace = (FusedPhaseSpans(self) if every and
+                            (transaction.txn_seq - 1) % every == 0 else None)
+        self.prefetch_enabled = getattr(device, 'native_next_layer_prefetch', False) is True
+        self._prefix_frame = self._prefix_pending = self._prefix_group = None
+        self._prefix_copies = []
+        self._prefix_rows = {}
+        self._prefix_overflow = 0
+        self.memory_receipts = getattr(device, 'native_memory_receipts', False) is True
+        self.union_retire = getattr(device, 'native_union_retire', False) is True
         self.clock = clock
         self.plan_provider = plan_provider
         self.allocation_epoch = (lane.storage_epoch if allocation_epoch is None
@@ -587,6 +800,8 @@ class QsaPrefillOperation:
         self._union_scratch = None
         self._union_scratch_layer = None
         self._union_scratch_key = None
+        # S1: every union set this operation allocated and still references, (layer, set).
+        self._union_sets = []
         self._fallback = None
         self._source_release = []
         # The opt-in native row1 byte oracle. ``None`` means qualification is
@@ -602,7 +817,209 @@ class QsaPrefillOperation:
                           sparse_empty=0, sparse_fallback=0,
                           sparse_fallback_rows=0, sparse_fallback_bytes=0,
                           sparse_routes=0, sparse_source_released=0,
-                          union_scratch_bytes=0)
+                          union_scratch_bytes=0, union_scratch_sets=0,
+                          union_scratch_retired=0, union_scratch_live_bytes=0,
+                          union_scratch_live_max_bytes=0, indexer_layers=0,
+                          indexer_rows=0, indexer_width=0, indexer_chunks=0,
+                          indexer_peak_bytes=0, indexer_total_bytes=0,
+                          indexer_errors=0, alloc_receipt_errors=0)
+
+    def note_indexer_scores(self, rows, max_seq_len, compress_ratio, table_columns, page_size,
+                            max_logits_mb):
+        """M3 receipt only, from host-known sizes; no device work, read by no control path."""
+        width, _, chunks, peak, total = indexer_score_shape(
+            rows, max_seq_len, compress_ratio, table_columns, page_size, max_logits_mb)
+        stats = self.stats
+        stats['indexer_layers'] += 1
+        stats['indexer_rows'] += rows
+        stats['indexer_width'] = max(stats['indexer_width'], width)
+        stats['indexer_chunks'] += chunks
+        stats['indexer_peak_bytes'] = max(stats['indexer_peak_bytes'], peak)
+        stats['indexer_total_bytes'] += total
+
+    def _alloc_receipt(self):
+        """M3: one bounded line per chunk and rank.  A failure is counted, never raised."""
+        try:
+            stats, tx = self.stats, self.transaction
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            from native_measurement import emit_receipt_kv
+            text = ('flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_retire=%d union_sets=%d '
+                'union_retired=%d union_single=%d union_live_max=%d indexer_layers=%d '
+                'indexer_rows=%d indexer_width=%d '
+                'indexer_chunks=%d indexer_peak=%d indexer_total=%d indexer_errors=%d'
+                % (self.lane.worker_rank, tx.txn_seq, tx.chunk_start, tx.chunk_end,
+                   self.union_retire, stats['union_scratch_sets'], stats['union_scratch_retired'],
+                   stats['union_scratch_bytes'], stats['union_scratch_live_max_bytes'],
+                   stats['indexer_layers'], stats['indexer_rows'], stats['indexer_width'],
+                   stats['indexer_chunks'], stats['indexer_peak_bytes'],
+                   stats['indexer_total_bytes'], stats['indexer_errors']))
+            if getattr(self, 'prefetch_enabled', False):
+                text += ' prefix_prefetch=' + json.dumps(self.prefetch_inventory(), separators=(',', ':'))
+            emit_receipt_kv(text, logging.getLogger(__name__))
+        except Exception:
+            self.stats['alloc_receipt_errors'] += 1
+
+    def bind_prefetch_frame(self, admission):
+        """The bridge's immutable, source-validated admission; never a speculative allocator frame."""
+        from lane_chunk import ChunkAdmission
+        if (type(admission) is not ChunkAdmission or self._prefix_frame is not None or self._forward_open
+                or admission.transaction != self.transaction
+                or type(admission.state_epoch) is not int or admission.state_epoch < 1):
+            raise OperationError('prefetch frame differs from the open transaction')
+        self._prefix_frame = admission
+
+    def note_prefetch_layer(self, name, index, group=None):
+        row = self._prefix_rows.get(name)
+        if row is None:
+            if len(self._prefix_rows) >= MAX_PREFETCH_LAYERS:
+                self._prefix_overflow += 1
+                return None
+            row = dict(layer=index, group=group, issued=0, used=0,
+                       issued_bytes=0, used_bytes=0, descriptors=0, why='cold', plan_ns=0, enqueue_ns=0)
+            self._prefix_rows[name] = row
+        elif group is not None:
+            row['group'] = group
+        return row
+
+    def _prefix_identity(self, run):
+        return (self.transaction, self.lane, self.state_epoch, self.allocation_epoch,
+                run.source_epoch, run.source_versions, run.sparse_hold.owner)
+
+    def prefetch_next(self, name, index, arena_bytes, group=None):
+        """Move only a leading run of immutable whole descriptors, behind the last arena reader."""
+        started = time.monotonic_ns()
+        row = self.note_prefetch_layer(name, index, group)
+        if row is None:
+            return False
+        try:
+            self._check_identity(layer_name=name)
+            if not self.prefetch_enabled or self.fused_refusal() is not None:
+                raise OperationError('route')
+            if self._prefix_pending is not None or len(self._layers) > MAX_PREFETCH_LAYERS:
+                raise OperationError('capacity')
+            old, run, frame = self._current_run(), self._layer(name), self._prefix_frame
+            if (frame is None or frame.transaction != self.transaction
+                    or frame.state_epoch != self.state_epoch or frame.chunk_start != self.transaction.chunk_start):
+                raise OperationError('frame')
+            if (not old.finished or not old.consumed or old._pending_consumer is not None
+                    or old.next_bucket != len(old.buckets)
+                    or self._last_arena_consumer is not old.consumed[-1].event
+                    or getattr(old.schedule_grant, 'fused', False) is not True):
+                raise OperationError('consumer')
+            if run.producer is not None or run.finished:
+                raise OperationError('already-started')
+            arena, facts = old.arena, old.arena_facts
+            if (facts is None or self.device.facts(arena) != facts
+                    or facts.shape != (MAX_BUCKET_PAGES, *run.source_facts.shape[1:])
+                    or type(arena_bytes) is not int or arena_bytes // PAGE_BYTES != MAX_BUCKET_PAGES):
+                raise OperationError('arena')
+            pages = self._plan(name, (frame.chunk_end + PAGE_ROWS - 1) // PAGE_ROWS)
+            if (len(set(pages)) != len(pages) or not run.source_versions
+                    or any(p <= 0 or p >= run.source_facts.shape[0] or p >= len(run.source_versions) for p in pages)):
+                raise OperationError('mapping')
+            hold = run.sparse_hold
+            if hold is None:
+                raise OperationError('source')
+            hold.validate(hold.owner, name, pages)
+            owner = hold.owner
+            if (owner.transaction != self.transaction or owner.lane != self.lane
+                    or owner.storage_epoch != self.allocation_epoch or owner.source_epoch != run.source_epoch
+                    or owner.valid_tokens != frame.chunk_end
+                    or run.source_versions != self.source_versions.get(name)
+                    or self.device.facts(run.source) != run.source_facts):
+                raise OperationError('source-identity')
+            blocked = set(frame.new_block_ids_to_zero) | {b for pair in frame.cow_pairs for b in pair}
+            writes = set(pages[frame.chunk_start // PAGE_ROWS:])
+            pieces = []
+            for source, dest, count in plan_buckets(pages)[0].pieces:
+                if ((dest + count) * PAGE_ROWS > frame.chunk_start
+                        or any(p in blocked or p in writes for p in range(source, source + count))):
+                    break
+                pieces.append((source, dest, count))
+            if not pieces:
+                raise OperationError('no-immutable-piece')
+            record = PrefixCopy(name, tuple(pages), tuple(pieces), run.source_facts,
+                facts, self._prefix_identity(run), (run.source, arena, hold))
+        except (OperationError, SourceRefused) as exc:
+            row['why'] = str(exc)[:48]
+            return False
+        finally:
+            row['plan_ns'] += time.monotonic_ns() - started
+        # Register ownership before any enqueue; a partial failure is quarantined, never forgotten.
+        self._prefix_copies.append(record)
+        self._prefix_pending = record
+        phases = self.phase_trace
+        started = time.monotonic_ns()
+        try:
+            waiting = phases.begin('prefetch_wait_for_arena', self.device.copy, layer_name=name, group=group) if phases is not None else None
+            # C is after PREPARE/earlier native writers; only full committed pages disjoint from this frame's writes move early.
+            self.device.wait_event(self.device.copy, self._last_arena_consumer)
+            if phases is not None:
+                phases.end(waiting)
+            copying = phases.begin('prefetch_copy', self.device.copy, layer_name=name, group=group) if phases is not None else None
+            for source, dest, count in pieces:
+                self.device.copy_pages(run.source, arena, source, dest, count)
+                row['issued_bytes'] += count * PAGE_BYTES
+                self.stats['pieces'] += 1
+                self.stats['bytes'] += count * PAGE_BYTES
+            if phases is not None:
+                phases.end(copying)
+            record.event = self.device.record(self.device.copy)
+            row.update(issued=1, descriptors=len(pieces), why='issued')
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            row['enqueue_ns'] += time.monotonic_ns() - started
+        return True
+
+    def _adopt_prefix(self, run, index, pieces):
+        record = self._prefix_pending
+        if record is None:
+            return pieces
+        if (index != 0 or record.layer_name != run.layer_name
+                or record.identity != self._prefix_identity(run)
+                or record.owners[0] is not run.source or record.owners[2] is not run.sparse_hold
+                or record.pages != run.pages or record.source_facts != self.device.facts(run.source)
+                or record.arena_facts != self.device.facts(run.arena)
+                or tuple(pieces[:len(record.pieces)]) != record.pieces
+                or record.used or record.event is None):
+            self._failed = True
+            raise OperationError('prefetched prefix differs from the actual admitted plan')
+        record.used = True
+        self._prefix_pending = None
+        row = self._prefix_rows[run.layer_name]
+        row.update(used=1, used_bytes=row['issued_bytes'], why='used')
+        return pieces[len(record.pieces):]
+
+    def prefetch_inventory(self):
+        fields = ('layer', 'lo', 'hi', 'issued', 'used', 'wasted', 'issued_bytes', 'used_bytes', 'wasted_bytes', 'descriptors', 'plan_ns', 'enqueue_ns', 'reason')
+        rows = []
+        for row in self._prefix_rows.values():
+            lo, hi = row['group'] if row['group'] is not None else (-1, -1)
+            rows.append([row['layer'], lo, hi, row['issued'], row['used'], row['issued'] - row['used'],
+                         row['issued_bytes'], row['used_bytes'], row['issued_bytes'] - row['used_bytes'],
+                         row['descriptors'], row['plan_ns'], row['enqueue_ns'], row['why']])
+        metadata = sys.getsizeof(self._prefix_copies) + sys.getsizeof(self._prefix_rows)
+        metadata += sum(sys.getsizeof(c) + sys.getsizeof(c.__dict__) + sys.getsizeof(c.pieces)
+                        + sys.getsizeof(c.pages) + sys.getsizeof(c.identity) for c in self._prefix_copies)
+        metadata += sum(sys.getsizeof(r) for r in self._prefix_rows.values())
+        return dict(v=1, fields=fields, rows=rows, overflow=self._prefix_overflow,
+                    extra_arena_bytes=0, extra_tensor_bytes=0, events=len(self._prefix_copies),
+                    metadata_shallow_bytes=metadata,
+                    host_plan_ns=sum(r['plan_ns'] for r in self._prefix_rows.values()),
+                    host_enqueue_ns=sum(r['enqueue_ns'] for r in self._prefix_rows.values()))
+
+    def boundary_evidence(self, tensor, *, selection=False):
+        if (self.trace is None or self.transaction.chunk_end != 101200
+                or not getattr(self.device, 'native_qsa_boundary', False)):
+            return
+        row = self.trace.row()
+        key = 'selection_evidence' if selection else 'output_evidence'
+        if key in row:
+            raise OperationError('native43 boundary evidence repeated')
+        row[key] = self.device.boundary_digest(tensor, selection=selection)
+        row['timing_excluded'] = 'final-chunk-boundary-readback'
 
     def _check_versions(self, layer_name, versions):
         if (not isinstance(layer_name, str) or not layer_name
@@ -781,6 +1198,7 @@ class QsaPrefillOperation:
         self.stats['producers'] += 1
         return run.producer.ticket
 
+    @trace_cpu('cpu_plan_ns')
     def bind_plan(self, layer_name, block_table_row, num_pages, valid_tokens,
                   arena, *, lane=None, allocation_epoch=None, source_epoch=None,
                   versions=None):
@@ -1027,6 +1445,12 @@ class QsaPrefillOperation:
         The original runs on the same query/arena/output storage; it may use
         its own bulk UVA gather. This is serial qualification, never shipping
         performance, and it writes no second history GPU buffer.
+
+        The expected reference route is a function of the latched transport
+        policy (row1_oracle.expected_reference): where the dense policy put a
+        layer beyond the arena on dense_dma, the original runs on its own
+        dense branch (row1_oracle.dense_branch) and dense is compared with
+        dense.
         """
         if self.qualification is None:
             return None
@@ -1045,11 +1469,16 @@ class QsaPrefillOperation:
             raise OperationError('row1 output before a declared route')
         if run.qualification_bucket is not None:
             raise OperationError('row1 output with an uncompared bucket')
-        expected = {'sparse_dma': 'sparse_uva', 'dense_dma': 'dense_dma',
-                    'empty': 'empty'}[sparse.route]
+        if type(max_logical_page) is not int or max_logical_page < 0:
+            raise OperationError('row1 output has an invalid page count')
+        expected, force_dense = expected_reference(
+            self.transport_policy, sparse.route, max_logical_page + 1,
+            int(arena.shape[0]))
         expected_fills = len(run.buckets) if expected == 'dense_dma' else 0
         session = self.qualification.reference_session(run)
         reference = run.row1_reference
+        if force_dense:
+            reference = dense_branch(reference)
 
         def original():
             reference(q, kv_cache, logical_indices, block_table_row, rows,
@@ -1093,7 +1522,7 @@ class QsaPrefillOperation:
             self.stats['sparse_fallback_bytes'] += refusal.nbytes
             self._fallback = refusal
             raise SparseFallbackRequired(refusal)
-        return True
+        return not (self.transport_policy == 'dense' and num_pages > pages_in_arena)
 
     def declare_sparse_route(self, route):
         """Generated-code route claim; the plan must already be built."""
@@ -1125,8 +1554,13 @@ class QsaPrefillOperation:
         """Return the operation-owned fixed-capacity union buffers.
 
         Capacity, row count and width are host-known; nothing is sized by a
-        device value.  One buffer set is reused across layers with the same
-        geometry and replaced only after the previous layer finished.
+        device value.  A layer gets a fresh zeroed set; the operation drops its
+        own reference to the previous layer's set only after that layer
+        finished.  The previous layer's ``sparse.union`` still holds that set
+        until release, or with ``FLASH_S5_UNION_RETIRE=1`` until
+        ``_retire_union_scratch`` sees its last consumer device-complete (S1).
+        ``union_scratch_bytes`` is the largest single set and
+        ``union_scratch_live_max_bytes`` the largest live aggregate.
         """
         run, sparse = self._sparse_state()
         self._check_identity(layer_name=run.layer_name)
@@ -1176,6 +1610,7 @@ class QsaPrefillOperation:
         if self._union_scratch is not None and self._union_scratch_key != key:
             raise OperationError('union scratch geometry changed within the layer')
         if self._union_scratch is None:
+            self._retire_union_scratch()
             buffers = self.device.alloc_union_scratch(
                 capacity, index_rows, width, index_facts.dtype, logical_indices)
             expected = dict(
@@ -1206,8 +1641,59 @@ class QsaPrefillOperation:
             self._owners[('union_scratch', run.layer_name)] = tuple(buffers.values())
             self.stats['union_scratch_bytes'] = max(
                 self.stats['union_scratch_bytes'], nbytes)
+            self._union_sets.append((run.layer_name, self._union_scratch))
+            self.stats['union_scratch_sets'] += 1
+            self._union_live()
+        if self.trace is not None:
+            self.trace.opened['union'] = self.trace.begin('union', self.device.compute)
         sparse.union = self._union_scratch
         return sparse.union
+
+    def _union_live(self):
+        live = sum(union.nbytes for _, union in self._union_sets)
+        self.stats['union_scratch_live_bytes'] = live
+        self.stats['union_scratch_live_max_bytes'] = max(
+            self.stats['union_scratch_live_max_bytes'], live)
+
+    def _retire_union_scratch(self):
+        """S1: drop finished layers' union sets whose last reader is complete.
+
+        Off unless ``FLASH_S5_UNION_RETIRE=1`` was latched: unset, this drops
+        nothing and every set stays until ``release``.
+
+        A set is read by its layer's union kernels and attention buckets
+        (compute stream) and by the selection readback (copy stream).  It is
+        retired only when the layer finished, the readback was host-observed
+        (``selection_count`` is set only after its copy event completed) and
+        the layer's last attention consumer event has completed, by one
+        nonblocking query each.  Nothing waits: an incomplete set stays until
+        a later call or ``release``.  With row1 qualification every set stays
+        until release, after the oracle ran.
+        """
+        if not self.union_retire:
+            return
+        if self.qualification is not None or self._failed or self._released:
+            return
+        kept = []
+        for layer_name, union in self._union_sets:
+            run = self._layers.get(layer_name)
+            sparse = None if run is None else run.sparse
+            done = (run is not None and run.finished and sparse is not None
+                    and sparse.union is union and union is not self._union_scratch
+                    and sparse.selection_count is not None)
+            if done and run.consumed:
+                try:
+                    done = bool(self.device.query(run.consumed[-1].event))
+                except BaseException:
+                    self._failed = True
+                    raise
+            if done:
+                sparse.union = None
+                self.stats['union_scratch_retired'] += 1
+            else:
+                kept.append((layer_name, union))
+        self._union_sets = kept
+        self._union_live()
 
     def stage_sparse_selection(self, tokens, info):
         """Enqueue the bounded D2H of the device count and sorted token union.
@@ -1217,6 +1703,8 @@ class QsaPrefillOperation:
         yields until :meth:`sparse_selection_ready` observes that copy event.
         """
         run, sparse = self._sparse_state()
+        if self.trace is not None:
+            self.trace.end(self.trace.opened.pop('union', None))
         if self._cancelled is not None:
             raise OperationCancelled('cancelled operation cannot stage a selection')
         if sparse.union is None:
@@ -1367,6 +1855,7 @@ class QsaPrefillOperation:
             raise OperationError('pending marker for a foreign selection token')
         return SparseSelectionPending(token.ticket)
 
+    @trace_cpu('cpu_plan_ns')
     def sparse_selection_ready(self, token):
         """Poll the readback copy; build the CPU row plan exactly once.
 
@@ -1443,6 +1932,7 @@ class QsaPrefillOperation:
             raise OperationError('selection count requested before completion')
         return sparse.selection_count
 
+    @trace_cpu('cpu_submit_ns')
     def fill_sparse_bucket(self, staged, selected, compact_start, block_table_row):
         """Enqueue one bounded compact-row bucket; never synchronizes.
 
@@ -1533,12 +2023,17 @@ class QsaPrefillOperation:
             else:
                 self.device.wait_event(self.device.copy, run.consumed[-1].event)
                 self.stats['waits'] += 1
+            timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for source_row, arena_row, rows in copy.pieces:
                 self.device.copy_rows(run.source, run.arena, source_row,
                                       arena_row, rows)
+            if self.trace is not None:
+                self.trace.end(timing)
             copy.event = self.device.record(self.device.copy)
             sparse.hold.copy_recorded(index)
             sparse.hold.publish(index)
+            if self.trace is not None and sparse.wave_copy is None:
+                self.trace.row()['waves'] += 1
             self.stats['sparse_buckets'] += 1
             self.stats['sparse_rows'] += bucket.rows
             self.stats['sparse_pieces'] += bucket.descriptors
@@ -1547,6 +2042,12 @@ class QsaPrefillOperation:
             self.stats['copy_events'] += 1
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            if self.trace is not None:
+                row = self.trace.row()
+                row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
+                row['waves'] += 1 if not sparse_active_for_trace(run) else 0
+                row['bytes'] += copy.nbytes if sparse_active_for_trace(run) else copy.bytes
+                self.trace.opened['attention'] = self.trace.begin('attention', self.device.compute)
         except BaseException:
             self._failed = True
             raise
@@ -1581,6 +2082,10 @@ class QsaPrefillOperation:
                     self.device.wait_event(self.device.copy, previous)
                     self.stats['waits'] += 1
             copy = sparse.wave_copy
+            if self.trace is not None and sparse.wave_rows == 0:
+                # One logical-bucket span, including host credit gaps between
+                # waves. Descriptor count never controls marker allocation.
+                self.trace.opened['copy'] = self.trace.begin('copy', self.device.copy)
             wave = next(sparse.wave_iterator)
             for piece in wave:
                 self.device.copy_rows(run.source, run.arena, piece.source_row,
@@ -1589,6 +2094,8 @@ class QsaPrefillOperation:
             sparse.wave_ready = False
             rows = sum(piece.rows for piece in wave)
             sparse.hold.stream_wave_recorded(index, rows, len(wave))
+            if self.trace is not None:
+                self.trace.row()['waves'] += 1
             sparse.wave_rows += rows
             sparse.wave_descriptors += len(wave)
             self.stats['copy_events'] += 1
@@ -1597,6 +2104,8 @@ class QsaPrefillOperation:
             if (sparse.wave_rows != bucket.rows
                     or sparse.wave_descriptors != bucket.descriptors):
                 raise OperationError('streamed sparse bucket accounting disagrees')
+            if self.trace is not None:
+                self.trace.end(self.trace.opened.pop('copy', None))
             copy.event = sparse.wave_event
             copy.sparse = True
             consumer = self._new_ticket(Stage.ATTENTION, run.layer_name, index)
@@ -1618,6 +2127,12 @@ class QsaPrefillOperation:
             self.stats['sparse_descriptors'] += bucket.descriptors
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            if self.trace is not None:
+                row = self.trace.row()
+                row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
+                row['waves'] += 1 if not sparse_active_for_trace(run) else 0
+                row['bytes'] += copy.nbytes if sparse_active_for_trace(run) else copy.bytes
+                self.trace.opened['attention'] = self.trace.begin('attention', self.device.compute)
             sparse.wave_copy = sparse.wave_iterator = sparse.wave_event = None
             return copy.ticket
         except BaseException:
@@ -1629,6 +2144,7 @@ class QsaPrefillOperation:
         return self._fallback
 
     # --- bounded DMA / attention boundaries -------------------------------
+    @trace_cpu('cpu_submit_ns')
     def fill_bucket(self, staged, page_lo, page_hi, block_table_row):
         """Enqueue one bounded bucket of <=4-page copies; never synchronizes.
 
@@ -1643,10 +2159,14 @@ class QsaPrefillOperation:
             raise OperationError("source storage changed after binding")
         if not run.producer_submitted:
             raise OperationError('bucket fill before the producer boundary')
+        if run.sparse_hold is not None:
+            run.sparse_hold.validate(run.sparse_hold.owner, run.layer_name, run.pages)
         # Only one bucket may be outstanding per rank: the next fill is a
         # retry-after-completion, not a host wait or an unbounded queue.
+        # A fused layer (Step A) orders its buckets by stream events only.
         self._refresh()
-        if self.pending_buckets >= MAX_OUTSTANDING_BUCKETS:
+        if (self.pending_buckets >= MAX_OUTSTANDING_BUCKETS
+                and not getattr(run.schedule_grant, 'fused', False)):
             raise E3Pending('one arena bucket is still outstanding')
         index = run.next_bucket
         if index >= len(run.buckets):
@@ -1674,6 +2194,8 @@ class QsaPrefillOperation:
         copy.page_bytes = page_bytes
         copy.pieces = bucket.pieces
         copy.owners = (run.source, run.arena, run.table)
+        pieces = (self._adopt_prefix(run, index, bucket.pieces)
+                  if self.prefetch_enabled else bucket.pieces)
         self._mark_qualification_bucket(
             run, index, route='dense_dma', rows=bucket.pages * PAGE_ROWS,
             pieces=len(bucket.pieces), compact_start=None, nbytes=copy.bytes,
@@ -1683,29 +2205,63 @@ class QsaPrefillOperation:
         run.active_bucket = index
         run._pending_consumer = consumer
         try:
+            phases = self.phase_trace
+            if phases is not None:
+                previous = self._last_arena_consumer if index == 0 else run.consumed[-1].event
+                phases.bucket(index, previous, 'none' if previous is None else
+                              'previous_layer' if index == 0 else 'previous_bucket')
+            waiting = phases.begin('copy_wait', self.device.copy, bucket=index) if phases is not None else None
             # Producer visibility and arena reuse are GPU dependencies, not host
             # waits.  The first bucket waits for the store and for the last
             # consumer of this shared arena; later buckets wait for the previous
             # consumer of this layer.
             if index == 0:
+                producing = phases.begin('wait_current_producer', self.device.copy, bucket=index) if phases is not None else None
                 self.device.wait_event(self.device.copy, run.producer.event)
                 self.stats['waits'] += 1
+                if phases is not None:
+                    phases.end(producing)
                 if self._last_arena_consumer is not None:
+                    consuming = phases.begin('wait_previous_arena_consumer', self.device.copy, bucket=index) if phases is not None else None
                     self.device.wait_event(self.device.copy, self._last_arena_consumer)
                     self.stats['waits'] += 1
+                    if phases is not None:
+                        phases.end(consuming)
             else:
+                consuming = phases.begin('wait_previous_arena_consumer', self.device.copy, bucket=index) if phases is not None else None
                 self.device.wait_event(self.device.copy, run.consumed[-1].event)
                 self.stats['waits'] += 1
-            for source_page, arena_page, pages in bucket.pieces:
+                if phases is not None:
+                    phases.end(consuming)
+            if phases is not None:
+                phases.end(waiting)
+            copying = phases.begin('copy', self.device.copy, bucket=index) if phases is not None else None
+            timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
+            for source_page, arena_page, pages in pieces:
                 self.device.copy_pages(run.source, run.arena, source_page,
                                        arena_page, pages)
+            if self.trace is not None:
+                self.trace.end(timing)
+            if phases is not None:
+                phases.end(copying)
             copy.event = self.device.record(self.device.copy)
             self.stats['buckets'] += 1
-            self.stats['pieces'] += len(bucket.pieces)
-            self.stats['bytes'] += copy.bytes
+            self.stats['pieces'] += len(pieces)
+            self.stats['bytes'] += (sum(p[2] for p in pieces) * page_bytes
+                                    if self.prefetch_enabled else copy.bytes)
             self.stats['copy_events'] += 1
+            computing = phases.begin('compute_wait_for_copy', self.device.compute, bucket=index) if phases is not None else None
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            if phases is not None:
+                phases.end(computing)
+            run._phase_attention = phases.begin('attention', self.device.compute, bucket=index) if phases is not None else None
+            if self.trace is not None:
+                row = self.trace.row()
+                row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
+                row['waves'] += 1 if not sparse_active_for_trace(run) else 0
+                row['bytes'] += copy.nbytes if sparse_active_for_trace(run) else copy.bytes
+                self.trace.opened['attention'] = self.trace.begin('attention', self.device.compute)
         except BaseException:
             self._failed = True
             raise
@@ -1731,6 +2287,11 @@ class QsaPrefillOperation:
         elif run._pending_consumer is None:
             raise OperationCancelled(
                 'cancelled operation cannot submit another attention bucket')
+        if self.trace is not None:
+            self.trace.end(self.trace.opened.pop('attention', None))
+        if self.phase_trace is not None:
+            self.phase_trace.end(getattr(run, '_phase_attention', None))
+            run._phase_attention = None
         consumer = run._pending_consumer
         sparse_active = (run.sparse is not None
                          and run.sparse.active_bucket is not None)
@@ -1744,6 +2305,8 @@ class QsaPrefillOperation:
         except BaseException:
             self._failed = True
             raise
+        if self.phase_trace is not None:
+            self.phase_trace.consumer(consumer.event, run.layer_name, run.active_bucket)
         run.consumed.append(consumer)
         if run.sparse is not None and run.sparse.active_bucket is not None:
             run.sparse.active_bucket = None
@@ -1926,12 +2489,64 @@ class QsaPrefillOperation:
             self._failed = True
             raise
 
+    # --- Step A: one bounded operation per dense QSA layer ----------------
+    def fused_refusal(self):
+        """Why this transaction cannot run fused, or None; asked at PREPARE.
+
+        The rule is no data-dependent selection or readback inside the fused
+        command: the dense policy never selects (sparse_selection_eligible), and
+        the source lease stays attached. The row1 byte oracle and the boundary
+        digests need host-observed completions, so they refuse fused too.
+        """
+        if self.transport_policy != 'dense':
+            return 'native-qsa-policy-not-dense'
+        if self.qualification is not None:
+            return 'row1-qualifier-attached'
+        if self.trace is not None or getattr(self.device, 'native_qsa_boundary', False):
+            return 'diagnostic-readback-attached'
+        return None
+
+    def fused_shape(self, layer_name, valid_tokens, page_size):
+        """This layer's dense schedule from the host plan alone; no device work."""
+        from wire_v1 import QsaScheduleShape
+        num_pages = (max(valid_tokens, 1) - 1) // page_size + 1
+        counts = (1,) * len(plan_buckets(self._plan(layer_name, num_pages)))
+        return QsaScheduleShape('dense_dma', counts, counts)
+
+    def advance_fused(self):
+        """advance() for a fused layer: no host wait on any earlier consumer.
+
+        Copies wait on stream events (fill_bucket), compute waits on the copy.
+        """
+        self._check_identity()
+        self._refresh()
+        if self._continuation is None:
+            raise OperationError('no generated continuation attached')
+        try:
+            return next(self._continuation)
+        except StopIteration:
+            self._continuation = None
+            raise
+        except (SparsePlanRefused, SparseFallbackRequired):
+            self._continuation = None
+            raise
+        except BaseException:
+            self._failed = True
+            raise
+
     # --- poll / cancel / drain / release ----------------------------------
     def _refresh(self):
         """Nonblocking completion query.  Never synchronizes or launches work."""
         completed = []
         if self._failed or self._released:
             return ()
+        for prefix in self._prefix_copies:
+            if not prefix.complete and prefix.event is not None:
+                try:
+                    prefix.complete = bool(self.device.query(prefix.event))
+                except BaseException:
+                    self._failed = True
+                    raise
         for run in self._layers.values():
             sparse = run.sparse
             if sparse is None or sparse.wave_copy is None or sparse.wave_event is None:
@@ -1988,7 +2603,8 @@ class QsaPrefillOperation:
 
     @property
     def pending(self):
-        return sum(1 for record in self._records if not record.complete)
+        return (sum(1 for record in self._records if not record.complete)
+                + sum(not prefix.complete for prefix in self._prefix_copies))
 
     @property
     def pending_buckets(self):
@@ -2054,22 +2670,46 @@ class QsaPrefillOperation:
                 self.stats['sparse_source_released'] += 1
                 if qualifier is not None:
                     qualifier.finish_layer(run, hold_stats=info)
+        if self.trace is not None:
+            try:
+                self.trace.emit()
+            except Exception:
+                # Telemetry cannot strand already-released source holds or
+                # turn a healthy release into a repeated source release.
+                # Missing records remain an INCONCLUSIVE evidence result.
+                self.stats['trace_emit_errors'] = self.stats.get('trace_emit_errors', 0) + 1
+            finally:
+                self.trace = None
+        if self.phase_trace is not None:
+            try:
+                self.phase_trace.emit()
+            except Exception:
+                self.stats['phase_emit_errors'] = self.stats.get('phase_emit_errors', 0) + 1
+            finally:
+                self.phase_trace = None
+        if self.memory_receipts:
+            self._alloc_receipt()
         dropped = len(self._owners)
         self._released = True
         if self._continuation is not None:
             self._continuation.close()
             self._continuation = None
         self._owners.clear()
+        self._prefix_pending = self._prefix_frame = None
+        self._prefix_copies.clear()
         self._index_scratch.clear()
         self._union_scratch = None
         self._union_scratch_layer = None
         self._union_scratch_key = None
+        self._union_sets = []
         for record in self._records:
             record.owners = ()
         for run in self._layers.values():
             run.source = run.arena = run.table = None
             run.uva = None
             run.row1_reference = None
+            if run.sparse is not None:
+                run.sparse.union = None
         return dropped
 
     # --- inventory --------------------------------------------------------
@@ -2112,6 +2752,9 @@ class QsaPrefillOperation:
             selection_scratch_bound=SELECTION_HOST_BYTES,
             union_scratch_bytes=self.stats['union_scratch_bytes'],
             union_scratch_bound=MAX_UNION_SCRATCH_BYTES,
+            union_scratch_sets=self.stats['union_scratch_sets'],
+            union_scratch_retired=self.stats['union_scratch_retired'],
+            union_scratch_live_max_bytes=self.stats['union_scratch_live_max_bytes'],
             sparse_source_released=self.stats['sparse_source_released'],
             sparse_fallback_reason=(None if self._fallback is None
                                     else self._fallback.reason),

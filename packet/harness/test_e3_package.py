@@ -68,6 +68,9 @@ class SyntheticTests(unittest.TestCase):
             path = ref / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# ref ' + name + '\n')
+        indexer = ref / g.INDEXER_PATH
+        indexer.parent.mkdir(parents=True, exist_ok=True)
+        indexer.write_text((ROOT / 'reference/vllm-src' / g.INDEXER_PATH).read_text())
         core = manifest(base / 'core')
         whole = manifest(base)
         return root, base, ref, whole, core
@@ -194,7 +197,12 @@ class SyntheticTests(unittest.TestCase):
         # name-only list, so the reviewed launcher (pin 22473a90) stays
         # byte-identical. It is still in the digest manifest and under the
         # whole-e3 mount; the queue preflight checks every overlay digest.
-        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_auto_arm',))
+        # Stage-1 anatomy: handler_anatomy is exempt for the same reason (C0's stage_wire/stage_progress before it); C1's stage_overlap too.
+        # host-gap batch: small_piece_batch is exempt for the same reason; ingress-incremental's ingress_incremental and
+        # decode-step's decode_step too; lever 2's decode_overlap too.
+        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_mm', 'native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
+                                                  'attn_meta_batch', 'attn_meta_select', 'small_piece_batch', 'ingress_incremental', 'decode_step', 'decode_timeline',
+                                                  'decode_overlap'))
         listed = g.manifest(out)
         loop = launcher.split('for f in e3/__init__.py ', 1)[1].split('; do', 1)[0].split()
         for name in g.E3_MODULES:
@@ -540,6 +548,7 @@ class FullPinnedTests(unittest.TestCase):
         expected_pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
         expected_pins.update(model_hooks.PINS)
         expected_pins.update(g.probe_control_hooks.PINS)
+        expected_pins[g.INDEXER_PATH] = g.INDEXER_SHA256
         import capture_streams
         expected_pins.update(capture_streams.PINS)
         self.assertEqual(record['reference_source_pins'], expected_pins)

@@ -1,0 +1,49 @@
+{
+ "leaves": [
+  {
+   "box_evidence": true,
+   "cannot_prove": "Lines outside the excerpts (covered by the full-log survey, not by these unit cases)",
+   "equivalence": "The scanner is line-local except for ordering by the docker timestamp prefix, which the excerpts keep byte for byte. Every marker line of the l-e incident (the teardown, the parent-exited line, the 42 broadcast stalls, the orderly stop) is inside the l-e range. The same scanner over the 31 full engine-stream logs of every box fetch on the hub agrees with each run's recorded engine_crashed outcome and adds one new DEAD: l-e. That survey is in the delivery note",
+   "implementation": "harness/fixtures/native43_engine_death: verbatim 1-based line ranges, PROVENANCE.json with source and excerpt sha256 (Fixtures re-checks both when the hub fetch is present); the two host-stop-intent.json files are whole copies. Some cases drop named lines (the orderly triggers, the teardown) from an excerpt to build the counterfactual; each case says which",
+   "name": "box-log-excerpts",
+   "replaces": "The retained host stream engine-stream.log / engine-stream.err of four box incarnations (the host observer's follow of `docker logs --timestamps` of qwen-flash-prod): l-e q18a-native43-lifecycle, native39-trunk, native33, native35 p-c",
+   "test": "test_native43_engine_death.Scan, test_native43_engine_death.Watch"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "nvidia-smi latency and hang behaviour on the box",
+   "equivalence": "The watch reads only the last integer of each row and the exit code. The queue's device sampler (e2_memory_attribution.sample) runs the same query on the box with one more column, and the last-integer rule fits both. A non-zero exit or a timeout counts as an error, never as death (l-e logged an nvidia-smi TimeoutExpired at 11:03:22)",
+   "implementation": "A shell script passed as --gpu-cmd that prints \"index, MiB\" rows: the l-e values 22925/22835/23037/22947 from client-samples.timed.jsonl, one rank at 3 MiB (the l-e post-teardown value), or exit 9",
+   "name": "fake-nvidia-smi",
+   "replaces": "`nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits` on the box CT (the watch's default --gpu-cmd)",
+   "test": "test_native43_engine_death.Watch"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Docker daemon latency",
+   "equivalence": "The watch reads stdout true/false and the \"No such\" text of a missing container, which is the docker CLI's own wording; any other failure is an error and is not counted as death",
+   "implementation": "A shell script passed as --docker: echo true, echo false, \"Error: No such object\" on stderr with exit 1, or exit 7",
+   "name": "fake-docker-inspect",
+   "replaces": "`docker inspect --format {{.State.Running}} qwen-flash-prod` on the box CT (--docker)",
+   "test": "test_native43_engine_death.Watch"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "That each real client exits on SIGTERM. Python's default TERM action terminates, and a TERM-ignoring client is SIGKILLed after the grace (tested)",
+   "equivalence": "The watch treats the client as an opaque process: exit code, process group and stdin. The l-e row1 client produced no output and no record before the hub's SIGTERM (qual-row1.log 0 bytes, qual-row1.json absent), which is what the sleeping child shows",
+   "implementation": "python3 -c children: sleep 600 (a client blocked on a dead engine), exit 3, ignore SIGTERM, write stdin to a file, touch a readiness marker",
+   "name": "client-processes",
+   "replaces": "The queue's long engine-facing clients (e3_q18a_qualification.py, e3_q18a_lifecycle.py, PY_HYGIENE)",
+   "test": "test_native43_engine_death.Watch"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Flush latency of the box observer (a marker reaches the watch one poll after the observer writes it)",
+   "equivalence": "The observer appends bytes with os.write in arbitrary chunk sizes. The scanner keeps the partial last line until its newline arrives, and the split-read case decides like the one-shot read with the same running sha256",
+   "implementation": "A thread that appends the l-e teardown line after the client is up; a loop that appends the l-e excerpt in 997-byte pieces",
+   "name": "growing-log-feeder",
+   "replaces": "The host observer (e3_native28_host_observer.Sink) appending docker log bytes to engine-stream.log during the run",
+   "test": "test_native43_engine_death.Watch, test_native43_engine_death.Scan.test_incremental_reads_split_mid_line_decide_like_one_read"
+  }
+ ]
+}

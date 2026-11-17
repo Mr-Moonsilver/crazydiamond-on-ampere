@@ -56,6 +56,15 @@ ACTION_WORKER = 'qualification_worker'
 WORKER_ACTIONS = ('teacher_configure', 'teacher_evidence',
                   'observer_begin', 'observer_end',
                   'row1_configure', 'row1_evidence')
+# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector's two worker actions, exact payloads; allowlisted
+# only where the switch is on (attn_meta_actions), so with it off this adapter refuses them exactly as before.
+ATTN_META_PAYLOAD_FIELDS = {'attn_meta_select': {'on'}, 'attn_meta_read': set()}
+
+
+def attn_meta_actions():
+    return tuple(ATTN_META_PAYLOAD_FIELDS) if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()
+
+
 ROW1_PAYLOAD_FIELDS = {
     'row1_configure': {'enabled', 'run_id'},
     'row1_evidence': {'run_id'},
@@ -126,7 +135,7 @@ def validate_worker(command):
              and command['command_seq'] >= 1, 'worker-sequence-invalid')
     _require(_text(command.get('client_id')), 'worker-client-id-invalid')
     _require(_positive(command.get('engine_epoch')), 'worker-engine-epoch-invalid')
-    _require(command.get('worker_action') in WORKER_ACTIONS,
+    _require(command.get('worker_action') in WORKER_ACTIONS or command.get('worker_action') in attn_meta_actions(),
              'worker-action-not-allowlisted')
     _require(type(command.get('payload')) is dict, 'worker-payload-not-an-object')
     payload = command['payload']
@@ -137,6 +146,14 @@ def validate_worker(command):
         if command['worker_action'] == 'row1_configure':
             _require(type(payload.get('enabled')) is bool,
                      'worker-payload-enabled-not-a-bool')
+    attn = ATTN_META_PAYLOAD_FIELDS.get(command['worker_action']) if command['worker_action'] in attn_meta_actions() else None
+    if attn is not None:
+        extra = ({'allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify', 'ple_private', 'ple_witness'} if command['worker_action'] == 'attn_meta_select'
+                 and os.environ.get('FLASH_S5_INWAIT', '0') == '1' else set())
+        _require(set(payload) - extra == attn, 'worker-payload-fields-differ')
+        _require(type(payload.get('on', False)) is bool, 'worker-payload-on-not-a-bool')
+        for name in sorted(extra):
+            _require(type(payload.get(name, False)) is bool, 'worker-payload-' + name.replace('_', '-') + '-not-a-bool')
     return command
 
 

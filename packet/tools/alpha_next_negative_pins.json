@@ -1,0 +1,907 @@
+{
+ "case_classes": {
+  "alpha-c0-local-burst": "HARNESS",
+  "alpha-c0-local-burst-skew": "HARNESS",
+  "alpha-c0-local-burst-solo": "HARNESS",
+  "alpha-c0-serial-burst": "HARNESS",
+  "alpha-c0-serial-burst-skew": "HARNESS",
+  "alpha-c0-serial-burst-solo": "HARNESS",
+  "held-g-burst": "HARNESS",
+  "held-g-burst-current": "HARNESS",
+  "held-g-burst-lean": "HARNESS",
+  "held-g-burst-skew": "HARNESS",
+  "held-g-burst-solo": "HARNESS",
+  "held-g-burst-solo-lean": "HARNESS",
+  "held-g-burst-solo-wait": "HARNESS",
+  "held-g-burst-solo-wait-lean": "HARNESS",
+  "held-g-burst-wait": "HARNESS",
+  "held-g-current-solo": "HARNESS",
+  "held-g-current-solo-wait": "HARNESS",
+  "held-g-trace": "HARNESS",
+  "held-g-trace-skew": "HARNESS",
+  "held-g-unset": "HARNESS"
+ },
+ "case_reasons": {
+  "alpha-c0-local-burst": "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+  "alpha-c0-local-burst-skew": "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+  "alpha-c0-local-burst-solo": "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+  "alpha-c0-serial-burst": "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+  "alpha-c0-serial-burst-skew": "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+  "alpha-c0-serial-burst-solo": "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+  "held-g-burst": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-current": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-lean": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-skew": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-solo": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-solo-lean": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-solo-wait": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-solo-wait-lean": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-burst-wait": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-current-solo": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-current-solo-wait": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-trace": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-trace-skew": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+  "held-g-unset": "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)"
+ },
+ "cases": {
+  "alpha-c0-local-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-local-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-local-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-serial-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "alpha-c0-serial-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "alpha-c0-serial-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "held-g-burst": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-current": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-skew": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-wait-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-current-solo": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-current-solo-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-trace": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-trace-skew": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-unset": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ]
+ },
+ "cases_from": {
+  "alpha-c0": {
+   "frozen_record_sha256": "488b6cfc424c923a0270e7b5d961109344e6e41f37cfef3dde15f9a81ac885ed",
+   "path": "tools/alpha_c0_negative_pins.json",
+   "why": "every alpha-c0 probe mode imports the stage modules, which the parent overlay lacks"
+  },
+  "held-g": {
+   "name": "NEGATIVE_CASES",
+   "path": "tools/native41_held_g_engine_selfrun.py (claude/native41-held-g-pack)",
+   "why": "every held-g probe mode reads executor_hooks._stock_step_idle, which the Step B overlay (1a29d84f) lacks; expected, confirmed or replaced by the one observation"
+  }
+ },
+ "cases_vs_expected": {},
+ "classes": {
+  "setUpClass (test_e3_native_lean_replies.LeanStreamOrder)": "HARNESS",
+  "test_alpha_next_path_qualification.Inventory.test_every_declared_test_loads": "HARNESS",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_failure_is_counted_never_raised": "HARNESS",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_missing_open_reads_minus_one": "HARNESS",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_no_cuda_means_no_line_and_no_reset": "HARNESS",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_peak_is_per_chunk": "HARNESS",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_stage_timer_marks_a_lower_bound": "HARNESS",
+  "test_alpha_next_peak_receipt.Placement.test_calls_only_under_the_memory_receipt_flag": "HARNESS",
+  "test_alpha_next_receipts.Budget.test_a_full_progress_trace_splits_into_records_below_the_budget": "HARNESS",
+  "test_alpha_next_receipts.Budget.test_anatomy_trace_with_every_tag_stays_below_the_budget": "HARNESS",
+  "test_alpha_next_receipts.Budget.test_record_budget_is_below_pipe_buf_and_everyone_follows_it": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_c0_stage_local_line": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_device_spans_send_one_chunk_as_one_record": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_engine_progress_and_step_anatomy": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_engine_stop_receipt": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_handler_anatomy_flush_on_the_stage1_rig": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_qsa_native_alloc": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_startup_device_spans_route_through_the_writer": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_startup_installs_the_writer_in_engine_and_worker_and_reports_the_path": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_worker_bridge_memory": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_worker_bridge_memory_peak": "HARNESS",
+  "test_alpha_next_receipts.EmitSites.test_worker_progress_at_release": "HARNESS",
+  "test_alpha_next_receipts.ExistingParsers.test_progress_box_reads_and_assembles_every_part": "HARNESS",
+  "test_alpha_next_receipts.ExistingParsers.test_torn_rules_and_memory_regexes_read_them_whole": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_a_lost_part_is_incomplete_and_a_seq_gap": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_a_repeated_or_reordered_seq_is_missing_seq": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_a_spliced_record_is_unreadable_or_bad_sha": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_a_window_without_the_process_start": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_clean_stream_with_foreign_bytes_before_a_record_is_ok": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_cli_reads_xz_and_exits_nonzero_on_inc": "HARNESS",
+  "test_alpha_next_receipts.Grader.test_per_part_sha_is_bad_sha": "HARNESS",
+  "test_alpha_next_receipts.ReceiptPath.test_pipe_is_atomic_fifo_and_a_file_is_unsafe": "HARNESS",
+  "test_alpha_next_receipts.ReceiptPath.test_small_pipe_buf_or_closed_fd_is_unsafe": "HARNESS",
+  "test_alpha_next_receipts.Witness.test_a_writer_that_dies_before_reporting_ends_the_run": "HARNESS",
+  "test_alpha_next_receipts.Witness.test_new_path_has_no_bad_record_and_contiguous_seq": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_a_forked_child_starts_its_own_numbering": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_failed_write_is_counted_and_never_raised": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_foreign_or_malformed_text_is_counted_and_numbered": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_kv_records_keep_their_text_and_gain_pid_seq_sha": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_later_kinds_stop_and_memory_peak_are_records_too": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_nothing_is_opened_or_written_until_a_receipt": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_one_write_per_part_with_identity_on_every_part": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_oversize_record_is_counted_not_written_and_shows_as_a_gap": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_private_dup_of_fd_1_on_first_write": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_seq_is_strictly_plus_one_across_every_record_kind": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_short_write_is_counted_and_never_raised": "HARNESS",
+  "test_alpha_next_receipts.Writer.test_uninstalled_process_keeps_the_old_logger_lines_and_the_grader_calls_them_legacy": "HARNESS",
+  "test_e3_native_anatomy": "HARNESS",
+  "test_e3_native_lean_replies.LeanCensus.test_clean_stream_has_no_conflict": "HARNESS",
+  "test_e3_native_lean_replies.LeanCensus.test_gap_replay_and_header": "HARNESS",
+  "test_e3_native_lean_replies.LeanConnected.test_journal_report_entries_keep_their_keys": "HARNESS",
+  "test_e3_native_lean_replies.LeanConnected.test_lean_and_full_drive_the_same_chunk_to_the_same_reports": "HARNESS",
+  "test_e3_native_lean_replies.LeanConnected.test_out_of_order_completions_are_exercised": "HARNESS",
+  "test_e3_native_lean_replies.LeanConnected.test_validating_constructor_gives_the_same_run": "HARNESS",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_foreign_and_stale_transactions": "HARNESS",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_lean_report_in_a_full_transaction": "HARNESS",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_replay_of_the_last_report": "HARNESS",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_unaccepted_operation": "HARNESS",
+  "test_e3_native_lean_replies.LeanRelease.test_a_different_applied_stream_is_refused": "HARNESS",
+  "test_e3_native_lean_replies.LeanRelease.test_an_unsent_completion_is_refused": "HARNESS",
+  "test_e3_native_lean_replies.LeanRelease.test_lean_streams_on_a_full_transaction": "HARNESS",
+  "test_e3_native_lean_replies.LeanRelease.test_mutant_without_the_release_check_releases_a_diverged_stream": "HARNESS",
+  "test_e3_native_lean_replies.LeanRelease.test_the_engine_stream_releases": "HARNESS",
+  "test_e3_native_lean_replies.LeanWire.test_acceptance_carries_a_lean_report": "HARNESS",
+  "test_e3_native_lean_replies.LeanWire.test_open_and_release_fields": "HARNESS",
+  "test_e3_native_lean_replies.LeanWire.test_structure_is_validated": "HARNESS",
+  "test_e3_stopfix_partial_segment.Fix.test_a_peer_that_never_accepts_stops_at_the_bound_with_ownership_kept": "HARNESS",
+  "test_e3_stopfix_partial_segment.Fix.test_each_partially_accepted_kind_replays_before_the_cancel": "HARNESS",
+  "test_e3_stopfix_partial_segment.Fix.test_partial_prepare_then_each_stop_replays_the_same_command_then_cancels": "HARNESS",
+  "test_e3_stopfix_partial_segment.Fix.test_without_the_replay_the_fault_returns": "HARNESS",
+  "test_e3_stopfix_refused_open.Fix.test_a_quarantined_row_close_still_fails_closed_with_ownership_kept": "HARNESS",
+  "test_e3_stopfix_refused_open.Fix.test_a_refusal_after_the_row_closed_still_retires_the_chunk": "HARNESS",
+  "test_e3_stopfix_refused_open.Fix.test_a_ring_still_full_refuses_the_row_close_without_losing_it": "HARNESS",
+  "test_e3_stopfix_refused_open.Fix.test_each_stop_closes_the_retained_row_then_retires_the_chunk_as_never_submitted": "HARNESS",
+  "test_e3_stopfix_refused_open.Fix.test_final_state_equals_a_stop_before_the_chunk_began": "HARNESS",
+  "test_stage1_anatomy_report.RecorderLines.test_rig_lines_read": "HARNESS",
+  "unittest.loader._FailedTest.test_alpha_c0_queue": "HARNESS",
+  "unittest.loader._FailedTest.test_alpha_next_c0_ring": "HARNESS",
+  "unittest.loader._FailedTest.test_alpha_next_queue": "HARNESS",
+  "unittest.loader._FailedTest.test_alpha_next_stopfix_matrix": "HARNESS",
+  "unittest.loader._FailedTest.test_e3_stage_local": "HARNESS",
+  "unittest.loader._FailedTest.test_e3_stage_local_control": "HARNESS",
+  "unittest.loader._FailedTest.test_e3_stage_local_qsa": "HARNESS",
+  "unittest.loader._FailedTest.test_stage1_handler_anatomy": "HARNESS"
+ },
+ "classification": {
+  "path": "<hub-dir>/agents/flash-next/tmp/alpha-next/evidence/gates-g6/negative-classification-g6.json",
+  "rows": [
+   [
+    "test_alpha_next_receipts.",
+    "^AttributeError: module 'native_measurement' has no attribute '(ReceiptWriter|receipt_path)'$",
+    "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+    "HARNESS"
+   ],
+   [
+    "test_alpha_next_receipts.Writer.test_uninstalled_process_keeps_the_old_logger_lines_and_the_grader_calls_them_legacy",
+    "^AttributeError: <module 'native_measurement' from '/source/patches/s5_engine/native_measurement\\.py'> does not have the attribute '_RECEIPT_WRITER'$",
+    "the PLAN 2 writer slot _RECEIPT_WRITER is the candidate's; Step B's native_measurement has no slot to patch",
+    "HARNESS"
+   ],
+   [
+    "test_alpha_next_receipts.Witness.test_a_writer_that_dies_before_reporting_ends_the_run",
+    "^AttributeError: 'module' object has no attribute 'install_receipt_writer'$",
+    "the test deletes the candidate's install_receipt_writer to make a writer-less witness (780b09ef); Step B's native_measurement has no such attribute, so the subprocess fails at the del",
+    "HARNESS"
+   ],
+   [
+    "test_alpha_next_receipts.Witness.test_new_path_has_no_bad_record_and_contiguous_seq",
+    "^AssertionError: 0 not greater than or equal to 20000$",
+    "the witness's 4 writers die over Step B's native_measurement (no install_receipt_writer); since 780b09ef the run returns short (0 records) and the test fails instead of hanging (g5's observation hang)",
+    "HARNESS"
+   ],
+   [
+    "test_alpha_next_receipts.Budget.test_record_budget_is_below_pipe_buf_and_everyone_follows_it",
+    "^ModuleNotFoundError: No module named 'handler_anatomy'$",
+    "the budget test imports handler_anatomy, the stage-1 anatomy module only the candidate's overlay adds",
+    "HARNESS"
+   ],
+   [
+    "test_stage1_anatomy_report.",
+    "^ModuleNotFoundError: No module named 'handler_anatomy'$",
+    "the anatomy report's recorder rig drives the real handler_anatomy; Step B's overlay has no such module (stage-1 sweep precedent)",
+    "HARNESS"
+   ],
+   [
+    "unittest.loader._FailedTest.test_stage1_handler_anatomy",
+    "^ModuleNotFoundError: No module named 'handler_anatomy'$",
+    "the anatomy suite imports handler_anatomy, the module the candidate adds; the suite cannot load over Step B's overlay (stage-1 sweep precedent)",
+    "HARNESS"
+   ],
+   [
+    "unittest.loader._FailedTest.test_",
+    "^ModuleNotFoundError: No module named 'stage_progress'$",
+    "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+    "HARNESS"
+   ],
+   [
+    "test_e3_native_lean_replies.",
+    "^AttributeError: '(NativeWorkerBridge' object has no attribute '_lean|NativeSegmentDriver' object has no attribute '_lean_streams)'$",
+    "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+    "HARNESS"
+   ],
+   [
+    "setUpClass (test_e3_native_lean_replies.",
+    "^AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'$",
+    "held-g lean replies class setup needs the candidate's NativeWorkerBridge._lean (Step B 0)",
+    "HARNESS"
+   ],
+   [
+    "test_e3_native_anatomy",
+    "^AttributeError: module 'native_measurement' has no attribute 'ANATOMY_LINE'$",
+    "held-g anatomy: ANATOMY_LINE is the candidate's native_measurement constant (Step B 0, candidate 1); the module fails at import",
+    "HARNESS"
+   ],
+   [
+    "test_alpha_next_peak_receipt.",
+    "^(AttributeError: type object 'NativeWorkerBridge' has no attribute '_peak_(open|receipt)'(\\. Did you mean: '_memory_receipt'\\?)?|KeyError: 'self\\._peak_open\\(\\)')$",
+    "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+    "HARNESS"
+   ],
+   [
+    "test_e3_stopfix_refused_open.Fix.",
+    "^(engine_driver\\.DriverError: worker retained quarantined work; ownership kept|AssertionError: \\\"worker quarantined the retained row; ownership kept\\\" does not match \\\"worker retained quarantined work; ownership kept\\\")$",
+    "stop-fix Fix 1 (ba050d84, refused successor open closes the retained row first) is only in the candidate (stop-fix tip b82b832a is not in Step B 66b5780e; the test file is not in Step B); Step B's driver keeps the pre-fix path and message: the control biting on the repair alpha-next adds, not a new Step B finding",
+    "HARNESS"
+   ],
+   [
+    "test_e3_stopfix_partial_segment.Fix.",
+    "^(engine_driver\\.DriverError: accepted operations exist without a bound producer|AssertionError: \\\"cancellation did not close worker ownership within the bound\\\" does not match \\\"accepted operations exist without a bound producer\\\"|AssertionError: \\[\\] is not true|AttributeError: <class 'engine_driver\\.NativeSegmentDriver'> does not have the attribute '_drive_partial_stop_submission')$",
+    "stop-fix Fix 2 (5c7dbb56, partial PREPARE acceptance replays the retained command, then cancels) is only in the candidate (_drive_partial_stop_submission: Step B 0, candidate 1; the test file is not in Step B); Step B's driver shows the pre-fix behaviour the test detects: the control biting on the repair, not a new Step B finding",
+    "HARNESS"
+   ],
+   [
+    "test_alpha_next_path_qualification.Inventory.test_every_declared_test_loads",
+    "^\\+ \\['test_alpha_next_stopfix_matrix\\.FusedGrouped\\.test_partial_prepare_replays_then_cancels_on_fused_and_each_group_size'\\]$",
+    "the inventory loads the declared 4C.5 ids; the stop-fix matrix suite cannot import over Step B's overlay (stage_progress), so its declared id does not load",
+    "HARNESS"
+   ],
+   [
+    "alpha-c0-",
+    "^ModuleNotFoundError: No module named 'vllm\\.v1\\.flash_e3\\.stage_(wire|progress)'$",
+    "C0's stage probe modes import stage_wire / stage_progress, which only the candidate's overlay has (C0 pins precedent: the stub's expected row)",
+    "HARNESS"
+   ],
+   [
+    "held-g-",
+    "^AttributeError: module 'vllm\\.v1\\.flash_e3\\.executor_hooks' has no attribute '_stock_step_idle'$",
+    "held-g probe modes need executor_hooks._stock_step_idle, the held-g stock-idle predicate the candidate adds (held-g NEGATIVE_CASES precedent: the stub's expected row)",
+    "HARNESS"
+   ]
+  ],
+  "sha256": "c0b249c9b83f6271a099f2767d90be743a8dcac496c38001c6bfe1018f507fc1"
+ },
+ "discovery": "one observation over chain g6's own build (bundle 1cd531059886, review 45a5fcf9, gates_c): verdict OBSERVED, container rc 0, wall 543 s of 2700, skips 0, 126 tests, 84 non-passes and 20 probe cases failing, all HARNESS (the candidate's PLAN 2 writer, stage modules, anatomy, lean replies, peak receipt and stop-fix repairs ba050d84/5c7dbb56 are absent from Step B); g5's observation hung (witness, fixed 780b09ef) and is superseded",
+ "expected_cases": {
+  "alpha-c0-local-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-local-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-local-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-serial-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "alpha-c0-serial-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "alpha-c0-serial-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "held-g-burst": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-current": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-skew": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-wait-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-current-solo": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-current-solo-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-trace": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-trace-skew": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-unset": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ]
+ },
+ "frozen_record_sha256": "466447cd61c5144861474db8740ad781d66cb156d6cdc2434a3f15a9ac7fd942",
+ "observation": {
+  "bundle_manifest": "1cd5310598860b310aef67502151801060f3c69f64902ca7ba86e6752f34bf92",
+  "cases_failing": 20,
+  "container": "alpha-next-negative-observe-cpu-1cd531059886",
+  "left_out": {},
+  "log": "<hub-dir>/agents/flash-next/tmp/alpha-next/build-g6/engine-negative-observe-stdout.log",
+  "log_sha256": "897669c51b52e8b74bdd552fd0bb052dec67d7905d9e90a1bb151bfc368b6020",
+  "not_passing": 84,
+  "observed_json": "<hub-dir>/agents/flash-next/tmp/alpha-next/build-g6/engine-negative-observe/result.json",
+  "observed_sha256": "9bb9f865c498a5adc2df03182a563fd517459448f8001f8d825e4fd7fb15bf95",
+  "overlay_manifest": "4157b92075aa1f612f1ad9acc126a7ab6640f81abb98d07892f168cf80289a77",
+  "reasons": [],
+  "skips": 0,
+  "tests_run": 126
+ },
+ "reasons": {
+  "setUpClass (test_e3_native_lean_replies.LeanStreamOrder)": "held-g lean replies class setup needs the candidate's NativeWorkerBridge._lean (Step B 0)",
+  "test_alpha_next_path_qualification.Inventory.test_every_declared_test_loads": "the inventory loads the declared 4C.5 ids; the stop-fix matrix suite cannot import over Step B's overlay (stage_progress), so its declared id does not load",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_failure_is_counted_never_raised": "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_missing_open_reads_minus_one": "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_no_cuda_means_no_line_and_no_reset": "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_peak_is_per_chunk": "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+  "test_alpha_next_peak_receipt.PeakReceipt.test_stage_timer_marks_a_lower_bound": "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+  "test_alpha_next_peak_receipt.Placement.test_calls_only_under_the_memory_receipt_flag": "the peak receipt (_peak_open, _peak_receipt) is alpha-next's own worker_bridge addition (Step B 0, candidate 1 each); the placement test finds no _peak_open call site in Step B's source",
+  "test_alpha_next_receipts.Budget.test_a_full_progress_trace_splits_into_records_below_the_budget": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Budget.test_anatomy_trace_with_every_tag_stays_below_the_budget": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Budget.test_record_budget_is_below_pipe_buf_and_everyone_follows_it": "the budget test imports handler_anatomy, the stage-1 anatomy module only the candidate's overlay adds",
+  "test_alpha_next_receipts.EmitSites.test_c0_stage_local_line": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_device_spans_send_one_chunk_as_one_record": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_engine_progress_and_step_anatomy": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_engine_stop_receipt": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_handler_anatomy_flush_on_the_stage1_rig": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_qsa_native_alloc": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_startup_device_spans_route_through_the_writer": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_startup_installs_the_writer_in_engine_and_worker_and_reports_the_path": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_worker_bridge_memory": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_worker_bridge_memory_peak": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.EmitSites.test_worker_progress_at_release": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.ExistingParsers.test_progress_box_reads_and_assembles_every_part": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.ExistingParsers.test_torn_rules_and_memory_regexes_read_them_whole": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_a_lost_part_is_incomplete_and_a_seq_gap": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_a_repeated_or_reordered_seq_is_missing_seq": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_a_spliced_record_is_unreadable_or_bad_sha": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_a_window_without_the_process_start": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_clean_stream_with_foreign_bytes_before_a_record_is_ok": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_cli_reads_xz_and_exits_nonzero_on_inc": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Grader.test_per_part_sha_is_bad_sha": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.ReceiptPath.test_pipe_is_atomic_fifo_and_a_file_is_unsafe": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.ReceiptPath.test_small_pipe_buf_or_closed_fd_is_unsafe": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Witness.test_a_writer_that_dies_before_reporting_ends_the_run": "the test deletes the candidate's install_receipt_writer to make a writer-less witness (780b09ef); Step B's native_measurement has no such attribute, so the subprocess fails at the del",
+  "test_alpha_next_receipts.Witness.test_new_path_has_no_bad_record_and_contiguous_seq": "the witness's 4 writers die over Step B's native_measurement (no install_receipt_writer); since 780b09ef the run returns short (0 records) and the test fails instead of hanging (g5's observation hang)",
+  "test_alpha_next_receipts.Writer.test_a_forked_child_starts_its_own_numbering": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_failed_write_is_counted_and_never_raised": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_foreign_or_malformed_text_is_counted_and_numbered": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_kv_records_keep_their_text_and_gain_pid_seq_sha": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_later_kinds_stop_and_memory_peak_are_records_too": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_nothing_is_opened_or_written_until_a_receipt": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_one_write_per_part_with_identity_on_every_part": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_oversize_record_is_counted_not_written_and_shows_as_a_gap": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_private_dup_of_fd_1_on_first_write": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_seq_is_strictly_plus_one_across_every_record_kind": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_short_write_is_counted_and_never_raised": "PLAN 2: ReceiptWriter and receipt_path exist only in the candidate's native_measurement (class ReceiptWriter: Step B 0, candidate 1); the writer, budget, grader, emit-site and receipt-path tests cannot run over Step B's overlay",
+  "test_alpha_next_receipts.Writer.test_uninstalled_process_keeps_the_old_logger_lines_and_the_grader_calls_them_legacy": "the PLAN 2 writer slot _RECEIPT_WRITER is the candidate's; Step B's native_measurement has no slot to patch",
+  "test_e3_native_anatomy": "held-g anatomy: ANATOMY_LINE is the candidate's native_measurement constant (Step B 0, candidate 1); the module fails at import",
+  "test_e3_native_lean_replies.LeanCensus.test_clean_stream_has_no_conflict": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanCensus.test_gap_replay_and_header": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanConnected.test_journal_report_entries_keep_their_keys": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanConnected.test_lean_and_full_drive_the_same_chunk_to_the_same_reports": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanConnected.test_out_of_order_completions_are_exercised": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanConnected.test_validating_constructor_gives_the_same_run": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_foreign_and_stale_transactions": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_lean_report_in_a_full_transaction": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_replay_of_the_last_report": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_unaccepted_operation": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanRelease.test_a_different_applied_stream_is_refused": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanRelease.test_an_unsent_completion_is_refused": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanRelease.test_lean_streams_on_a_full_transaction": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanRelease.test_mutant_without_the_release_check_releases_a_diverged_stream": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanRelease.test_the_engine_stream_releases": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanWire.test_acceptance_carries_a_lean_report": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanWire.test_open_and_release_fields": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_native_lean_replies.LeanWire.test_structure_is_validated": "held-g lean replies: _lean (worker_bridge, Step B 0, candidate 9) and _lean_streams (engine_driver, Step B 0, candidate 7) are candidate-only",
+  "test_e3_stopfix_partial_segment.Fix.test_a_peer_that_never_accepts_stops_at_the_bound_with_ownership_kept": "stop-fix Fix 2 (5c7dbb56, partial PREPARE acceptance replays the retained command, then cancels) is only in the candidate (_drive_partial_stop_submission: Step B 0, candidate 1; the test file is not in Step B); Step B's driver shows the pre-fix behaviour the test detects: the control biting on the repair, not a new Step B finding",
+  "test_e3_stopfix_partial_segment.Fix.test_each_partially_accepted_kind_replays_before_the_cancel": "stop-fix Fix 2 (5c7dbb56, partial PREPARE acceptance replays the retained command, then cancels) is only in the candidate (_drive_partial_stop_submission: Step B 0, candidate 1; the test file is not in Step B); Step B's driver shows the pre-fix behaviour the test detects: the control biting on the repair, not a new Step B finding",
+  "test_e3_stopfix_partial_segment.Fix.test_partial_prepare_then_each_stop_replays_the_same_command_then_cancels": "stop-fix Fix 2 (5c7dbb56, partial PREPARE acceptance replays the retained command, then cancels) is only in the candidate (_drive_partial_stop_submission: Step B 0, candidate 1; the test file is not in Step B); Step B's driver shows the pre-fix behaviour the test detects: the control biting on the repair, not a new Step B finding",
+  "test_e3_stopfix_partial_segment.Fix.test_without_the_replay_the_fault_returns": "stop-fix Fix 2 (5c7dbb56, partial PREPARE acceptance replays the retained command, then cancels) is only in the candidate (_drive_partial_stop_submission: Step B 0, candidate 1; the test file is not in Step B); Step B's driver shows the pre-fix behaviour the test detects: the control biting on the repair, not a new Step B finding",
+  "test_e3_stopfix_refused_open.Fix.test_a_quarantined_row_close_still_fails_closed_with_ownership_kept": "stop-fix Fix 1 (ba050d84, refused successor open closes the retained row first) is only in the candidate (stop-fix tip b82b832a is not in Step B 66b5780e; the test file is not in Step B); Step B's driver keeps the pre-fix path and message: the control biting on the repair alpha-next adds, not a new Step B finding",
+  "test_e3_stopfix_refused_open.Fix.test_a_refusal_after_the_row_closed_still_retires_the_chunk": "stop-fix Fix 1 (ba050d84, refused successor open closes the retained row first) is only in the candidate (stop-fix tip b82b832a is not in Step B 66b5780e; the test file is not in Step B); Step B's driver keeps the pre-fix path and message: the control biting on the repair alpha-next adds, not a new Step B finding",
+  "test_e3_stopfix_refused_open.Fix.test_a_ring_still_full_refuses_the_row_close_without_losing_it": "stop-fix Fix 1 (ba050d84, refused successor open closes the retained row first) is only in the candidate (stop-fix tip b82b832a is not in Step B 66b5780e; the test file is not in Step B); Step B's driver keeps the pre-fix path and message: the control biting on the repair alpha-next adds, not a new Step B finding",
+  "test_e3_stopfix_refused_open.Fix.test_each_stop_closes_the_retained_row_then_retires_the_chunk_as_never_submitted": "stop-fix Fix 1 (ba050d84, refused successor open closes the retained row first) is only in the candidate (stop-fix tip b82b832a is not in Step B 66b5780e; the test file is not in Step B); Step B's driver keeps the pre-fix path and message: the control biting on the repair alpha-next adds, not a new Step B finding",
+  "test_e3_stopfix_refused_open.Fix.test_final_state_equals_a_stop_before_the_chunk_began": "stop-fix Fix 1 (ba050d84, refused successor open closes the retained row first) is only in the candidate (stop-fix tip b82b832a is not in Step B 66b5780e; the test file is not in Step B); Step B's driver keeps the pre-fix path and message: the control biting on the repair alpha-next adds, not a new Step B finding",
+  "test_stage1_anatomy_report.RecorderLines.test_rig_lines_read": "the anatomy report's recorder rig drives the real handler_anatomy; Step B's overlay has no such module (stage-1 sweep precedent)",
+  "unittest.loader._FailedTest.test_alpha_c0_queue": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_alpha_next_c0_ring": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_alpha_next_queue": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_alpha_next_stopfix_matrix": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_e3_stage_local": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_e3_stage_local_control": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_e3_stage_local_qsa": "C0's stage_progress module is only in the candidate's overlay (C0 pins precedent); these suites (C0's, the alpha-next queue, C0 ring and stop-fix matrix) import it and cannot load over Step B's",
+  "unittest.loader._FailedTest.test_stage1_handler_anatomy": "the anatomy suite imports handler_anatomy, the module the candidate adds; the suite cannot load over Step B's overlay (stage-1 sweep precedent)"
+ },
+ "schema": "alpha-next-negative-pins/1",
+ "status": "OBSERVED",
+ "tests": {
+  "setUpClass (test_e3_native_lean_replies.LeanStreamOrder)": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_alpha_next_path_qualification.Inventory.test_every_declared_test_loads": [
+   "fail",
+   "+ ['test_alpha_next_stopfix_matrix.FusedGrouped.test_partial_prepare_replays_then_cancels_on_fused_and_each_group_size']"
+  ],
+  "test_alpha_next_peak_receipt.PeakReceipt.test_failure_is_counted_never_raised": [
+   "error",
+   "AttributeError: type object 'NativeWorkerBridge' has no attribute '_peak_open'"
+  ],
+  "test_alpha_next_peak_receipt.PeakReceipt.test_missing_open_reads_minus_one": [
+   "error",
+   "AttributeError: type object 'NativeWorkerBridge' has no attribute '_peak_receipt'. Did you mean: '_memory_receipt'?"
+  ],
+  "test_alpha_next_peak_receipt.PeakReceipt.test_no_cuda_means_no_line_and_no_reset": [
+   "error",
+   "AttributeError: type object 'NativeWorkerBridge' has no attribute '_peak_open'"
+  ],
+  "test_alpha_next_peak_receipt.PeakReceipt.test_peak_is_per_chunk": [
+   "error",
+   "AttributeError: type object 'NativeWorkerBridge' has no attribute '_peak_open'"
+  ],
+  "test_alpha_next_peak_receipt.PeakReceipt.test_stage_timer_marks_a_lower_bound": [
+   "error",
+   "AttributeError: type object 'NativeWorkerBridge' has no attribute '_peak_open'"
+  ],
+  "test_alpha_next_peak_receipt.Placement.test_calls_only_under_the_memory_receipt_flag": [
+   "error",
+   "KeyError: 'self._peak_open()'"
+  ],
+  "test_alpha_next_receipts.Budget.test_a_full_progress_trace_splits_into_records_below_the_budget": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Budget.test_anatomy_trace_with_every_tag_stays_below_the_budget": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Budget.test_record_budget_is_below_pipe_buf_and_everyone_follows_it": [
+   "error",
+   "ModuleNotFoundError: No module named 'handler_anatomy'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_c0_stage_local_line": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_device_spans_send_one_chunk_as_one_record": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_engine_progress_and_step_anatomy": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_engine_stop_receipt": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_handler_anatomy_flush_on_the_stage1_rig": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_qsa_native_alloc": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_startup_device_spans_route_through_the_writer": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_startup_installs_the_writer_in_engine_and_worker_and_reports_the_path": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_worker_bridge_memory": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_worker_bridge_memory_peak": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.EmitSites.test_worker_progress_at_release": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.ExistingParsers.test_progress_box_reads_and_assembles_every_part": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.ExistingParsers.test_torn_rules_and_memory_regexes_read_them_whole": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_a_lost_part_is_incomplete_and_a_seq_gap": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_a_repeated_or_reordered_seq_is_missing_seq": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_a_spliced_record_is_unreadable_or_bad_sha": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_a_window_without_the_process_start": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_clean_stream_with_foreign_bytes_before_a_record_is_ok": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_cli_reads_xz_and_exits_nonzero_on_inc": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Grader.test_per_part_sha_is_bad_sha": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.ReceiptPath.test_pipe_is_atomic_fifo_and_a_file_is_unsafe": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'receipt_path'"
+  ],
+  "test_alpha_next_receipts.ReceiptPath.test_small_pipe_buf_or_closed_fd_is_unsafe": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'receipt_path'"
+  ],
+  "test_alpha_next_receipts.Witness.test_a_writer_that_dies_before_reporting_ends_the_run": [
+   "fail",
+   "AttributeError: 'module' object has no attribute 'install_receipt_writer'"
+  ],
+  "test_alpha_next_receipts.Witness.test_new_path_has_no_bad_record_and_contiguous_seq": [
+   "fail",
+   "AssertionError: 0 not greater than or equal to 20000"
+  ],
+  "test_alpha_next_receipts.Writer.test_a_forked_child_starts_its_own_numbering": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_failed_write_is_counted_and_never_raised": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_foreign_or_malformed_text_is_counted_and_numbered": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_kv_records_keep_their_text_and_gain_pid_seq_sha": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_later_kinds_stop_and_memory_peak_are_records_too": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_nothing_is_opened_or_written_until_a_receipt": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_one_write_per_part_with_identity_on_every_part": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_oversize_record_is_counted_not_written_and_shows_as_a_gap": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_private_dup_of_fd_1_on_first_write": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_seq_is_strictly_plus_one_across_every_record_kind": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_short_write_is_counted_and_never_raised": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ReceiptWriter'"
+  ],
+  "test_alpha_next_receipts.Writer.test_uninstalled_process_keeps_the_old_logger_lines_and_the_grader_calls_them_legacy": [
+   "error",
+   "AttributeError: <module 'native_measurement' from '/source/patches/s5_engine/native_measurement.py'> does not have the attribute '_RECEIPT_WRITER'"
+  ],
+  "test_e3_native_anatomy": [
+   "error",
+   "AttributeError: module 'native_measurement' has no attribute 'ANATOMY_LINE'"
+  ],
+  "test_e3_native_lean_replies.LeanCensus.test_clean_stream_has_no_conflict": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanCensus.test_gap_replay_and_header": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanConnected.test_journal_report_entries_keep_their_keys": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanConnected.test_lean_and_full_drive_the_same_chunk_to_the_same_reports": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanConnected.test_out_of_order_completions_are_exercised": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanConnected.test_validating_constructor_gives_the_same_run": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_foreign_and_stale_transactions": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_lean_report_in_a_full_transaction": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_replay_of_the_last_report": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanDriverRefusals.test_unaccepted_operation": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanRelease.test_a_different_applied_stream_is_refused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanRelease.test_an_unsent_completion_is_refused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanRelease.test_lean_streams_on_a_full_transaction": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanRelease.test_mutant_without_the_release_check_releases_a_diverged_stream": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanRelease.test_the_engine_stream_releases": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute '_lean_streams'"
+  ],
+  "test_e3_native_lean_replies.LeanWire.test_acceptance_carries_a_lean_report": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanWire.test_open_and_release_fields": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_native_lean_replies.LeanWire.test_structure_is_validated": [
+   "error",
+   "AttributeError: 'NativeWorkerBridge' object has no attribute '_lean'"
+  ],
+  "test_e3_stopfix_partial_segment.Fix.test_a_peer_that_never_accepts_stops_at_the_bound_with_ownership_kept": [
+   "fail",
+   "AssertionError: \"cancellation did not close worker ownership within the bound\" does not match \"accepted operations exist without a bound producer\""
+  ],
+  "test_e3_stopfix_partial_segment.Fix.test_each_partially_accepted_kind_replays_before_the_cancel": [
+   "fail",
+   "AssertionError: [] is not true"
+  ],
+  "test_e3_stopfix_partial_segment.Fix.test_partial_prepare_then_each_stop_replays_the_same_command_then_cancels": [
+   "error",
+   "engine_driver.DriverError: accepted operations exist without a bound producer"
+  ],
+  "test_e3_stopfix_partial_segment.Fix.test_without_the_replay_the_fault_returns": [
+   "error",
+   "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_drive_partial_stop_submission'"
+  ],
+  "test_e3_stopfix_refused_open.Fix.test_a_quarantined_row_close_still_fails_closed_with_ownership_kept": [
+   "fail",
+   "AssertionError: \"worker quarantined the retained row; ownership kept\" does not match \"worker retained quarantined work; ownership kept\""
+  ],
+  "test_e3_stopfix_refused_open.Fix.test_a_refusal_after_the_row_closed_still_retires_the_chunk": [
+   "error",
+   "engine_driver.DriverError: worker retained quarantined work; ownership kept"
+  ],
+  "test_e3_stopfix_refused_open.Fix.test_a_ring_still_full_refuses_the_row_close_without_losing_it": [
+   "error",
+   "engine_driver.DriverError: worker retained quarantined work; ownership kept"
+  ],
+  "test_e3_stopfix_refused_open.Fix.test_each_stop_closes_the_retained_row_then_retires_the_chunk_as_never_submitted": [
+   "error",
+   "engine_driver.DriverError: worker retained quarantined work; ownership kept"
+  ],
+  "test_e3_stopfix_refused_open.Fix.test_final_state_equals_a_stop_before_the_chunk_began": [
+   "error",
+   "engine_driver.DriverError: worker retained quarantined work; ownership kept"
+  ],
+  "test_stage1_anatomy_report.RecorderLines.test_rig_lines_read": [
+   "error",
+   "ModuleNotFoundError: No module named 'handler_anatomy'"
+  ],
+  "unittest.loader._FailedTest.test_alpha_c0_queue": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_alpha_next_c0_ring": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_alpha_next_queue": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_alpha_next_stopfix_matrix": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_local": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_local_control": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_local_qsa": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_stage1_handler_anatomy": [
+   "error",
+   "ModuleNotFoundError: No module named 'handler_anatomy'"
+  ]
+ },
+ "why": {
+  "classes": {
+   "ENGINE": "points at Step B's engine itself; refused, written up",
+   "HARNESS": "the candidate's test or probe needs what only the candidate has; the control biting as designed"
+  },
+  "rule": "every non-pass of one observation over the chain's own build, each with its reviewed reason and class; negative() refuses any other non-pass, any pinned test that passes or changes kind or text, and any probe case whose verdict, error type or error differs from its pin"
+ }
+}

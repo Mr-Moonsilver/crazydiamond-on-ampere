@@ -704,6 +704,7 @@ def attach_native_router(args, app, env=None):
         QUALIFICATION_ACTIONS,
         NativeControlClient,
         NativeControlError,
+        attn_meta_actions,
     )
     from native_overlap_session import NativeOverlapSession, NativeOverlapSessionError
     router = APIRouter()
@@ -716,9 +717,24 @@ def attach_native_router(args, app, env=None):
     # installed (FLASH_S5_NATIVE_PROGRESS=burst, which requires the auto-arm switch).
     if auto_actions and env.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst':
         auto_actions += ('native_progress',)
+    # Step A: the per-arm native_qsa_fused switch, only where it is installed.
+    if auto_actions and env.get('FLASH_S5_QSA_FUSED', '0') == '1':
+        auto_actions += ('native_qsa_fused',)
+    # Step B: the per-arm native_layer_group size, only where it is installed.
+    if auto_actions and env.get('FLASH_S5_QSA_FUSED', '0') == '1' and env.get('FLASH_S5_LAYER_GROUPS', '0') == '1':
+        auto_actions += ('native_layer_group',)
+    # C0: the per-arm native_stage_local switch, only where it is installed.
+    if auto_actions and env.get('FLASH_S5_STAGE_LOCAL', '0') == '1':
+        auto_actions += ('native_stage_local',)
+    # returning-append: the per-arm native_append_yield switch, only where all four launch bounds installed the yield.
+    from native_overlap_control import APPEND_YIELD_ENV
+    if auto_actions and all(env.get(name) is not None for name in APPEND_YIELD_ENV):
+        auto_actions += ('native_append_yield',)
     install_owner_health(app)
+    ingress = None              # FLASH_S5_INGRESS_INCREMENTAL=1 only: set with the first engine client
 
     async def endpoint(request):
+        nonlocal ingress
         host = getattr(getattr(request, 'client', None), 'host', '')
         try:
             local = ipaddress.ip_address(host).is_loopback
@@ -747,14 +763,18 @@ def attach_native_router(args, app, env=None):
                 state['control'] = NativeControlClient(engine)
                 state['session'] = NativeOverlapSession(engine,
                                                         control=state['control'])
+                if env.get('FLASH_S5_INGRESS_INCREMENTAL', '0') == '1':
+                    ingress = state['ingress'] = _install_ingress(engine, env)
             elif state['engine'] is not engine:
                 raise ProbeControlError('engine-client-incarnation-changed')
             action = command.get('action')
-            if action in QUALIFICATION_ACTIONS:
+            if action in QUALIFICATION_ACTIONS or action in attn_meta_actions():
                 result = await state['control'].qualification(
                     action, command.get('payload'))
             elif action in NATIVE_SESSION_ACTIONS or action in auto_actions:
                 result = await state['session'].execute(command)
+                if ingress is not None:     # ingress-incremental: mirror the engine selection; its counters on status
+                    _observe_ingress(ingress, action, result)
             else:
                 raise ProbeControlError('native-action-not-exposed')
             return JSONResponse(result)
@@ -767,6 +787,53 @@ def attach_native_router(args, app, env=None):
     router.add_api_route(NATIVE_PATH, endpoint, methods=['POST'])
     app.include_router(router)
     return state
+
+
+class _IngressInstallFailed:
+    """FLASH_S5_INGRESS_INCREMENTAL=1 whose install raised (or found no renderer): the renderer stays the stock one and
+    the status reply carries ingress_api={'disabled': why}. Never raises into the command path."""
+
+    def __init__(self, why):
+        self.why = why
+        self.binding = self
+
+    def observe(self, action, result):
+        return None
+
+    def snapshot(self):
+        return {'disabled': self.why}
+
+
+def _install_ingress(engine, env):
+    """night-pack fix 2: the ingress install, never a 500 on the first native command (state['engine'] is already set
+    when it runs). Any exception, the import included, leaves the stock renderer and reports install-error:<Type>."""
+    try:
+        from ingress_incremental import install as install_ingress
+        got = install_ingress(engine, env)
+    except Exception as exc:
+        return _IngressInstallFailed('install-error:' + type(exc).__name__)
+    return _IngressInstallFailed('install-error:no-renderer') if got is None else got
+
+
+def _observe_ingress(ingress, action, result):
+    """night-pack fix 2: mirror the engine selection and add the API counters to a status reply, never raising. A fault
+    in the mirror deselects (the stock call) and disables the splice for the rest of the launch."""
+    try:
+        ingress.binding.observe(action, result)
+    except Exception as exc:
+        try:
+            ingress.binding.selected = False
+            splicer = getattr(ingress, 'splicer', None)
+            if splicer is not None and splicer.disabled is None:
+                splicer.disabled = 'observe-error:' + type(exc).__name__
+        except Exception:
+            pass
+    if action == 'status' and type(result) is dict and type(result.get('native_admission')) is dict:
+        try:
+            snapshot = ingress.snapshot()
+        except Exception as exc:
+            snapshot = {'disabled': 'snapshot-error:' + type(exc).__name__}
+        result['native_admission']['ingress_api'] = snapshot
 
 
 def install_owner_health(app):

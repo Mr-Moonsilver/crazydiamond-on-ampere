@@ -281,7 +281,8 @@ class ArtifactIdentity(unittest.TestCase):
         # q17c is an immutable older standalone receipt, not the current
         # decode helper. Keep its declared source instead of moving its pin.
         frozen = {'green_context.py': 'q17c_original_green_context.py',
-                  'e3_types.py': 'q17c_original_e3_types.py'}
+                  'e3_types.py': 'q17c_original_e3_types.py',
+                  'lane_comm.py': 'q17c_original_lane_comm.py'}
         for name in NATIVE_PINS:
             source = (HERE / 'fixtures' / frozen[name] if name in frozen
                       else HERE.parent / 'patches/s5_engine' / name)

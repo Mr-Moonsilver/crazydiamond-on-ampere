@@ -47,6 +47,10 @@ ACTIONS = READ_ACTIONS + INTENT_ACTIONS
 QUALIFICATION_ACTIONS = ('teacher_configure', 'teacher_evidence',
                          'observer_begin', 'observer_end',
                          'row1_configure', 'row1_evidence')
+# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector's worker actions ride the qualification
+# intent (paused idle FULL for the select, enforced by the engine driver); exposed only where the switch is on.
+ATTN_META_ACTIONS = ('attn_meta_select', 'attn_meta_read')
+_NOT_SENT = object()    # decode-phase dp6: chunk_bound None is a value, today's plan
 
 
 class NativeControlError(RuntimeError):
@@ -57,6 +61,53 @@ def _progress_burst():
     """The held-f switch is exposed only where the engine installed burst."""
     return (os.environ.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst'
             and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
+
+
+def _qsa_fused():
+    """The Step A switch is exposed only where the engine installed it."""
+    return (os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
+            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
+
+
+def attn_meta_actions():
+    """The attn-meta selector actions, only where the switch installed it (else none)."""
+    return ATTN_META_ACTIONS if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()
+
+
+def _layer_groups():
+    """The Step B switch is exposed only where the engine installed it."""
+    return os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1' and _qsa_fused()
+
+
+APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
+
+
+def _append_yield():
+    """returning-append: exposed only where all four launch bounds installed the yield."""
+    return (os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
+            and all(os.environ.get(name) is not None for name in APPEND_YIELD_ENV))
+
+
+def _stage_local():
+    """The C0 switch is exposed only where the engine installed it."""
+    return (os.environ.get('FLASH_S5_STAGE_LOCAL', '0') == '1'
+            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
+
+
+def _stage_overlap():
+    """C1's field is exposed only where the engine installed it beside C0 (FLASH_S5_STAGE_OVERLAP)."""
+    return _stage_local() and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1'
+
+
+def _stage_overlap_defer():
+    """alpha-next-c1: the deferred-bind field is exposed only where the engine installed it (FLASH_S5_STAGE_OVERLAP_DEFER_BIND)."""
+    return _stage_overlap() and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1'
+
+
+def _step_switch(name):
+    """stage1-step: a field is exposed only where the engine installed it."""
+    return _stage_overlap_defer() and os.environ.get(name, '0') == '1'
 
 
 def _positive(value):
@@ -133,7 +184,11 @@ class NativeControlClient:
         action = command.get('action')
         if action not in ACTIONS:
             if not (action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
-                    or action == 'native_progress' and _progress_burst()):
+                    or action == 'native_progress' and _progress_burst()
+                    or action == 'native_qsa_fused' and _qsa_fused()
+                    or action == 'native_layer_group' and _layer_groups()
+                    or action == 'native_append_yield' and _append_yield()
+                    or action == 'native_stage_local' and _stage_local()):
                 raise NativeControlError('native-control-unknown-action')
         if self.pending is not None and action not in READ_ACTIONS:
             # Reads stay available while an abandoned intent is registered so
@@ -216,15 +271,204 @@ class NativeControlClient:
             await self.status()
         return await self._call({'action': 'release_auto_arm'})
 
-    async def native_progress(self, mode):
-        """Held-f per-arm switch (installed burst only); the engine re-checks idle FULL."""
+    async def native_progress(self, mode, idle=None, replies=None):
+        """Held-f per-arm switch (installed burst only); the engine re-checks idle FULL.
+
+        Held-g: ``idle`` (``step`` or ``wait``) also selects the arm's idle
+        pacing, and ``replies`` (``full`` or ``lean``) its reply format; a
+        field left out is not sent and the engine applies ``step``/``full``.
+        """
         if mode not in ('current', 'burst'):
             raise NativeControlError('native-control-progress-mode-invalid')
+        if idle is not None and idle not in ('step', 'wait'):
+            raise NativeControlError('native-control-progress-idle-invalid')
+        if replies is not None and replies not in ('full', 'lean'):
+            raise NativeControlError('native-control-progress-replies-invalid')
         if self.engine_epoch is None:
             await self.status()
-        reply = await self._call({'action': 'native_progress', 'mode': mode})
+        command = {'action': 'native_progress', 'mode': mode}
+        if idle is not None:
+            command['idle'] = idle
+        if replies is not None:
+            command['replies'] = replies
+        reply = await self._call(command)
         if reply.get('mode') != mode:
             raise NativeControlError('native-control-progress-mode-not-set')
+        if idle is not None and reply.get('idle') != idle:
+            raise NativeControlError('native-control-progress-idle-not-set')
+        if replies is not None and reply.get('replies') != replies:
+            raise NativeControlError('native-control-progress-replies-not-set')
+        return reply
+
+    async def native_qsa_fused(self, fused):
+        """Step A per-arm switch (installed only); the engine re-checks idle FULL."""
+        if type(fused) is not bool:
+            raise NativeControlError('native-control-qsa-fused-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_qsa_fused', 'fused': fused})
+        if reply.get('fused') is not fused:
+            raise NativeControlError('native-control-qsa-fused-not-set')
+        return reply
+
+    async def native_append_yield(self, enabled):
+        """returning-append per-arm on/off (installed only); the engine re-checks idle FULL."""
+        if type(enabled) is not bool:
+            raise NativeControlError('native-control-append-yield-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_append_yield', 'enabled': enabled})
+        if reply.get('enabled') is not enabled:
+            raise NativeControlError('native-control-append-yield-not-set')
+        return reply
+
+    async def native_layer_group(self, size):
+        """Step B per-arm size (installed only); the engine re-checks idle FULL and fused."""
+        if type(size) is not int or size not in (1, 2, 4):
+            raise NativeControlError('native-control-layer-group-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_layer_group', 'size': size})
+        if reply.get('size') != size:
+            raise NativeControlError('native-control-layer-group-not-set')
+        return reply
+
+    async def native_stage_local(self, local):
+        """C0 per-arm switch (installed only); the engine re-checks idle FULL."""
+        if type(local) is not bool:
+            raise NativeControlError('native-control-stage-local-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_stage_local', 'local': local})
+        if reply.get('local') is not local:
+            raise NativeControlError('native-control-stage-local-not-set')
+        return reply
+
+    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT, o3_split=_NOT_SENT, ahead_nosync=_NOT_SENT, k2_settle=_NOT_SENT):
+        """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
+        alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
+        if not _stage_overlap():
+            raise NativeControlError('native-control-stage-overlap-not-installed')
+        if type(local) is not bool:
+            raise NativeControlError('native-control-stage-local-invalid')
+        if type(overlap) is not bool:
+            raise NativeControlError('native-control-stage-overlap-invalid')
+        command = {'action': 'native_stage_local', 'local': local, 'overlap': overlap}
+        if defer_bind is not None:
+            if not _stage_overlap_defer():
+                raise NativeControlError('native-control-stage-overlap-defer-bind-not-installed')
+            if type(defer_bind) is not bool:
+                raise NativeControlError('native-control-stage-overlap-defer-bind-invalid')
+            command['defer_bind'] = defer_bind
+        if lazy_recv is not None:
+            if not _step_switch('FLASH_S5_LAZY_RECV'):
+                raise NativeControlError('native-control-stage-lazy-recv-not-installed')
+            if type(lazy_recv) is not bool:
+                raise NativeControlError('native-control-stage-lazy-recv-invalid')
+            command['lazy_recv'] = lazy_recv
+        if decode_merge is not None:
+            if not _step_switch('FLASH_S5_DECODE_MERGE'):
+                raise NativeControlError('native-control-stage-decode-merge-not-installed')
+            if decode_merge not in ('off', 'chunk', 'always', 'off-small'):  # decode-merge probe: + off-small
+                raise NativeControlError('native-control-stage-decode-merge-invalid')
+            command['decode_merge'] = decode_merge
+        if inwait is not None:
+            if not _step_switch('FLASH_S5_INWAIT'):
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(inwait) is not bool:
+                raise NativeControlError('native-control-stage-inwait-invalid')
+            command['inwait'] = inwait
+        if early_successor is not None:
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(early_successor) is not bool:
+                raise NativeControlError('native-control-stage-early-successor-invalid')
+            command['early_successor'] = early_successor
+        if exact_successor is not None:
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(exact_successor) is not bool:
+                raise NativeControlError('native-control-stage-exact-successor-invalid')
+            command['exact_successor'] = exact_successor
+        if chunk_bound is not _NOT_SENT:
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            command['chunk_bound'] = chunk_bound
+        if native_hold is not _NOT_SENT:
+            # decode-phase hold: seconds, per arm; 0 is today's behaviour.
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(native_hold) is not int or native_hold < 0:
+                raise NativeControlError('native-control-stage-native-hold-invalid')
+            command['native_hold'] = native_hold
+        if native_residue is not _NOT_SENT:
+            # coverage-residue: 0 or 1, per arm; acts only with the hold.
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(native_residue) is not int or native_residue not in (0, 1):
+                raise NativeControlError('native-control-stage-native-residue-invalid')
+            command['native_residue'] = native_residue
+        if terminal_successor is not _NOT_SENT:
+            # parity-2 A: per arm, a bool; needs the exact successor on the same command (the engine refuses it otherwise).
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(terminal_successor) is not bool:
+                raise NativeControlError('native-control-stage-terminal-successor-invalid')
+            command['terminal_successor'] = terminal_successor
+        if o3_split is not _NOT_SENT:
+            # lane-o3: per arm, a bool; installed by FLASH_S5_O3=1 for the whole run (the workers' handback classification).
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if os.environ.get('FLASH_S5_O3', '0') != '1':
+                raise NativeControlError('native-control-stage-o3-not-installed')
+            if type(o3_split) is not bool:
+                raise NativeControlError('native-control-stage-o3-split-invalid')
+            command['o3_split'] = o3_split
+        if ahead_nosync is not _NOT_SENT:
+            # parity-ahead: per arm, a bool; installed by FLASH_S5_AHEAD_NOSYNC=1 (the engine refuses it otherwise).
+            if os.environ.get('FLASH_S5_AHEAD_NOSYNC', '0') != '1':
+                raise NativeControlError('native-control-stage-ahead-nosync-not-installed')
+            if type(ahead_nosync) is not bool:
+                raise NativeControlError('native-control-stage-ahead-nosync-invalid')
+            command['ahead_nosync'] = ahead_nosync
+        if k2_settle is not _NOT_SENT:
+            # lane-o3-fix (c): per arm, a bool; needs inwait (the engine refuses it otherwise).
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(k2_settle) is not bool:
+                raise NativeControlError('native-control-stage-k2-settle-invalid')
+            command['k2_settle'] = k2_settle
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call(command)
+        if reply.get('local') is not local or reply.get('overlap') is not overlap:
+            raise NativeControlError('native-control-stage-overlap-not-set')
+        if defer_bind is not None and reply.get('defer_bind') is not defer_bind:
+            raise NativeControlError('native-control-stage-overlap-defer-bind-not-set')
+        if lazy_recv is not None and reply.get('lazy_recv') is not lazy_recv:
+            raise NativeControlError('native-control-stage-lazy-recv-not-set')
+        if decode_merge is not None and reply.get('decode_merge') != decode_merge:
+            raise NativeControlError('native-control-stage-decode-merge-not-set')
+        if inwait is not None and reply.get('inwait') is not inwait:
+            raise NativeControlError('native-control-stage-inwait-not-set')
+        if early_successor is not None and reply.get('early_successor') is not early_successor:
+            raise NativeControlError('native-control-stage-early-successor-not-set')
+        if chunk_bound is not _NOT_SENT and reply.get('chunk_bound') != chunk_bound:
+            raise NativeControlError('native-control-stage-chunk-bound-not-set')
+        if native_hold is not _NOT_SENT and reply.get('native_hold') != native_hold:
+            raise NativeControlError('native-control-stage-native-hold-not-set')
+        if native_residue is not _NOT_SENT and reply.get('native_residue') != native_residue:
+            raise NativeControlError('native-control-stage-native-residue-not-set')
+        if exact_successor is not None and reply.get('exact_successor') is not exact_successor:
+            raise NativeControlError('native-control-stage-exact-successor-not-set')
+        if terminal_successor is not _NOT_SENT and reply.get('terminal_successor') is not terminal_successor:
+            raise NativeControlError('native-control-stage-terminal-successor-not-set')
+        if o3_split is not _NOT_SENT and reply.get('o3_split') is not o3_split:
+            raise NativeControlError('native-control-stage-o3-split-not-set')
+        if ahead_nosync is not _NOT_SENT and reply.get('ahead_nosync') is not ahead_nosync:
+            raise NativeControlError('native-control-stage-ahead-nosync-not-set')
+        if k2_settle is not _NOT_SENT and reply.get('k2_settle') is not k2_settle:
+            raise NativeControlError('native-control-stage-k2-settle-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------
@@ -377,7 +621,7 @@ class NativeControlClient:
 
     async def qualification(self, worker_action, payload=None):
         """Dispatch the exact qualification action; never supply its verdict."""
-        if worker_action not in QUALIFICATION_ACTIONS:
+        if worker_action not in QUALIFICATION_ACTIONS and worker_action not in attn_meta_actions():
             raise NativeControlError('native-control-qualification-action-unknown')
         if payload is not None and type(payload) is not dict:
             raise NativeControlError('native-control-qualification-payload-invalid')
@@ -434,6 +678,7 @@ class NativeControlClient:
         raise NativeControlError('native-control-action-not-exposed')
 
 
-__all__ = ['ACTIONS', 'ADMISSION_PHASES', 'INTENT_ACTIONS', 'NATIVE_ADMISSION_PHASES',
+__all__ = ['ACTIONS', 'ADMISSION_PHASES', 'ATTN_META_ACTIONS', 'INTENT_ACTIONS', 'NATIVE_ADMISSION_PHASES',
+           'attn_meta_actions',
            'NativeControlClient', 'NativeControlError', 'QUALIFICATION_ACTIONS',
            'READ_ACTIONS', 'UTILITY']

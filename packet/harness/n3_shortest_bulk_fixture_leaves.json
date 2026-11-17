@@ -1,0 +1,27 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Isolated lever4 bulk picker, frozen 7dfa111c base; CPU selection only, not integrated controller admission or GPU evidence",
+ "inherits": [
+  "append_yield_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "auto-policy-scheduler-fields",
+   "test": "test_n3_shortest_bulk.Picker",
+   "replaces": "Served EngineCore and vLLM FCFS Scheduler/Request/queue plus KV prefix manager",
+   "equivalence": "Uses test_compose5_declines.Stage unchanged for policy fields, with real AutoArmPolicy._select/_plan, staged_chunk_plan, residue_hit, and PrefillAdmissionController._queue/_waiting_object. Requests carry pinned Request.arrival_time wall-clock floats (request.py:96); FCFS queues iterate in their existing order. Only cache lookup returns numeric frontiers, allocator free-block count and aligned splits are leaves; the junction-probe regression instead uses the exact pinned stock split from test_coverage_residue.SPLIT and asserts all three candidate Request objects, including the original head remain unchanged. All plan eligibility, rejected/cohort gates and ranking execute real runtime code. Lookup identity/order is recorded to catch duplicate work. The admission membership/permits seam is exercised, but main's nonhead admission adapter is intentionally not fabricated in this isolated branch.",
+   "cannot_prove": "Full scheduler admission of a selected nonhead before main's adapter lands, live prefix lifetime/ownership, actual lookup latency, CUDA or memory behavior, throughput gain",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "wall-clock-and-existing-journal",
+   "test": "test_n3_shortest_bulk.Picker",
+   "replaces": "Request age and existing driver's bounded _record journal",
+   "equivalence": "time.time is fixed at an epoch-sized timestamp; the driver monotonic clock differs deliberately, so comparing the two clocks fails. The existing journal sink captures fields without deciding selection. Existing NativeSegmentDriver._record owns the bounded production journal; no new logging route is implemented. Tests assert identity, original position, rows, age classification, caps and cumulative extra lookup counts.",
+   "cannot_prove": "Wall-clock jumps, actual journal retention/serialization cost or real logging overhead",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

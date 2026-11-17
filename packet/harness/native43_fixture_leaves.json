@@ -1,0 +1,73 @@
+{
+  "schema": "native43-fixture-leaves/1",
+  "box_evidence": false,
+  "leaves": [
+    {
+      "name": "generated-attention-device-port",
+      "tests": "test_native43_dense_boundary.DenseBoundaryTests",
+      "replaces": "NativeQsaDevice, CUDA tensors/streams/events, and generated QSA Triton union/attention kernels",
+      "implementation": "Existing test_e3_sparse_history_dma _GeneratedHarness/FakeSparseDevice/FakeTorch/T/FakeKernel; real generated attention, real QsaPrefillOperation, actual SparseSourceHold, planner and profile authorization execute; test_e3_qsa_driver.FakeOperation and test_e3_lane_private.FakeOperation implement boundary_evidence as a no-op, matching the real method with diagnostics disabled in those fixtures",
+      "equivalence": "Host geometry/address/pinned facts, deterministic selected-index values, source row signatures and controlled event readiness exercise copy bounds, original-index preservation, source ownership and consumer retirement; fake timing events return a declared 0.25ms solely to check receipt accounting",
+      "cannot_prove": "CUDA/NCCL/H2D behavior, numerical QSA equality or device elapsed performance. Actual box boundary hashes are a separate mandatory check."
+    },
+    {
+      "name": "four-rank-boundary-geometry-and-device",
+      "tests": "test_native43_dense_boundary.BoundaryStopTests; native43_clock_probe.engine_packet",
+      "replaces": "vLLM request/model/CUDA/PP transport at engine-driver/worker-bridge boundaries",
+      "implementation": "Existing test_e3_r4_worker_bridge.Stack; its real controller, NativeSegmentDriver, four NativeWorkerBridge/LaneDispatcher workers, retained-row close, source leases and typed FULL route ACKs execute; 101200-row cutoff shrunk to the fixture's 4-row committed chunk",
+      "equivalence": "Only row geometry/device/model/transport leaves are synthetic. The all-rank release, existing certified cancel, source/PP retirement, no-next-chunk hold and FULL-ACK ordering are real. A separate real staged_chunk_plan test checks exact production endpoints [98176,99200,100224,101200] for 197270 tokens.",
+      "cannot_prove": "Real allocator/cache pressure, TP/PP transport ordering on devices, or GPU correctness."
+    },
+    {
+      "name": "client-first-network-boundary",
+      "tests": "test_native43_boundary_queue.QueueTests.test_real_cli_exact_queue_args_reach_tokenize_after_real_manifest_validation",
+      "replaces": "The /tokenize HTTP POST via length._post, i.e. e3_native39_w2_length._post, refused at the first network call",
+      "implementation": "Refuse the first real guard._post (patched as length._post, i.e. e3_native39_w2_length._post) after parsing exact queue argv and actual frozen workload/declaration/planner geometry",
+      "equivalence": "The client main, manifest parsing, prompt construction and guard run unchanged through the first network call; no hand-built workload object",
+      "cannot_prove": "Box tokenizer, auth, native-control or request execution. The queue requires the real /tokenize guard and native session.",
+      "seams": [
+        "length._post"
+      ]
+    },
+    {
+      "name": "paired-grade-packets",
+      "tests": "test_native43_boundary_queue.GradeTests",
+      "replaces": "Retained client and worker JSON records",
+      "implementation": "Explicit 24-layer synthetic packets and one-field corruptions",
+      "equivalence": "Exercise exact evidence pairing, missing/duplicate coverage, policy/overrun/prompt mismatch and timing exclusion refusal logic; no model result invented as box evidence",
+      "cannot_prove": "Any engine output, timing or placement."
+    },
+    {
+      "name": "separate-proc-clock-view",
+      "tests": "Packaging exact-container self-run using native43_clock_probe --serve and native43_boundary_clock.prove",
+      "replaces": "Only engine container /proc/sys/kernel/random/boot_id, if natural client and engine views are equal",
+      "implementation": "Packaging may bind a declared alternate UUID fixture read-only at that proc file in the engine CPU container; actual host client remains outside; neither Python clock nor identity readers are patched; real driver status samples CLOCK_MONOTONIC",
+      "equivalence": "Recreates distinct LXC/container boot-id views while preserving kernel monotonic clocks and observed zero time-namespace offsets; actual packet must fall within host send/receive bracket. Identities are retained but never compared for equality.",
+      "cannot_prove": "Arbitrary machines or nonzero clock offsets. This is a CPU fixture only and must not ship into box runtime mounts."
+    },
+    {
+      "name": "real-scheduler-cutoff-with-pending-stop",
+      "tests": "native43_scheduler_tick_probe.py; test_native43_dense_boundary.BoundaryStopTests.test_core_tick_after_cutoff_cannot_admit_a_followup_frame",
+      "replaces": "Previously completed native checkpoint and still-pending worker stop replies; no replacement of the pinned AsyncScheduler.schedule, KV allocator, admission controller or Core bypass hooks in the container probe",
+      "implementation": "Container probe reuses e3_native37_admission_probe.Stack (same declared reduced constructor config, real production 4048/176/1024 scheduler geometry). It projects the checkpoint/retained-request identity and replaces stop plus _drive_stop only at the absent-worker handshake, with an empty owned reply channel. Its queued request is fresh: erroneous next scheduling reserves a real initial 1024-row frame rather than simulating 101200 tokens of model execution. One actual empty scheduler tick precedes the cutoff, then real Core hooks decide each pending-stop tick. Host four-bridge component separately holds real typed cancel replies across a Core scheduling opportunity and executes the real admission entry.",
+      "equivalence": "Exposes the exact None-versus-(None,False) scheduler admission seam. Negative 5c1873a source admits one unexpected frame and dirties real source leases; fixed source admits zero with clean leases. The separate four-bridge test proves certified cancel/FULL ordering without stubbing stop.",
+      "cannot_prove": "Full 100-chunk model computation, GPU execution, or native TP/PP transport. CPU-only, no box evidence."
+    },
+    {
+      "name": "native43-trace-emit-faults-and-client-view",
+      "tests": "test_native43_dense_boundary.BoundaryStopTests.test_clock_proof_accepts_foreign_identity_and_rejects_outside_bracket; DenseBoundaryTests.test_emit_failure_cannot_interrupt_source_release_or_owner_cleanup",
+      "replaces": "clock.view (native43_boundary_clock.view()), the client process's /proc/sys/kernel/random/boot_id and /proc/self/ns/time provenance reads, with a client view that differs from the engine's; qo.json.dumps (json.dumps) for trace-row serialisation; logging.getLogger(qo.__name__).info, patched through qo.logging.getLogger(qo.__name__).info, for trace-row logging. qo.MAX_OUTSTANDING_BUCKETS replaces nothing semantically: the test patches the production constant with its existing value 1 as a no-op context.",
+      "implementation": "clock.view returns client provenance while prove() runs unchanged. The 'json' subtest makes qo.json.dumps raise ValueError; the 'logger' subtest makes the named logger's info raise OSError. The 'elapsed' subtest faults the fake CUDA event's elapsed_time under the existing generated-attention-device-port leaf and uses patch.object(qo, 'MAX_OUTSTANDING_BUCKETS', 1) only as a no-op context.",
+      "equivalence": "view() is provenance only; prove() never compares identities (identity_equality_required False). Serialisation/logger replacements inject faults only: real release, source-hold retirement and owner cleanup execute, and trace_emit_errors is counted. qo.MAX_OUTSTANDING_BUCKETS remains 1 throughout, so no production credit/bucket bound is relaxed.",
+      "cannot_prove": "Real proc views (the packaging separate-container clock split covers those), real logging-handler failure modes, or CUDA elapsed-time behavior. CPU fault injection only; no box evidence.",
+      "box_evidence": false,
+      "seams": [
+        "clock.view",
+        "json.dumps",
+        "MAX_OUTSTANDING_BUCKETS",
+        "logging.getLogger(qo.__name__).info"
+      ],
+      "logger_fault": "logging.getLogger(qo.__name__).info raises OSError at qsa_operation.py:657 (owner-review source reference); this is fault injection only."
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# self-run shim: systemd for two units in $SR/systemd (vllm-flash runs the INSTALLED launcher under the INSTALLED defaults).
+set -u
+S=$SR/systemd; mkdir -p "$S"
+get() { cat "$S/$1.$2" 2>/dev/null || echo "$3"; }
+# active = the unit's process (the launcher exec chain ends in the stub engine) is alive; a dead one reads failed
+st() { local s; s=$(get "$1" active inactive)
+  if [[ $s == active && $1 == vllm-flash ]]; then local p; p=$(get "$1" pid ''); [[ -n $p && -d /proc/$p ]] || { s=failed; echo failed > "$S/$1.active"; }; fi
+  echo "$s"; }
+cmd=${1:-}; shift
+q=0; [[ ${1:-} == -q ]] && { q=1; shift; }
+u=${1:-}
+case $cmd in
+  is-active) s=$(st "$u"); ((q)) || echo "$s"; [[ $s == active ]] ;;
+  is-enabled) s=$(get "$u" enabled disabled); ((q)) || echo "$s"; [[ $s == enabled ]] ;;
+  is-failed) s=$(st "$u"); ((q)) || echo "$s"; [[ $s == failed ]] ;;
+  show) shift; p=; while (($#)); do [[ $1 == -p ]] && p=$2; shift; done
+        case $p in NRestarts) get "$u" nrestarts 0 ;; DropInPaths) echo ;; *) echo ;; esac ;;
+  reset-failed) [[ $(st "$u") == failed ]] && echo inactive > "$S/$u.active"; exit 0 ;;
+  start)
+    [[ $u == vllm-flash ]] || { echo "shim: start $u refused" >&2; exit 1; }
+    L=$R/data/vllm/flash-next-tp4/prod/run-flash-prod.sh
+    sed "s#/data/vllm#$R/data/vllm#g" "$L" > "$S/launcher-run.sh"
+    (
+      unset VLLM_API_KEY   # systemd does not pass the caller's environment to the unit
+      set -a; source "$R/etc/default/vllm-flash"; set +a
+      for v in OVERLAY FLASH_S5_AUTH_ENV_FILE SERVE_AUTH_ENV_FILE MODEL_DIR; do
+        val=${!v:-}; [[ $val == /data/* || $val == /root/* ]] && export "$v=$R$val"
+      done
+      exec setsid bash "$S/launcher-run.sh" > "$S/unit.log" 2>&1 < /dev/null
+    ) &
+    echo $! > "$S/$u.pid"; echo active > "$S/$u.active"; sleep 1; exit 0 ;;
+  stop)
+    [[ $u == vllm-flash ]] || exit 0
+    docker stop qwen-flash-prod > /dev/null 2>&1
+    pid=$(get "$u" pid ''); [[ -n $pid ]] && grep -qa stub_engine.py "/proc/$pid/cmdline" 2>/dev/null && kill "$pid" 
+    echo inactive > "$S/$u.active"; exit 0 ;;
+  *) echo "shim systemctl: $cmd unsupported" >&2; exit 1 ;;
+esac

@@ -25,6 +25,7 @@ The decode row cache is bypassed entirely (the lane never claims rows). The
 QSA attention module gets two additive methods (``_flash_e3_attention_pre``/
 ``_post``) on the D2-composed source, pinned with an exact inverse.
 """
+import os
 import ast
 import hashlib
 import time
@@ -152,6 +153,31 @@ class LayerPhase:
         self.grant = None
 
 
+def _note_indexer_scores(operation, forward_context, attn, num_tokens):
+    """M3 receipt: the sizes of the indexer's FP32 score allocations for this layer.
+
+    Reads the same host-known values the reference's qsa_select_paged_prefill
+    sizes from.  No device work.  A failure is counted, never raised.
+    """
+    try:
+        indexer = attn.indexer
+        if getattr(indexer, 'skip_topk', False):
+            return
+        metadata = forward_context().attn_metadata
+        if isinstance(metadata, list):
+            metadata = metadata[0]
+        compressed = metadata[indexer.compressed_key_cache.prefix]
+        rows = num_tokens - compressed.num_decode_tokens
+        if rows <= 0:
+            return
+        operation.note_indexer_scores(
+            rows, compressed.max_seq_len, indexer.compress_ratio,
+            compressed.block_table.shape[1], indexer.compressed_key_cache.kv_cache.shape[1],
+            int(os.environ.get('VLLM_SPARSE_INDEXER_MAX_LOGITS_MB', '512')))
+    except Exception:
+        operation.stats['indexer_errors'] += 1
+
+
 def _metadata_for(forward_context, attn):
     context = forward_context()
     metadata = getattr(context, 'attn_metadata', None)
@@ -200,6 +226,7 @@ class QsaLayerDriver:
         self.clock = clock
         self.phases = {}
         self.records = []
+        self._fused_grant = None
 
     # -- LaneForward protocol ------------------------------------------------------
     def owns(self, model, layer_idx):
@@ -211,6 +238,8 @@ class QsaLayerDriver:
 
     def run_layer(self, lane, layer_idx):
         phase = self.phases.get(layer_idx)
+        if self._fused_grant is not None:
+            return self._fused(lane, layer_idx)
         if phase is None:
             return self._pre(lane, layer_idx)
         if phase.phase == 'bucket':
@@ -282,6 +311,79 @@ class QsaLayerDriver:
         self.operation.authorize_schedule(grant)
         phase.grant = grant
 
+    # -- Step A: one command per dense QSA layer ----------------------------------
+    def fused_profiles(self, lane, valid_tokens):
+        """This stage's dense schedules, agreed at PREPARE before any collective."""
+        reason = self.operation.fused_refusal()
+        if reason is not None:
+            raise QsaDriverError('fused QSA refused at PREPARE: ' + reason)
+        rows = []
+        for index in range(lane.start_layer, lane.end_layer):
+            if self.owns(lane.model, index):
+                attn = lane.model.layers[index].self_attn
+                rows.append((index, self.operation.fused_shape(
+                    attn.layer_name, valid_tokens, attn.kv_cache.shape[2])))
+        return tuple(rows)
+
+    def arm_fused(self, layer_idx, grant):
+        """The next run_layer on ``layer_idx`` is the whole layer. Enqueues nothing."""
+        if self.phases or self._fused_grant is not None:
+            raise QsaDriverError('a fused layer needs no QSA layer in progress')
+        if grant.query.layer != layer_idx or grant.fused is not True:
+            raise QsaDriverError('fused grant belongs to another layer')
+        self._fused_grant = grant
+
+    def _fused(self, lane, layer_idx):
+        """pre, every bucket and tail in one call; the cursor advances, no pause.
+
+        There is no pending return here: a peer can never accept this command
+        while the other refuses it for credit. Any failure after pre is partial
+        submission, which the dispatcher quarantines.
+        """
+        grant, self._fused_grant = self._fused_grant, None
+        if grant.query.layer != layer_idx:
+            raise QsaDriverError('fused grant belongs to another layer')
+        phases = getattr(self.operation, 'phase_trace', None)
+        if getattr(self.operation, 'prefetch_enabled', False):
+            self.operation.note_prefetch_layer(lane.model.layers[layer_idx].self_attn.layer_name,
+                                               layer_idx, self.operation._prefix_group)
+        if phases is not None and len(phases.fused_layers) < phases.MAX_LAYERS:
+            phases.fused_layers.add(lane.model.layers[layer_idx].self_attn.layer_name)
+        self._pre(lane, layer_idx)
+        phase = self.phases[layer_idx]
+        operation = self.operation
+        while True:
+            try:
+                value = operation.advance_fused()
+            except StopIteration as stop:
+                self.records.append(('attended', layer_idx, stop.value))
+                break
+            except (SparsePlanRefused, SparseFallbackRequired) as exc:
+                self.records.append(('sparse_refusal', layer_idx, exc.refusal.reason,
+                                     exc.refusal.rows, exc.refusal.nbytes))
+                self.abort('sparse_refusal')
+                raise QsaDriverError(
+                    'a fused layer refused its dense route: ' + exc.refusal.reason) from exc
+            if getattr(value, 'qsa_schedule_boundary', False):
+                run = operation._current_run()
+                if value is not run.schedule_boundary or phase.boundary is not None:
+                    raise QsaDriverError('foreign or repeated QSA schedule boundary')
+                phase.boundary = value
+                operation.authorize_schedule(grant)
+                phase.grant = grant
+                self.records.append(('schedule_boundary', layer_idx))
+            elif (getattr(value, 'sparse_selection_pending', False)
+                    or getattr(value, 'sparse_copy_pending', False)):
+                raise QsaDriverError('a fused layer reached a data-dependent sparse wait')
+            else:
+                phase.buckets += 1
+                phase.advances += 1
+                self.records.append(('bucket', layer_idx, phase.buckets))
+        if phase.grant is None:
+            raise QsaDriverError('a fused layer ended without its schedule boundary')
+        phase.phase = 'tail-ready'
+        return self._tail(lane, phase)
+
     # -- phases -------------------------------------------------------------------
     def _pre(self, lane, layer_idx):
         if self.phases:
@@ -302,16 +404,32 @@ class QsaLayerDriver:
             raise QsaDriverError('QSA main K/V cache is not bound')
         operation = self.operation
         operation.begin_layer(attn.layer_name, attn._qsa_host_kv)
-        selected = attn.indexer(state['projected_qk'], inputs['positions'],
-                                attn.topk_indices_buffer[:num_tokens])
+        from lane_chunk import score_under_cap
+        from native_measurement import indexer_phase_scope
+        phases = getattr(operation, 'phase_trace', None)
+        indexing = phases.begin('indexer', operation.device.compute) if phases is not None else None
+        with indexer_phase_scope(phases):
+            selected = score_under_cap(lambda: attn.indexer(state['projected_qk'], inputs['positions'],
+                                                            attn.topk_indices_buffer[:num_tokens]))
+        if phases is not None:
+            phases.end(indexing)
         if tuple(selected.shape) != (num_tokens, attn.indexer.packed_output_width):
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
+        if getattr(operation, 'memory_receipts', False):
+            _note_indexer_scores(operation, self.forward_context, attn, num_tokens)
         from lane_comm import canonical_selection
+        agreeing = phases.begin('canonical_selection', operation.device.compute) if phases is not None else None
         canonical_selection(selected)
+        if phases is not None:
+            phases.end(agreeing)
+        operation.boundary_evidence(selected, selection=True)
         impl = attn.impl
+        storing = phases.begin('kv_producer_update', operation.device.compute) if phases is not None else None
         impl.do_kv_cache_update(attn, state['key'], state['value'], attn.kv_cache,
                                 main.slot_mapping)
         operation.producer_submitted(attn.layer_name, state['key'], state['value'], attn.kv_cache)
+        if phases is not None:
+            phases.end(storing)
         hold = self.source_holds.get(attn.layer_name)
         if hold is not None:
             operation.attach_sparse_source(attn.layer_name, hold)
@@ -402,8 +520,22 @@ class QsaLayerDriver:
     def _tail(self, lane, phase):
         layer = lane.model.layers[phase.layer_idx]
         attn = layer.self_attn
+        self.operation.boundary_evidence(phase.attn_state['attn_output'])
         attn_out = attn._flash_e3_attention_post(phase.attn_state)
         self.operation.end_layer(attn.layer_name)
+        if (getattr(self.operation, 'prefetch_enabled', False)
+                and getattr(phase.grant, 'fused', False) is True):
+            # The last arena consumer precedes intervening model/indexer work on this same native stream.
+            for index in range(phase.layer_idx + 1, lane.end_layer):
+                if self.owns(lane.model, index):
+                    following = lane.model.layers[index].self_attn
+                    group = self.operation._prefix_group
+                    shift = index - phase.layer_idx
+                    hint = (tuple(x + shift for x in group) if group is not None
+                            and group[1] > group[0] and shift % (group[1] - group[0]) == 0 else None)
+                    self.operation.prefetch_next(following.layer_name, index,
+                        getattr(following, '_qsa_stage_arena_bytes', 0), hint)
+                    break
         result = layer._flash_e3_layer_post(phase.hidden, attn_out, phase.injection)
         del self.phases[phase.layer_idx]
         self.records.append(('tail', phase.layer_idx, self.clock() - phase.started_ns))

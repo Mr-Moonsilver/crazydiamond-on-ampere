@@ -1,0 +1,73 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "attn-meta package (q18a-attn-meta) hub CPU tests: the per-arm selector over the typed control, the worker adapter, the box arm, decode arm and grade, the queue texts and the arm loop; no box or GPU evidence. Container-only classes (the GdnBatch and Selector on the real model state, probes a/b/c on CPU in the pinned image) are not leaves: they run the real code in the pinned image (tools/attn_meta_selfrun3.py, attn_meta_selfrun4.py, attn_meta_selfrun5.py); VM records are results/vm<vm-id>/attn-meta-vm-*.",
+ "inherits": [
+  "alpha_next_c1_queue_fixture_leaves.json",
+  "stage_overlap_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "counting-batch",
+   "test": "test_attn_meta_control",
+   "replaces": "attn_meta_batch.GdnBatch on each worker runner: a counting stand-in with the same counters() schema (_Batch), and a SimpleNamespace model state holding a real Selector",
+   "equivalence": "The question is the control path (client, driver admission, worker RPC, typed rows) and the Selector's dispatch; the GdnBatch's own equality and counters are proven against stock in the pinned image (test_attn_meta_overlay, test_attn_meta_select Container) and on the VM (attn-meta-vm-b).",
+   "cannot_prove": "That the GdnBatch batches on a real model state; GPU behaviour.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "anatomy-fake-torch",
+   "test": "test_attn_meta_select.Hub",
+   "replaces": "torch.cuda.Event for handler_anatomy.Recorder: a fake torch namespace, so the real Recorder._wrap wraps the Selector on the hub",
+   "equivalence": "The question is whether order() sees anatomy's real wrapper (its closure) over the Selector; the wrapper code is handler_anatomy's own.",
+   "cannot_prove": "Device timing; the box order (asserted from the startup lines and the per-arm order rows).",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "worker-adapter-reply",
+   "test": "test_attn_meta_box.Release",
+   "replaces": "The qualification worker adapter's HTTP reply (FakeWorkerControl): native_qualification_frontend._result over the driver's census rows, with a rank refusing to select or order not ok on demand",
+   "equivalence": "The reply shape is the adapter's own (_result: schema, action qualification_worker, run_id, command_seq, client_id, engine_epoch, worker_action, worker_reply) over the driver's rows (worker_rank, qualification); the same chain runs for real in test_attn_meta_control.WorkerPath through handle_worker.",
+   "cannot_prove": "HTTP transport and auth (LoopbackControl, unchanged).",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "session-fake-client",
+   "test": "test_attn_meta_box.Release",
+   "replaces": "The session control client (test_alpha_next_c1_queue.FakeClient) answering pause, native_progress, native_qsa_fused, native_layer_group, native_stage_local, release_auto_arm and resume",
+   "equivalence": "c1's leaf (arm-control-fake-client), reused: the question is the order of the controls and where the select lands.",
+   "cannot_prove": "The real control plane (test_attn_meta_control covers the select on the real driver and workers).",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "end-read-client",
+   "test": "test_attn_meta_box.Release.test_end_read_pauses_reads_resumes",
+   "replaces": "NativeRuntimeClient in end_read: a class recording pause and resume",
+   "equivalence": "The question is the order pause, read, resume and the recorded fields.",
+   "cannot_prove": "The real pause barrier.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "attn-meta-blocks",
+   "test": "test_attn_meta_box.Rules, test_attn_meta_box.Grade, test_attn_meta_queue.ArmLoop",
+   "replaces": "Per-arm attn_meta blocks (select replies and end reads with chosen batched counts) and decode-only records with chosen rates, added to c1's synthetic run (its real emitters; size-1 arms with every group counter still, Step B's G1 rule)",
+   "equivalence": "The block shape is what run_arm and run_decode_arm record (select_into, end_read, deltas); the grade under test is the real one (c1's and this package's).",
+   "cannot_prove": "Real counter values; real decode rates.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-stub-box",
+   "test": "test_attn_meta_queue.ArmLoop",
+   "replaces": "e3_attn_meta_box arm and decode-arm in the derived bash body: a stub copying prepared records (STUB_BOX); the check clients are c1's stubs (tap.STUB_CHECKS); docker, systemctl and nvidia-smi are shell stubs",
+   "equivalence": "c1's arm-loop-clients leaf, reused; the grade and read the loop calls are the real e3_attn_meta_box.main.",
+   "cannot_prove": "The real arm traffic.",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

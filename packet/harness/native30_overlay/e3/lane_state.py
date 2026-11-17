@@ -1114,6 +1114,11 @@ class WorkerState:
         return InventoryReport(tuple(entries))
 
 
+def topk_bytes(chunk_tokens):
+    """The private top-k scratch: 1024 rows' worth, or more above 1024 rows (decode-phase dp5); lane_private cuts its view from it."""
+    return max(TOPK_BYTES, chunk_tokens * 2052 * 4)
+
+
 def prefill_scratch_specs(chunk_tokens=1024):
     """Private prefill CPU/GPU metadata buffers, sized for one bounded chunk."""
     _int('chunk_tokens', chunk_tokens, 1)
@@ -1136,7 +1141,7 @@ def prefill_scratch_specs(chunk_tokens=1024):
                     'estimate', reuse_condition='materialize once at PP handoff'),
         ScratchSpec('prefill_hc_injection', 'prefill', 'hc', HC_INJECTION_BYTES, 'estimate',
                     reuse_condition='materialize once at PP handoff'),
-        ScratchSpec('prefill_qsa_topk', 'prefill', 'qsa_scratch', TOPK_BYTES, 'estimate',
+        ScratchSpec('prefill_qsa_topk', 'prefill', 'qsa_scratch', topk_bytes(chunk_tokens), 'estimate',
                     reuse_condition='one active prefill; released after consumer proof'),
         ScratchSpec('prefill_qsa_accum', 'prefill', 'qsa_scratch', QSA_ACCUM_BYTES, 'estimate',
                     reuse_condition='one active prefill; released after consumer proof'),
@@ -1178,7 +1183,7 @@ def estimated_e3_inventory(*, chunk_tokens=1024, graph_split_bytes=GRAPH_POOL_ME
                        HC_HIDDEN_BYTES + HC_BLOCK_OUTPUT_BYTES + HC_INJECTION_BYTES,
                        'estimate', True, 'materialize once at PP handoff'),
         InventoryEntry('prefill_qsa_scratch', 'prefill', 'qsa_scratch',
-                       TOPK_BYTES + QSA_ACCUM_BYTES, 'estimate', True,
+                       topk_bytes(chunk_tokens) + QSA_ACCUM_BYTES, 'estimate', True,
                        'one active prefill; consumer proof before reuse'),
         InventoryEntry('prefill_pp_handoff', 'prefill', 'pp_handoff', PP_HIDDEN_BYTES,
                        'estimate', True, 'send storage released after consumption'),

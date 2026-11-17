@@ -20,8 +20,11 @@ The transforms target the E2-composed ``core/scheduler.py`` and
 unmodified upstream scheduler is refused. No torch/vLLM import is needed here.
 """
 import hashlib
+import json
+import os
 import time
 import weakref
+from itertools import chain, islice
 
 from e3_types import (
     MAX_ACTIVE_PREFILL,
@@ -33,6 +36,7 @@ from e3_types import (
     LaneRole,
     OperationTicket,
     TransactionId,
+    _text,
 )
 
 from async_handoff import LeaseCategory
@@ -103,6 +107,12 @@ def _require_e2(source, digest, path, marker):
 
 _SCHEDULER_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
+    ('''            dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
+        ndec_sched = 0
+''', '''            dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
+        dec_cap = _flash_s5_hooks.decode_merge_cap(self, dec_cap)
+        ndec_sched = 0
+'''),
     ('''                        request.shared_prefix_boundary,
                         hit_diverged,
                     ) = self._get_local_prefix_cache_hit(request)
@@ -226,6 +236,10 @@ _SCHEDULER_FORWARD = (
 
 _SCHEDULER_REVERSE = (
     # (new, old) pairs in forward order; revert walks in reverse.
+    ('''        dec_cap = _flash_s5_hooks.decode_merge_cap(self, dec_cap)
+        ndec_sched = 0
+''', '''        ndec_sched = 0
+'''),
     ('''        return num_waiting + len(self.running) + _flash_s5_hooks.parked_count(self)
 ''', '''        return num_waiting + len(self.running)
 '''),
@@ -364,6 +378,19 @@ _BLOCK_POOL_REVERSE = (
     ('logger = init_logger(__name__)\n\n' + _IMPORT,
      'logger = init_logger(__name__)\n'),
 )
+
+
+def decode_merge_cap(scheduler, dec_cap):
+    """stage1-step L2 (FLASH_S5_DECODE_MERGE, default off): while the engine says so, one batch of all decoders.
+
+    The decoder cap of this step.  Unset (always, with the switch off) the stock value.  Set: no cap on even steps, a
+    cap of zero on odd ones, so an odd cohort stays eligible, waits one step and joins the even one.  An odd step is an
+    empty step: its execute_model still consumes the PP handler's slot, so the sampled-token ring keeps its cadence.
+    Unset again, the parity cap re-forms two cohorts within a step.
+    """
+    if getattr(scheduler, 'flash_s5_decode_merge', False) is not True:
+        return dec_cap
+    return None if scheduler.current_step % 2 == 0 else 0
 
 
 def generate_scheduler(source):
@@ -1197,6 +1224,37 @@ class ParkedPrefill:
 
 
 QSA_STAGE_MIN_ROWS = 64  # pinned qsa.py: _QSA_STAGE_MIN_ROWS; no setting override
+GEOMETRY_TAIL_MAX = QSA_STAGE_MIN_ROWS  # coverage-soak-fix: the most rows a geometry-tail handback hands stock (wire_v1 pins the same)
+
+
+def geometry_tail_rows(scheduler, request, minimum):
+    """coverage-soak-fix (lead, 6 Nov 06:25): r = num_tokens % block when 2 <= r <= minimum, else 0.
+    coverage-throughput build-2 (c) (lead, 6 Nov, option A): with the fine-grained prefix cache on
+    (``mamba_partial_cache_hit`` and an int ``hash_block_size``), the boundary is the prompt's last prefix unit:
+    r = num_tokens % hash_block_size. A block boundary is a unit multiple, so every block tail is still one.
+
+    Stock's split must stop at the last registered boundary (num_tokens - r), so a native turn to num_tokens - 1 would
+    end in a chunk of r - 1 rows, under the staged minimum, and has no plan (soak build-2: all four plan-empty nr turns).
+    The native turn ends at that boundary instead and stock runs the r rows, the prompt's last chunk (stock's split
+    exempts it from alignment). Ending there, the commit registers the state at the last unit as stock's own turn does,
+    so the next turn's hit lands where stock's would (the soak: 48 of 143 appends recomputed a mean 1,960 rows more when
+    the moved stop skipped that unit). 0: the one-row handback. Pure, from stock's own block and unit sizes.
+    """
+    block = getattr(getattr(scheduler, 'cache_config', None), 'block_size', None)
+    n = getattr(request, 'num_tokens', None)
+    if (type(block) is not int or block < 1 or type(n) is not int or type(minimum) is not int
+            or getattr(scheduler, 'use_eagle_block_drop', False)):
+        return 0
+    unit = getattr(scheduler, 'hash_block_size', None)
+    step = unit if (getattr(scheduler, 'mamba_partial_cache_hit', False) is True and type(unit) is int and unit >= 1) else block
+    r = n % step
+    return r if 2 <= r <= min(minimum, GEOMETRY_TAIL_MAX) and n - r > 0 else 0
+
+
+def prompt_end_tail(admission):
+    """The geometry-tail r a terminal admission was planned for: its rows past the native end, 0 for the one-row handback."""
+    left = admission.prompt_end - admission.native_end
+    return left if left > 1 else 0
 MAX_PLAN_REFUSAL_MEMO = 16  # refused-plan receipts kept per controller
 # native39: how long stock work may be held on an armed split route while no
 # native work is in flight before the engine returns FULL on its own (typed
@@ -1205,21 +1263,127 @@ SPLIT_HOLD_BOUND_NS = 30_000_000_000
 SPLIT_HOLD_KINDS = ('fresh', 'positive-frontier', 'running-prefill')
 FURTHEST_BASIS = ('furthest end of any chunk the bounded search accepted, backtracked '
                   'edges included; descriptive, not a certified stock-forced stop')
+# returning-append (Option A): a short held request may run natively between two
+# chunks of a bulk native prefill.  Both bounds are launch settings; absent, no
+# config object exists and every path below is the frozen one.
+YIELD_NO_APPEND_OWNER_ENV = 'FLASH_S5_YIELD_NO_APPEND_OWNER'     # yield-rules Y1, default 0
+YIELD_OWNER_RECEIPT_LIMIT = 4096
+YIELD_WINDOW_ENV = 'FLASH_S5_YIELD_WINDOW'                       # yield-rules Y2, default 0
+YIELD_WINDOW_MAX_APPENDS = 4        # the owner's starvation bound: appends per window, the first included (sim: ~free)
+YIELD_WINDOW_RECEIPT_LIMIT = 4096
+YIELD_WINDOW_GAP_BUCKETS_MS = (100, 250, 500, 1000, 2000)
+# lever-2 per-step brief (14 Nov 2026), FLASH_S5_YIELD_WINDOW_FIX, default 0, needs FLASH_S5_YIELD_WINDOW=1: the window's
+# staged append is re-checked at its begin with the pause auto-arm restores right after (its own PAUSED_ALL bracket
+# refused every staged append on the box: windows == appends in six records); a staged append still not takeable
+# leaves the per-bulk lookup memo once, so the next chunk boundary may take it instead of the bulk's end.
+YIELD_WINDOW_FIX_ENV = 'FLASH_S5_YIELD_WINDOW_FIX'
+_OWN_PAUSE = object()              # sentinel: read the scheduler's own pause state (every caller but the fixed begin)
+# append-pieces lever A (lead 12 Nov 2026): FLASH_S5_APPEND_NO_BLOCK_STOP, default 0.  An append (at most this many prefill
+# rows past the turn's cached start: the table's FLASH_S5_APPEND_YIELD_MAX_NEW) runs a native piece through the next Mamba
+# block boundary instead of stopping there; every other stock stop stays.  Off: _aligned_split and commit are the parent's.
+APPEND_NO_BLOCK_STOP_ENV = 'FLASH_S5_APPEND_NO_BLOCK_STOP'
+APPEND_NO_BLOCK_STOP_MAX_NEW = 8192
+APPEND_PIECES_TURN_LIMIT = 4096         # turn starts kept (one per request in flight; LRU past this)
+APPEND_PIECES_LOG_LIMIT = 4096          # 'flash-s5 append-pieces-fallback' lines per engine, then counted only
+APPEND_PIECES_HIST_MAX = 16             # pieces-per-append histogram: 1..15, then '16+'
+APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
+
+
+class AppendYieldConfig:
+    """Launch-time bounds of the chunk-boundary yield to a short native request.
+
+    ``max_new``: the most new (uncached) prompt tokens a yielded request may
+    prefill natively.  ``per_bulk``: the most yields one bulk request grants.
+    ``handback_steps``: the most engine steps the FULL window waits, on FULL,
+    for the yielded request's one-token handback to be scheduled; then the
+    yield ends and the bulk re-enters (the request is held as without a yield).
+    ``reentry_retries``: the most scheduler passes the re-armed split waits for
+    the bulk's reopen; then the yield ends and the bulk follows the existing
+    refused-admission rule (FULL return, stock tail).  Both are counts of engine
+    steps, never a clock.  ``enabled`` is the typed on/off control
+    (``native_append_yield``); it starts on when the bounds are given at launch.
+    """
+    __slots__ = ('max_new', 'per_bulk', 'handback_steps', 'reentry_retries', 'enabled')
+    FIELDS = ('max_new', 'per_bulk', 'handback_steps', 'reentry_retries')
+
+    def __init__(self, max_new, per_bulk, handback_steps, reentry_retries, *, enabled=True):
+        for name, value in zip(self.FIELDS, (max_new, per_bulk, handback_steps, reentry_retries)):
+            if type(value) is not int or value < 1:
+                raise E3ContractError('append yield %s must be a positive int' % name)
+        if type(enabled) is not bool:
+            raise E3ContractError('append yield enabled must be a bool')
+        self.max_new, self.per_bulk = max_new, per_bulk
+        self.handback_steps, self.reentry_retries = handback_steps, reentry_retries
+        self.enabled = enabled
+
+    @classmethod
+    def from_env(cls, env):
+        """``None`` when no bound is set; all four or none, else refused."""
+        values = [env.get(name) for name in APPEND_YIELD_ENV]
+        if values == [None] * len(APPEND_YIELD_ENV):
+            return None
+        if None in values:
+            raise E3ContractError('append yield needs all four launch bounds or none')
+        parsed = []
+        for name, value in zip(APPEND_YIELD_ENV, values):
+            if type(value) is not str or not value.isdigit() or value != str(int(value)):
+                raise E3ContractError('%s must be a positive decimal int' % name)
+            parsed.append(int(value))
+        return cls(*parsed)
+
+    def record(self):
+        return {'max_new': self.max_new, 'per_bulk': self.per_bulk,
+                'handback_steps': self.handback_steps, 'reentry_retries': self.reentry_retries,
+                'enabled': self.enabled}
 
 
 class _ProjectedPrefillRequest:
     """Read-only view for the stock, CPU-only Mamba split calculation."""
-    __slots__ = ('_request', 'num_computed_tokens')
+    __slots__ = ('_request', 'num_computed_tokens', 'shared_prefix_boundary')
 
-    def __init__(self, request, start):
+    def __init__(self, request, start, *, shared_prefix_boundary=None):
         object.__setattr__(self, '_request', request)
         object.__setattr__(self, 'num_computed_tokens', start)
+        object.__setattr__(self, 'shared_prefix_boundary', getattr(request, 'shared_prefix_boundary', 0)
+                           if shared_prefix_boundary is None else shared_prefix_boundary)
 
     def __getattr__(self, name):
         return getattr(self._request, name)
 
     def __setattr__(self, name, value):
         raise E3ContractError('projected prefill request is read-only')
+
+
+class _ShortTailPrefillRequest:
+    """Read-only view: stock's split sees the prompt's last hash boundary one unit lower.
+
+    a1-trunk build-1d.  A chunk can't cross ``num_prompt_tokens // unit * unit``, so a prompt ending under the staged
+    minimum past it has no native plan.  Below the boundary the stop lands one unit lower and the last chunk crosses
+    the old one, carrying unit + tail rows.  ``num_tokens`` is untouched, so the prefill end stays.
+    """
+    __slots__ = ('_request', 'num_prompt_tokens')
+
+    def __init__(self, request, boundary):
+        object.__setattr__(self, '_request', request)
+        object.__setattr__(self, 'num_prompt_tokens', boundary - 1)
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+    def __setattr__(self, name, value):
+        raise E3ContractError('short tail prefill request is read-only')
+
+
+def native_chunk_cap(chunk_tokens, budget):
+    """A native chunk's row limit. decode-phase dp5: FLASH_S5_CHUNK_TOKENS above 1024 is the limit itself, native only, with stock's
+    budget left at 1024 (stock prefill and decode don't change). At or below 1024, as always: the smaller of the two."""
+    return chunk_tokens if chunk_tokens > 1024 else min(chunk_tokens, budget)
+
+
+def bounded_limit(bound, position, limit):
+    """decode-phase dp6: a chunk starting at or past ``bound[0]`` is limited to ``bound[1]`` rows. ``bound`` None: unchanged."""
+    return limit if bound is None or position < bound[0] else min(limit, bound[1])
 
 
 def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
@@ -1288,6 +1452,232 @@ def _plan_result(plan, trace, queries, exhausted, furthest):
     return plan
 
 
+
+# coverage-residue (6 Nov 2026, the operator's 23:10 rule: the engine takes 100 % of prefill while any decoder is live). Every
+# prefill row is counted where it runs: stock rows from each schedule() output, native rows from each committed chunk. Counts
+# only, never a request UID in the record; cumulative, a reader takes an arm's delta of the status row.
+COVERAGE_SCHEMA = 's5-prefill-coverage/1'
+MAX_COVERAGE_REQUESTS = 4096
+
+
+def _prefill_end(request):
+    """Positions below this are prefill: the prompt, or a resumed request's replayed output (stock's own split bound)."""
+    return max(request.num_prompt_tokens, request.num_tokens - 1)
+
+
+def decoders_live(scheduler, scheduled=None, exclude=()):
+    """Running requests past their prefill, as of the start of this step. ``scheduled``: this step's tokens per request,
+    already added to num_computed_tokens (after_schedule runs after _update_after_schedule)."""
+    scheduled = scheduled or {}
+    live = 0
+    for request in tuple(getattr(scheduler, 'running', ())):
+        uid = request.request_id
+        if uid in exclude:
+            continue
+        before = request.num_computed_tokens - scheduled.get(uid, 0)
+        if before >= _prefill_end(request):
+            live += 1
+    return live
+
+
+class PrefillCoverage:
+    """Prefill rows by path (native, stock) and site, with a decoder live or not. Exact or counted as an error.
+
+    Stock: the scheduled rows of each request below its prefill end, every schedule() output. A request's site is fixed at
+    its first stock row: 'handback' for the row a native turn hands back, else what the auto-arm policy says let stock take
+    it. Native: a committed chunk's rows, live as at its admission, by how the native lane planned it."""
+
+    PATHS = ('native', 'stock')
+
+    def __init__(self):
+        self.rows = {state: {path: {} for path in self.PATHS} for state in ('live', 'idle')}
+        self.requests = {state: {path: {} for path in self.PATHS} for state in ('live', 'idle')}
+        self.steps = 0
+        self.errors = 0
+        self._stock_site = {}        # uid -> site of its stock prefill (bounded, oldest out)
+        self._native_site = {}       # uid -> site of its native prefill (bounded)
+        self._admitted = {}          # transaction -> (live, site) until commit or cancel
+        self._handback = {}          # uid -> weakref of a request whose last row a native turn handed back
+        self._handback_rows = {}     # uid -> stock rows of a handed-back request (bounded): the first is 'handback', any more 'handback-excess'
+        self.native_turns = 0        # native turns that ended in a handback (note_handback): a handback row needs one before it
+        self.handback_max_rows = 0   # the most stock rows any handed-back request ran (cumulative): 1 is the contract
+        self._counted = {}           # (state, path, uid) -> True: a request counted once per bucket (bounded)
+        # coverage-soak-fix: a native turn that ended at the last Mamba block boundary hands stock its r rows ('geometry-tail').
+        self._tail_rows = {}         # uid -> r of its native turn's geometry-tail handback (bounded); absent: the one-row handback
+        self.geometry_turns = 0      # native turns that ended in a geometry-tail handback (not in native_turns)
+        self.geometry_max_r = 0      # the largest r handed back
+        self.geometry_max_rows = 0   # the most stock rows any geometry-tail request ran in its turn: r is the contract
+        self.native_appends = 0      # native turns from a cached prefix (their first admission's start > 0)
+        self.append_history_tokens = 0   # the sum of those starts: the history the soak's RSS law is per token of
+
+    @staticmethod
+    def _bounded(table, key, value):
+        table.pop(key, None)
+        table[key] = value
+        while len(table) > MAX_COVERAGE_REQUESTS:
+            table.pop(next(iter(table)))
+
+    def _add(self, live, path, site, uid, rows):
+        state = 'live' if live else 'idle'
+        bucket = self.rows[state][path]
+        bucket[site] = bucket.get(site, 0) + rows
+        key = (state, path, site, uid)
+        if key not in self._counted:
+            self._bounded(self._counted, key, True)
+            counts = self.requests[state][path]
+            counts[site] = counts.get(site, 0) + 1
+
+    def note_stock(self, scheduler, scheduler_output):
+        try:
+            scheduled = getattr(scheduler_output, 'num_scheduled_tokens', None) or {}
+            requests = getattr(scheduler, 'requests', {})
+            prefill = []
+            for uid, n in scheduled.items():
+                request = requests.get(uid)
+                if request is None or type(n) is not int or n <= 0:
+                    continue
+                before = request.num_computed_tokens - n
+                rows = min(before + n, _prefill_end(request)) - before
+                if rows > 0:
+                    prefill.append((uid, request, rows))
+            self.steps += 1
+            if not prefill:
+                return
+            live = decoders_live(scheduler, scheduled, {uid for uid, _r, _n in prefill}) > 0
+            policy = getattr(getattr(scheduler, '_flash_s5_driver', None), 'auto_arm', None)
+            for uid, request, rows in prefill:
+                site = self._stock_site.get(uid)
+                if site is None:
+                    ref = self._handback.get(uid)
+                    if ref is not None and ref() is request:
+                        site = 'handback'
+                    else:
+                        why = getattr(policy, 'stock_site', None)
+                        site = why(request) if callable(why) else 'no-policy'
+                    self._bounded(self._stock_site, uid, site)
+                if site == 'handback' and uid in self._tail_rows:
+                    # lead, 6 Nov 06:25: a geometry-tail handback is native-served only as the r rows of the request's own native
+                    # turn that ended at the last block boundary, once per turn; any row past them is 'handback-excess'.
+                    tail = self._tail_rows[uid]
+                    before_rows = self._handback_rows.get(uid, 0)
+                    self._bounded(self._handback_rows, uid, before_rows + rows)
+                    self.geometry_max_rows = max(self.geometry_max_rows, before_rows + rows)
+                    first = max(0, min(rows, tail - before_rows))
+                    if first:
+                        self._add(live, 'stock', 'geometry-tail', uid, first)
+                        self._tail_log(request, first, tail, live)
+                    if rows - first:
+                        self._add(live, 'stock', 'handback-excess', uid, rows - first)
+                    continue
+                if site == 'handback':
+                    # lead, 6 Nov: the handback is native-served only as exactly one row of the native turn's own handback;
+                    # any row past the first (a preemption's replay, a longer handback) is a stock row by its own name.
+                    before_rows = self._handback_rows.get(uid, 0)
+                    self._bounded(self._handback_rows, uid, before_rows + rows)
+                    self.handback_max_rows = max(self.handback_max_rows, before_rows + rows)
+                    first = max(0, min(rows, 1 - before_rows))
+                    if first:
+                        self._add(live, 'stock', 'handback', uid, first)
+                    if rows - first:
+                        self._add(live, 'stock', 'handback-excess', uid, rows - first)
+                    continue
+                self._add(live, 'stock', site, uid, rows)
+        except Exception:
+            self.errors += 1
+
+    def note_native_admit(self, scheduler, request, transaction, site):
+        try:
+            uid = request.request_id
+            if site is not None or uid not in self._native_site:
+                self._bounded(self._native_site, uid, site or 'plan')
+            live = decoders_live(scheduler, None, (uid,)) > 0
+            self._admitted[transaction] = (live, self._native_site[uid])
+        except Exception:
+            self.errors += 1
+
+    def note_native_commit(self, transaction):
+        try:
+            entry = self._admitted.pop(transaction, None)
+            if entry is None:
+                self.errors += 1
+                return
+            self._add(entry[0], 'native', entry[1], transaction.request_uid, transaction.chunk_end - transaction.chunk_start)
+        except Exception:
+            self.errors += 1
+
+    def note_native_cancel(self, transaction):
+        self._admitted.pop(transaction, None)       # rows not computed: if stock runs them, stock counts them
+
+    def note_handback(self, request, rows=1, tail=0):
+        """A native turn's terminal commit. ``rows``: the stock rows it leaves; ``tail``: the geometry-tail r the admission
+        planned for (geometry_tail_rows at that admission), 0 for the one-row handback. A geometry-tail turn counts only when
+        rows == tail == num_tokens % block (2..64) as planned; any other mismatch is an error and its rows are excess."""
+        try:
+            uid = request.request_id
+            self._handback_rows.pop(uid, None)       # a new turn's handback starts its own count
+            self._stock_site.pop(uid, None)          # and is named by this turn, not an earlier stock site
+            self._tail_rows.pop(uid, None)
+            if tail and rows == tail and 2 <= tail <= GEOMETRY_TAIL_MAX:
+                self.geometry_turns += 1
+                self.geometry_max_r = max(self.geometry_max_r, tail)
+                self._bounded(self._tail_rows, uid, tail)
+            else:
+                # the one-row handback; a turn that left any other count (a tail not stock's geometry) is one error, and
+                # every row of it past the first is 'handback-excess'
+                if rows != 1:
+                    self.errors += 1
+                self.native_turns += 1
+            self._bounded(self._handback, uid, weakref.ref(request))
+        except Exception:
+            self.errors += 1
+
+    def note_append(self, history):
+        """A native turn's first admission from a cached prefix of ``history`` tokens."""
+        try:
+            if type(history) is int and history > 0:
+                self.native_appends += 1
+                self.append_history_tokens += history
+        except Exception:
+            self.errors += 1
+
+    @staticmethod
+    def _tail_log(request, rows, tail, live):
+        # One line per geometry-tail stock step: its stamp places the decode gap of the step in the client's journal.
+        try:
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 geometry-tail rows=%d r=%d num_tokens=%d live=%d', rows, tail,
+                                    request.num_tokens, int(bool(live)))
+        except Exception:
+            pass
+
+    def record(self):
+        copy = lambda table: {state: {path: dict(sites) for path, sites in paths.items()} for state, paths in table.items()}
+        return dict(schema=COVERAGE_SCHEMA, rows=copy(self.rows), requests=copy(self.requests), steps=self.steps,
+                    errors=self.errors, open_native=len(self._admitted), native_turns=self.native_turns,
+                    handback_max_rows=self.handback_max_rows,
+                    geometry_tail=dict(turns=self.geometry_turns, max_r=self.geometry_max_r, max_rows=self.geometry_max_rows),
+                    native_appends=self.native_appends, append_history_tokens=self.append_history_tokens)
+
+
+def residue_hit(scheduler, request, floor, end=None):
+    """coverage-residue: the cache hit the native lane plans from, and how. (blocks, start, junction, lowered).
+
+    A hit that leaves under ``floor`` rows (the staged minimum) to compute is lowered: the longest hit at most the prompt's
+    last row less ``floor``, from the coordinator's own search, so native computes the rows stock would have, and more. The
+    cost is a1-trunk 1d's and the dup-key fix's: a lower registered state, at most a Mamba block and ``floor`` rows more.
+    Pure: the lookup records nothing (save_new_computed_blocks does, at allocation). ``end``: the native end (coverage-soak-fix:
+    the last block boundary on a geometry tail), else the prompt's last row."""
+    manager = scheduler.kv_cache_manager
+    blocks, start, junction = manager.get_computed_blocks(request)
+    end = request.num_tokens - 1 if end is None else end
+    if type(start) is not int or start <= 0 or end - start >= floor or end - floor < 0:
+        return blocks, start, junction, False
+    found, hit, uncached = manager.coordinator.find_longest_cache_hit(request.block_hashes, end - floor)
+    if type(hit) is not int or hit >= start:
+        return blocks, start, junction, False
+    return manager.create_kv_cache_blocks(found), hit, (hit + uncached if uncached else 0), True
+
+
 class PrefillAdmissionController:
     """Pre-schedule admission, delayed publication and one-token handback.
 
@@ -1333,6 +1723,66 @@ class PrefillAdmissionController:
         self.frontier = frontier
         self.engine_epoch = engine_epoch
         self.chunk_tokens = chunk_tokens
+        self.chunk_bound = None     # decode-phase dp6: (end, rows), per arm, set while paused idle; None is today's plan
+        self.native_hold_s = 0      # decode-phase hold: seconds a natively plannable waiting request stays off stock, per arm; 0 is today's
+        self.native_hold_deferrals = 0
+        self.handback_front = 0
+        # coverage-residue: per arm, set while paused idle with the hold; 0 is the hold build. The counter is always on.
+        self.native_residue = 0
+        flags = {name: os.environ.get(name, '0') for name in
+                 ('FLASH_S5_JUNCTION_YIELD', 'FLASH_S5_BULK_SHORTEST')}
+        if any(value not in ('0', '1') for value in flags.values()):
+            raise E3ContractError('n3 queue-policy switches must be 0 or 1')
+        self.junction_yield = flags['FLASH_S5_JUNCTION_YIELD'] == '1'
+        self.shortest_bulk = flags['FLASH_S5_BULK_SHORTEST'] == '1'
+        # yield-rules Y1 (FLASH_S5_YIELD_NO_APPEND_OWNER, default 0): no junction yield while the lane owner itself has
+        # at most append_yield.max_new rows left; the waiting append starts at the owner's end through the ordinary switch.
+        y1 = os.environ.get(YIELD_NO_APPEND_OWNER_ENV, '0')
+        if y1 not in ('0', '1'):
+            raise E3ContractError(YIELD_NO_APPEND_OWNER_ENV + ' must be 0 or 1')
+        self.yield_no_append_owner = y1 == '1'
+        self.yield_owner_counts = dict(junctions=0, bulks=0, receipts=0, receipts_dropped=0, errors=0)
+        self._yield_owner_seen = None
+        self._yield_owner_bulk = None
+        # yield-rules Y2 (FLASH_S5_YIELD_WINDOW, default 0): a yield window. When a yielded append's handback was served,
+        # the next waiting eligible append (the same FCFS candidate rules and per-candidate gates) runs in the same window
+        # instead of the owner's re-entry; the owner re-enters when none waits, at the bound, or after an unserved
+        # handback. PER_BULK counts windows (the driver's per-bulk count moves only at a window's selection).
+        y2 = os.environ.get(YIELD_WINDOW_ENV, '0')
+        if y2 not in ('0', '1'):
+            raise E3ContractError(YIELD_WINDOW_ENV + ' must be 0 or 1')
+        self.yield_window = y2 == '1'
+        fix = os.environ.get(YIELD_WINDOW_FIX_ENV, '0')
+        if fix not in ('0', '1'):
+            raise E3ContractError(YIELD_WINDOW_FIX_ENV + ' must be 0 or 1')
+        if fix == '1' and not self.yield_window:
+            raise E3ContractError(YIELD_WINDOW_FIX_ENV + '=1 needs ' + YIELD_WINDOW_ENV + '=1')
+        self.yield_window_fix = fix == '1'
+        # begins: staged appends re-checked; own_pause_passed: refused by the scheduler's pause, passed with the restored
+        # one; still_refused: refused either way (next-left); reoffered: memo entries dropped once per request per bulk
+        self.yield_window_fix_counts = dict(begins=0, own_pause_passed=0, still_refused=0, reoffered=0)
+        self.yield_window_max = YIELD_WINDOW_MAX_APPENDS
+        self.yield_window_counts = dict(windows=0, appends=0, reentries_avoided=0, tail_full_handbacks=0,
+                                        per_window={}, ends={}, gap_ms=dict(n=0, total=0.0, max=0.0, buckets={}),
+                                        receipts=0, receipts_dropped=0, errors=0,
+                                        # night-pack fix 5 (receipts only, behaviour as built): why a window ended
+                                        # not-served, staged appends that left before the arm, the gap by handback path
+                                        not_served={}, next_left=0, gap_by_path={})
+        # append-pieces lever A (FLASH_S5_APPEND_NO_BLOCK_STOP, default 0): see _append_block_fused.  Off: nothing below
+        # is read by any path, and the status record has no append_pieces block.
+        nbs = os.environ.get(APPEND_NO_BLOCK_STOP_ENV, '0')
+        if nbs not in ('0', '1'):
+            raise E3ContractError(APPEND_NO_BLOCK_STOP_ENV + ' must be 0 or 1')
+        self.append_no_block_stop = nbs == '1'
+        self.append_pieces = dict(appends=0, pieces=0, fused_pieces=0, stops_skipped=0, stale_states_unpublished=0,
+                                  extra_blocks_unpublished=0, bulk_pieces=0, cold_pieces=0, hist={}, fallbacks={}, log_lines=0,
+                                  log_dropped=0, errors=0)
+        self._append_turns = {}             # uid -> [num_tokens, turn start, pieces committed]; insertion order is LRU
+        self._append_fallback_seen = {}
+        self._yield_receipt_seen = {}
+        self.yield_receipts = dict(written=0, duplicate=0, dropped=0, errors=0, limit=4096)
+        self.residue_totals = dict(junction=0, lowered=0)
+        self.coverage = PrefillCoverage()
         self.minimum_stage_rows = minimum_stage_rows
         self.ranks = ranks
         self.max_active = max_active
@@ -1413,12 +1863,169 @@ class PrefillAdmissionController:
                          num_new_local_computed_tokens=num_new_local_computed_tokens)
         if type(value) is not int or not 0 <= value <= num_new_tokens:
             raise E3ContractError('invalid aligned chunk size')
+        if self.append_no_block_stop:       # append-pieces lever A (FLASH_S5_APPEND_NO_BLOCK_STOP); off: the line above
+            return self._append_block_fused(scheduler, splitter, request, num_new_tokens,
+                                            num_new_local_computed_tokens, value)
         return value
 
-    def _environment_refuses(self, scheduler):
+    # -- append-pieces lever A: no forced block stop on appends ------------------------------------------------------------
+    def _append_turn_start(self, request, position, local):
+        """The turn's cached start for ``request``: known at its first piece (a hit passes it as local rows, a cold turn
+        starts at 0), kept per request so every later plan (successor, re-entry, the next admission) reads the same."""
+        uid = request.request_id
+        turns = self._append_turns
+        entry = turns.get(uid)
+        if local > 0 or position == 0:
+            if entry is None or entry[0] != request.num_tokens or entry[1] != position:
+                if entry is not None:
+                    turns.pop(uid)
+                while len(turns) >= APPEND_PIECES_TURN_LIMIT:
+                    turns.pop(next(iter(turns)))
+                turns[uid] = [request.num_tokens, position, 0]
+            return position
+        if entry is None or entry[0] != request.num_tokens:
+            return None
+        return entry[1]
+
+    def _append_block_fused(self, scheduler, splitter, request, limit, local, size):
+        """Lever A: stock's piece ``size`` from ``position``, run through the block boundary it stopped at, for an append.
+
+        Stock stops a piece that starts inside a Mamba block at the block's end (the next-block stop, the aligned-end
+        floor, the last cacheable block), so the block's slot holds the state after exactly its tokens.  For an append that
+        state is the last full block's: published under retention 0 but never the next turn's hit (the prompt's last hash
+        boundary is; the V1 blocks: 2,016 of 2,016 hits there).  Here the piece instead continues with stock's own next
+        piece from the boundary, so every other stop (the last hash boundary, a shared-prefix junction, the prompt's end,
+        the cap and chunk bound) is stock's, and at most one block boundary lies inside the piece.  The block it leaves
+        holds the state at the piece's start, so commit does not publish it (_append_unpublish_stale).
+
+        Not fused, stock's ``size`` returned: not an append (a cold turn, started at 0, of any length: its block-0 state
+        is kept; or more than APPEND_NO_BLOCK_STOP_MAX_NEW rows past the turn's start), the stop is not a block boundary inside the limit, and the kept stops below (one count and one
+        numbers-only line each per request and position): ``tail-boundary`` (the block boundary is also the prompt's last
+        hash boundary: the next turn's hit), ``junction`` (a shared-prefix junction at or past the block boundary: its stop,
+        or its retained block is the one left; one inside the block before it is passed, as stock's split already stops
+        there when it is a fine-grained stop, and block-floored it is no stop and pins an earlier block), ``no-turn-start``,
+        ``shape`` (no fine-grained Mamba cache, eagle drop, prefill checkpoints, a non-int geometry, a limit of a block or
+        more), ``error`` (any fault).
+        """
+        try:
+            position = request.num_computed_tokens + local
+            start = self._append_turn_start(request, position, local)
+            end = position + size
+            block = getattr(getattr(scheduler, 'cache_config', None), 'block_size', None)
+            if (size < 1 or type(block) is not int or block < 1 or position % block == 0 or end % block
+                    or end != (position // block + 1) * block or end >= position + limit):
+                return size
+            prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
+            if end >= prefill_end:
+                return size
+            if start is None:
+                return self._append_kept(request, position, end, 'no-turn-start', size)
+            if start == 0:                     # a cold turn is not an append: stock's block stops, its block-0 state kept
+                return size
+            if prefill_end - start > APPEND_NO_BLOCK_STOP_MAX_NEW:
+                return size
+            unit = getattr(scheduler, 'hash_block_size', None)
+            if (type(unit) is not int or unit < 1 or block % unit or limit - size >= block
+                    or getattr(scheduler, 'mamba_partial_cache_hit', False) is not True
+                    or getattr(scheduler, 'use_eagle_block_drop', False)
+                    or getattr(scheduler, 'mamba_has_prefill_checkpoint_blocks', False)):
+                return self._append_kept(request, position, end, 'shape', size)
+            if end == request.num_prompt_tokens // unit * unit:
+                return self._append_kept(request, position, end, 'tail-boundary', size)
+            junction = getattr(request, 'shared_prefix_boundary', 0) or 0
+            if type(junction) is not int or junction >= end:     # at or past the boundary: its stop or retention block
+                return self._append_kept(request, position, end, 'junction', size)
+            more = splitter(_ProjectedPrefillRequest(request, end), limit - size)
+            if type(more) is not int or not 0 <= more <= limit - size:
+                raise E3ContractError('invalid aligned chunk size past the block boundary')
+            return size + more
+        except Exception:
+            self.append_pieces['errors'] += 1
+            return self._append_kept(request, None, None, 'error', size)
+
+    def _append_kept(self, request, position, boundary, reason, size):
+        """A block stop lever A keeps: counted and logged once per (request, position, reason); returns stock's size."""
+        try:
+            key = (getattr(request, 'request_id', None), position, reason)
+            seen = self._append_fallback_seen
+            if key in seen:
+                return size
+            while len(seen) >= APPEND_PIECES_TURN_LIMIT:
+                seen.pop(next(iter(seen)))
+            seen[key] = True
+            counts = self.append_pieces
+            counts['fallbacks'][reason] = counts['fallbacks'].get(reason, 0) + 1
+            if counts['log_lines'] >= APPEND_PIECES_LOG_LIMIT:
+                counts['log_dropped'] += 1
+                return size
+            row = dict(reason=reason, position=position, boundary=boundary, rows=size,
+                       prompt_tokens=getattr(request, 'num_prompt_tokens', None),
+                       observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch)
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 append-pieces-fallback %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            counts['log_lines'] += 1
+        except Exception:
+            self.append_pieces['errors'] += 1
+        return size
+
+    def _append_unpublish_stale(self, request, transaction):
+        """Lever A, at commit before cache_blocks: a piece that starts inside Mamba block k and runs past its end left
+        block k holding the state at the piece's start, not after the block's tokens.  Each align-mode Mamba group's
+        cached count moves past k, so cache_blocks never hashes it (a hit there would resume from the wrong state); it is
+        the count cache_blocks itself sets for this end.  Only the hash is withheld: allocation, the copy into block k + 1
+        and stock's later free of block k are unchanged.  Returns True for such a piece.  A stock piece never crosses."""
+        start, end = transaction.chunk_start, transaction.chunk_end
+        block = getattr(getattr(self._scheduler, 'cache_config', None), 'block_size', None)
+        if type(block) is not int or block < 1 or start % block == 0 or (start // block + 1) * block >= end:
+            return False
+        stale = start // block
+        groups = getattr(getattr(self._scheduler.kv_cache_manager, 'coordinator', None), 'single_type_managers', ())
+        uid = request.request_id
+        for group in groups:
+            if getattr(group, 'mamba_cache_mode', None) != 'align':
+                continue
+            counts = group.num_cached_block
+            cached = counts.get(uid, 0)
+            if cached <= stale:
+                counts[uid] = stale + 1
+                self.append_pieces['stale_states_unpublished'] += 1
+                self.append_pieces['extra_blocks_unpublished'] += stale - cached
+        return True
+
+    def _append_note_commit(self, request, transaction, terminal, fused):
+        """Lever A counters, per committed piece: pieces of append turns, fused pieces (stops skipped), and the pieces
+        per append histogram at the turn's terminal piece."""
+        counts = self.append_pieces
+        try:
+            entry = self._append_turns.get(request.request_id)
+            prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
+            if entry is not None and entry[0] == request.num_tokens and entry[1] == 0:
+                counts['cold_pieces'] += 1     # a cold turn (start 0) of any length: not an append, never fused
+                if terminal:
+                    self._append_turns.pop(request.request_id, None)
+                return
+            if entry is None or entry[0] != request.num_tokens or prefill_end - entry[1] > APPEND_NO_BLOCK_STOP_MAX_NEW:
+                counts['bulk_pieces'] += 1
+                if terminal and entry is not None:
+                    self._append_turns.pop(request.request_id, None)
+                return
+            entry[2] += 1
+            counts['pieces'] += 1
+            if fused:
+                counts['fused_pieces'] += 1
+                counts['stops_skipped'] += 1
+            if terminal:
+                key = str(entry[2]) if entry[2] < APPEND_PIECES_HIST_MAX else '%d+' % APPEND_PIECES_HIST_MAX
+                counts['hist'][key] = counts['hist'].get(key, 0) + 1
+                counts['appends'] += 1
+                self._append_turns.pop(request.request_id, None)
+        except Exception:
+            counts['errors'] += 1
+
+    def _environment_refuses(self, scheduler, pause_state=_OWN_PAUSE):
         if getattr(scheduler, 'connector', None) is not None:
             return True
-        pause = getattr(scheduler, '_pause_state', None)
+        pause = getattr(scheduler, '_pause_state', None) if pause_state is _OWN_PAUSE else pause_state
         if pause is not None and getattr(pause, 'name', 'UNPAUSED') != 'UNPAUSED':
             return True
         config = getattr(scheduler, 'vllm_config', None)
@@ -1428,7 +2035,9 @@ class PrefillAdmissionController:
 
     def _request_refuses(self, scheduler, request):
         if getattr(request, 'has_encoder_inputs', False):
-            return True
+            from native_mm import eligible
+            if not eligible(request):
+                return True
         if getattr(request, 'kv_transfer_params', None):
             return True
         blocked = getattr(scheduler, '_is_blocked_waiting_status', None)
@@ -1508,7 +2117,7 @@ class PrefillAdmissionController:
 
     def _plan_key(self, scheduler, request, start, prompt_end, cap):
         owner = getattr(scheduler, '_flash_s5_driver', None)
-        return (start, prompt_end, cap, self.minimum_stage_rows,
+        return (start, prompt_end, cap, self.chunk_bound, self.minimum_stage_rows,
                 getattr(request, 'num_prompt_tokens', None),
                 getattr(request, 'shared_prefix_boundary', None),
                 getattr(owner, 'route_generation', None))
@@ -1570,6 +2179,13 @@ class PrefillAdmissionController:
         self.split_stock_deferrals += 1
         self.split_stock_deferrals_by_kind[kind] += 1
         if self.parked is not None or owner.tx is not None or owner.retained_request() is not None:
+            self._split_hold = None
+            self._split_hold_requests.clear()
+            return
+        # returning-append: a yield owns this split route between the bulk's rows
+        # (closing / append / resume); no idle-hold budget runs while it does.
+        yielding = getattr(owner, 'append_yield_active', None)
+        if callable(yielding) and yielding():
             self._split_hold = None
             self._split_hold_requests.clear()
             return
@@ -1664,6 +2280,427 @@ class PrefillAdmissionController:
             self._refuse(request, reason, **fields)
         return dict(self.last_split_hold_timeout)
 
+    # returning-append: launch-time yield bounds (AppendYieldConfig) or None.
+    append_yield = None
+    yield_stock_deferrals_by_kind = None
+    yield_refusals = None
+    yield_lookups = None
+    _yield_scanning = False
+
+    def note_yield_hold(self, kind):
+        """Count a stock prefill held in a yield's FULL window (no hold clock)."""
+        if self.yield_stock_deferrals_by_kind is None:
+            self.yield_stock_deferrals_by_kind = {name: 0 for name in SPLIT_HOLD_KINDS}
+        self.yield_stock_deferrals_by_kind[kind] += 1
+
+    def _waiting_object(self, scheduler, queue, target):
+        """The queue holding exactly ``target`` (the yield's append or bulk), or None."""
+        if queue.peek_request() is target:
+            return queue, target
+        for candidate in (queue, getattr(scheduler, 'skipped_waiting', None),
+                          getattr(scheduler, 'waiting', None)):
+            if candidate is None or not hasattr(candidate, '__iter__'):
+                continue
+            if any(item is target for item in candidate):
+                return candidate, target
+        return None
+
+    def yield_lookup_timer(self, scheduler):
+        """A read: every prefix lookup through the manager, whoever calls it, counted and timed (box 1: about 0.265 s on a 151k prompt).
+
+        Installed once the first time the driver offers, also with the control off, so an off arm says what stock's own lookups cost.
+        """
+        manager = getattr(scheduler, 'kv_cache_manager', None)
+        real = getattr(manager, 'get_computed_blocks', None)
+        if real is None or getattr(real, 'yield_timed', False):
+            return
+        stats = self.yield_lookups = dict(calls=0, ns=0, max_ns=0, scan_calls=0, scan_ns=0)
+
+        def timed(request):
+            started = time.monotonic_ns()
+            try:
+                return real(request)
+            finally:
+                took = time.monotonic_ns() - started
+                stats['calls'] += 1
+                stats['ns'] += took
+                stats['max_ns'] = max(stats['max_ns'], took)
+                if self._yield_scanning:
+                    stats['scan_calls'] += 1
+                    stats['scan_ns'] += took
+        timed.yield_timed = True
+        manager.get_computed_blocks = timed
+
+    def _yield_refuse(self, reason, *, request=None, hit_end=None, junction=None):
+        """Count every refusal; the candidate logs bounded unique request/bulk causes."""
+        if self.yield_refusals is None:
+            self.yield_refusals = {}
+        self.yield_refusals[reason] = self.yield_refusals.get(reason, 0) + 1
+        if not self.junction_yield or request is None:
+            return
+        self._yield_lookup_receipt(request, reason, hit_end, junction)
+
+    def _yield_quota_receipts(self, scheduler, bulk, used, limit):
+        """Observe at most eight queue entries; a quota stop proves no cache eligibility."""
+        if not self.junction_yield:
+            return
+        try:
+            if type(used) is not int or type(limit) is not int or not 1 <= limit <= used:
+                raise ValueError('invalid observed yield quota')
+            seen = set()
+            queues = (getattr(scheduler, name, ()) or () for name in ('skipped_waiting', 'waiting'))
+            for request in islice(chain.from_iterable(queues), 8):
+                if request is bulk or id(request) in seen:
+                    continue
+                seen.add(id(request))
+                self._yield_lookup_receipt(request, 'quota-active', None, None,
+                                           quota=(bulk.request_id, used, limit))
+        except Exception:
+            self.yield_receipts['errors'] += 1
+
+    def yield_owner_refuses(self, scheduler, bulk, transaction, key):
+        """yield-rules Y1: True while the lane owner has at most ``append_yield.max_new`` rows left past ``transaction``
+        (the newest admitted or retained bulk chunk): no yield at this junction and no candidate lookup.
+
+        Counted once per junction (bulk key, transaction) with at least one other request waiting, with one
+        'flash-s5 n3-yield-owner-refused' receipt; ``bulks`` counts each owner once.  Off, or on any fault (counted),
+        False: today's offer runs.
+        """
+        if not self.yield_no_append_owner:
+            return False
+        try:
+            config = self.append_yield
+            end = self.native_end(scheduler, bulk)
+            frontier = transaction.chunk_end
+            if type(end) is not int or type(frontier) is not int:
+                raise ValueError('owner rows')
+            left = end - frontier
+            if left > config.max_new:
+                return False
+        except Exception:
+            self.yield_owner_counts['errors'] += 1
+            return False
+        mark = (key, transaction.txn_seq)
+        if self._yield_owner_seen == mark:
+            return True
+        try:
+            waiting = sum(1 for name in ('skipped_waiting', 'waiting')
+                          for request in (getattr(scheduler, name, None) or ()) if request is not bulk)
+            if not waiting:
+                return True
+            self._yield_owner_seen = mark
+            self.yield_owner_counts['junctions'] += 1
+            if self._yield_owner_bulk != key:
+                self._yield_owner_bulk = key
+                self.yield_owner_counts['bulks'] += 1
+            if self.yield_owner_counts['receipts'] >= YIELD_OWNER_RECEIPT_LIMIT:
+                self.yield_owner_counts['receipts_dropped'] += 1
+                return True
+            owner = getattr(scheduler, '_flash_s5_driver', None)
+            row = dict(bulk_uid=_text('bulk_uid', bulk.request_id), txn=transaction.txn_seq, frontier=frontier,
+                       native_end=end, rows_left=left, max_new=config.max_new, waiting=waiting,
+                       observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch,
+                       route_generation=getattr(owner, 'route_generation', None))
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 n3-yield-owner-refused %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            self.yield_owner_counts['receipts'] += 1
+        except Exception:
+            self.yield_owner_counts['errors'] += 1
+        return True
+
+    def yield_window_gap(self, gap_ms, path=None):
+        """yield-rules Y2: one in-window append->append gap (the previous append's terminal commit to this append's
+        admission, engine monotonic ms): count, total, max and a bucket; also by the previous handback's path
+        ('o3' kept split, 'full'; night-pack fix 5)."""
+        if path is not None:
+            p = self.yield_window_counts['gap_by_path'].setdefault(str(path), dict(n=0, total=0.0, max=0.0))
+            p['n'] += 1
+            p['total'] = round(p['total'] + gap_ms, 3)
+            p['max'] = round(max(p['max'], gap_ms), 3)
+        g = self.yield_window_counts['gap_ms']
+        g['n'] += 1
+        g['total'] = round(g['total'] + gap_ms, 3)
+        g['max'] = round(max(g['max'], gap_ms), 3)
+        bucket = next(('<%d' % b for b in YIELD_WINDOW_GAP_BUCKETS_MS if gap_ms < b),
+                      '>=%d' % YIELD_WINDOW_GAP_BUCKETS_MS[-1])
+        g['buckets'][bucket] = g['buckets'].get(bucket, 0) + 1
+
+    def yield_window_closed(self, appends, end):
+        """yield-rules Y2: a window closed with ``appends`` admitted appends (0: none ran) and its end reason."""
+        w = self.yield_window_counts
+        if appends >= 1:
+            w['windows'] += 1
+        w['per_window'][str(appends)] = w['per_window'].get(str(appends), 0) + 1
+        w['ends'][end] = w['ends'].get(end, 0) + 1
+
+    def yield_window_not_served(self, why):
+        """night-pack fix 5: a window ended not-served, split by why (unsampled, abort, skip, expiry)."""
+        n = self.yield_window_counts['not_served']
+        n[why] = n.get(why, 0) + 1
+
+    def yield_window_receipt(self, event, **fields):
+        """One bounded 'flash-s5 n3-yield-window' line (no request UID); never raises."""
+        w = self.yield_window_counts
+        try:
+            if w['receipts'] >= YIELD_WINDOW_RECEIPT_LIMIT:
+                w['receipts_dropped'] += 1
+                return
+            row = dict(fields, event=event, observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch)
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 n3-yield-window %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            w['receipts'] += 1
+        except Exception:
+            w['errors'] += 1
+
+    def _yield_lookup_receipt(self, request, reason, hit_end, junction, *, quota=None):
+        try:
+            uid = _text('request_uid', request.request_id)
+            owner = getattr(self._scheduler, '_flash_s5_driver', None)
+            bulk_query = getattr(owner, 'append_yield_bulk_uid', None)
+            bulk = bulk_query() if callable(bulk_query) else None
+            retained_query = getattr(owner, 'retained_request', None)
+            retained = retained_query() if callable(retained_query) else None
+            if bulk is None and retained is not None:
+                bulk = retained.request_uid
+            if bulk is None:
+                policy = getattr(owner, 'auto_arm', None)
+                selected = policy._request() if policy is not None else None
+                bulk = None if selected is None else selected.request_id
+            if quota is not None:
+                bulk = _text('bulk_uid', quota[0])
+            key = (uid, bulk, reason, hit_end, junction)
+            if self._yield_receipt_seen.get(key, lambda: None)() is request:
+                self.yield_receipts['duplicate'] += 1
+                return
+            if self.yield_receipts['written'] >= self.yield_receipts['limit']:
+                self.yield_receipts['dropped'] += 1
+                return
+            self._yield_receipt_seen[key] = weakref.ref(request)
+            while len(self._yield_receipt_seen) > 1024:
+                self._yield_receipt_seen.pop(next(iter(self._yield_receipt_seen)))
+            queue_name = queue_position = None
+            for name in ('skipped_waiting', 'waiting'):
+                for position, item in enumerate(getattr(self._scheduler, name, ()) or ()):
+                    if item is request:
+                        queue_name, queue_position = name, position
+                        break
+                if queue_name is not None:
+                    break
+            row = dict(request_uid=uid, bulk_uid=bulk, reason=reason, hit_end=hit_end,
+                       junction=junction, queue=queue_name, queue_position=queue_position,
+                       basis='effective-residue-hit',
+                       prompt_tokens=request.num_tokens, arrival_wall_s=getattr(request, 'arrival_time', None),
+                       observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch,
+                       route_generation=getattr(owner, 'route_generation', None))
+            if quota is not None:
+                row.update(quota_used=quota[1], quota_limit=quota[2], queue_snapshot_limit=8,
+                           eligibility='not-evaluated', basis='yield-quota-observation')
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 n3-yield-lookup %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            self.yield_receipts['written'] += 1
+        except Exception:
+            self.yield_receipts['errors'] += 1
+
+    def _append_yield_gate(self, scheduler, decode_counts, pause_state=_OWN_PAUSE):
+        """The rules on the engine, before any request is read."""
+        config = self.append_yield
+        if config is None or not config.enabled:
+            return False
+        running = len(getattr(scheduler, 'running', ()))
+        # The append's slot plus the slot auto-arm keeps for the bulk (its re-entry
+        # cohort is at most max_num_running_reqs - 1, as at selection).
+        if running + 2 > getattr(scheduler, 'max_num_running_reqs', 1):
+            self._yield_refuse('slots')
+            return False
+        # The re-entry identity proof needs every cohort size 1..running+1.
+        if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):
+            self._yield_refuse('decode-cover')
+            return False
+        if self._environment_refuses(scheduler, pause_state):
+            self._yield_refuse('environment')
+            return False
+        return True
+
+    def append_yield_still_held(self, scheduler, request, decode_counts=None, pause_state=_OWN_PAUSE):
+        """The drain's re-check: the selected request is still takeable.  No lookup; the admission does its own.
+
+        ``pause_state``: only the fixed window begin (FLASH_S5_YIELD_WINDOW_FIX) passes one, the pause auto-arm restores
+        right after its own PAUSED_ALL bracket; every other caller reads the scheduler's own.
+        """
+        return (self._append_yield_gate(scheduler, decode_counts, pause_state)
+                and self._append_yield_eligible(scheduler, request, getattr(scheduler, 'requests', None)))
+
+    def append_yield_candidate(self, scheduler, bulk, decode_counts=None, exclude=(), seen=None):
+        """The first held request (FCFS) that may run natively between two bulk chunks.
+
+        The same refusals as auto-arm's plan (native_auto_arm._plan) except the
+        bulk-size floor: waiting, nothing computed or generated, no LoRA, pooling,
+        structured output, logprobs or connector; a shared junction needs the
+        opt-in residue/hold path, then at
+        most ``max_new`` new tokens beyond its cached prefix and a complete staged
+        plan.  With ``decode_counts`` (the worker's proven decode cohort sizes) the
+        running set plus every smaller cohort must be proven.  ``exclude``: request
+        ids already refused for this bulk.  ``seen`` (a set the caller keeps): request ids
+        looked up already, skipped and added to.  Read-only: a lookup, never an allocation.
+        """
+        if not self._append_yield_gate(scheduler, decode_counts):
+            return None
+        config = self.append_yield
+        requests = getattr(scheduler, 'requests', None)
+        looked = set()
+        for queue in (getattr(scheduler, 'skipped_waiting', None), getattr(scheduler, 'waiting', None)):
+            if queue is None or not hasattr(queue, '__iter__'):
+                continue
+            for request in list(queue):
+                uid = getattr(request, 'request_id', None)
+                if request is bulk or id(request) in looked or uid in exclude:
+                    continue
+                looked.add(id(request))
+                if seen is not None:
+                    if uid in seen:
+                        continue
+                    seen.add(uid)
+                if self._append_yield_plan(scheduler, request, requests, config) is not None:
+                    return request
+        return None
+
+    def geometry_tail(self, scheduler, request):
+        """coverage-soak-fix: r of a geometry-tail turn (geometry_tail_rows), on only with the residue and the hold; else 0."""
+        hold = self.native_hold_s
+        if self.native_residue != 1 or type(hold) not in (int, float) or hold <= 0 or self.minimum_stage_rows <= 1:
+            return 0
+        return geometry_tail_rows(scheduler, request, self.minimum_stage_rows)
+
+    def native_end(self, scheduler, request):
+        """The last position a native turn computes to: the last block boundary on a geometry tail, else the prompt's last row."""
+        return request.num_tokens - (self.geometry_tail(scheduler, request) or 1)
+
+    def handback_rows(self, scheduler, request):
+        """The stock rows a native turn of ``request`` hands back: r on a geometry tail, else 1."""
+        return self.geometry_tail(scheduler, request) or 1
+
+    def _append_yield_short_tail(self, scheduler, prompt_end):
+        """True when stock's split leaves a last chunk under the staged minimum, at any start.
+
+        Stock must stop at the prompt's last hash boundary, so a chunk can't cross it (box 1: tails of 16 and 58 rows).
+        0 is not short: the boundary is the native end itself, a chunk may end on it.
+        """
+        unit = getattr(scheduler, 'hash_block_size', None)
+        if getattr(scheduler, 'mamba_partial_cache_hit', False) is not True or type(unit) is not int or unit < 1:
+            return False
+        return 0 < prompt_end - 1 - prompt_end // unit * unit < self.minimum_stage_rows
+
+    def plan_view(self, scheduler, request):
+        """The request every staged plan of ``request`` reads: the admission's, and the exact successor's (coverage-throughput).
+
+        a1-trunk 1d: a yield's short request plans over the moved stop; decode-phase hold: every native admission does, as
+        the auto-arm's _plan selected it.  Else the request itself.  One rule, so a plan that admits and a plan that only
+        asks "is the next chunk terminal" can't disagree (soak: the raw view had no plan on a short hash tail, the search
+        ran to its 65,536-query bound on every engine tick, ~250 ms a step, and named a non-terminal successor terminal).
+        """
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        is_append = getattr(owner, 'append_yield_is_append', None)
+        if (callable(is_append) and is_append(request)) or getattr(self, 'native_hold_s', 0):
+            return self._append_yield_split_view(scheduler, request)
+        return request
+
+    def _append_yield_split_view(self, scheduler, request):
+        """The request stock's split reads for a yield's short request: a short tail moves the stop one hash unit back.
+
+        Cost: no partial-tail entry at the old boundary, so this request's next turn resumes one registered state
+        earlier.  Under one unit of prompt there is nothing to move back to; the plan refuses it as before.
+        """
+        prompt_end = request.num_tokens
+        geometry = getattr(self, 'geometry_tail', None)
+        if (callable(geometry) and geometry(scheduler, request)) or not self._append_yield_short_tail(scheduler, prompt_end):
+            return request              # coverage-soak-fix: a geometry tail ends native at the block boundary, no moved stop
+        boundary = prompt_end // scheduler.hash_block_size * scheduler.hash_block_size
+        if boundary < scheduler.hash_block_size:
+            return request
+        return _ShortTailPrefillRequest(request, boundary)
+
+    def _append_yield_eligible(self, scheduler, request, requests):
+        sampling = getattr(request, 'sampling_params', None)
+        if (type(requests) is not dict or requests.get(getattr(request, 'request_id', None)) is not request
+                or getattr(getattr(request, 'status', None), 'name', None) != 'WAITING'
+                or getattr(request, 'num_computed_tokens', None) != 0
+                or getattr(request, 'num_output_tokens', None) != 0
+                or getattr(request, 'num_preemptions', 0) != 0 or getattr(request, 'resumable', False)
+                or getattr(request, 'lora_request', None) is not None
+                or getattr(request, 'pooling_params', None) is not None
+                or getattr(request, 'structured_output_request', None) is not None
+                or getattr(request, 'ec_transfer_params', None)
+                or sampling is None or getattr(sampling, 'prompt_logprobs', None) is not None
+                or getattr(sampling, 'logprobs', None) is not None
+                or self._request_refuses(scheduler, request)):
+            self._yield_refuse('request', request=request)
+            return False
+        try:
+            _text('request_uid', request.request_id)
+        except E3ContractError:
+            self._yield_refuse('request', request=request)
+            return False
+        prompt_end = getattr(request, 'num_tokens', None)
+        if type(prompt_end) is not int or prompt_end < 2:
+            self._yield_refuse('request', request=request)
+            return False
+        return True
+
+    def _append_yield_plan(self, scheduler, request, requests, config):
+        if not self._append_yield_eligible(scheduler, request, requests):
+            return None
+        prompt_end = request.num_tokens
+        manager = scheduler.kv_cache_manager
+        end = self.native_end(scheduler, request)
+        self._yield_scanning = True
+        try:
+            if getattr(self, 'native_residue', 0) == 1:
+                # coverage-throughput: the residue's hit, as admit() takes it (a short hit lowered); pure, like the stock lookup.
+                blocks, start, shared, _ = residue_hit(scheduler, request, self.minimum_stage_rows, end)
+            else:
+                blocks, start, shared = manager.get_computed_blocks(request)
+        finally:
+            self._yield_scanning = False
+        allow_junction = self.junction_yield and self.native_residue == 1 and self.native_hold_s > 0
+        if (type(start) is not int or start < 0
+                or allow_junction and (type(shared) is not int or shared < 0)):
+            self._yield_refuse('invalid-hit', request=request, junction=shared)
+            return None
+        if shared and not allow_junction:
+            self._yield_refuse('shared-junction', request=request, hit_end=start, junction=shared)
+            return None
+        if end - start < 1 or end - start > config.max_new:
+            self._yield_refuse('max-new', request=request, hit_end=start, junction=shared)
+            return None
+        # auto-arm _plan's free-block check: the whole request must fit now.
+        needed = manager.coordinator.get_num_blocks_to_allocate(
+            request_id=request.request_id, num_tokens=prompt_end,
+            new_computed_blocks=blocks.blocks, num_encoder_tokens=0,
+            total_computed_tokens=start, num_local_computed_tokens=start,
+            num_tokens_main_model=prompt_end, apply_admission_cap=True)
+        if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
+            self._yield_refuse('blocks', request=request, hit_end=start, junction=shared)
+            return None
+        cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))   # coverage-throughput: admit()'s cap
+        if cap < 1:
+            self._yield_refuse('cap', request=request, hit_end=start, junction=shared)
+            return None
+        lookup_view = (_ProjectedPrefillRequest(request, request.num_computed_tokens,
+                       shared_prefix_boundary=shared) if allow_junction else request)
+        view = self._append_yield_split_view(scheduler, lookup_view)
+        bound = getattr(self, 'chunk_bound', None)
+        def split(position, limit):
+            limit = bounded_limit(bound, position, limit)       # coverage-throughput: the chunk bound admit() plans with
+            projected = view if position == start else _ProjectedPrefillRequest(view, position)
+            return self._aligned_split(scheduler, projected, limit,
+                                       num_new_local_computed_tokens=start if position == start else 0)
+        plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows, split)
+        if not plan:
+            self._yield_refuse('no-plan', request=request, hit_end=start, junction=shared)
+        elif self.junction_yield:
+            self._yield_lookup_receipt(request, 'planned-junction' if shared else 'planned', start, shared)
+        return plan or None
+
     def _retained_waiting(self, scheduler, queue, retained):
         """The retained request and the queue holding it, wherever it waits.
 
@@ -1687,7 +2724,7 @@ class PrefillAdmissionController:
 
     def native_admission_record(self):
         """Engine-lifetime admission counts and the newest typed refusal."""
-        return {'schema': 's5-native-admission/1',
+        result = {'schema': 's5-native-admission/1',
                 'admitted': self.admitted, 'refused': self.refused,
                 'alloc_failures': self.alloc_failures,
                 'plan_searches': self.plan_searches,
@@ -1706,6 +2743,24 @@ class PrefillAdmissionController:
                                  else dict(self.last_refusal)),
                 'basis': ('engine-lifetime monotonic counts; subtract matching status '
                           'snapshots for a window')}
+        if self.junction_yield or self.shortest_bulk:
+            result['queue_policy'] = dict(junction_yield=self.junction_yield, shortest_bulk=self.shortest_bulk,
+                                          yield_lookup_receipts=dict(self.yield_receipts))
+        if self.yield_no_append_owner:          # yield-rules Y1: present only with the flag on
+            result.setdefault('queue_policy', {})['no_append_owner'] = dict(self.yield_owner_counts)
+        if self.append_no_block_stop:           # append-pieces lever A: present only with the flag on
+            a = self.append_pieces
+            result['append_pieces'] = dict(a, hist=dict(a['hist']), fallbacks=dict(a['fallbacks']),
+                                           max_new=APPEND_NO_BLOCK_STOP_MAX_NEW)
+        if self.yield_window:                   # yield-rules Y2: present only with the flag on
+            w = self.yield_window_counts
+            result.setdefault('queue_policy', {})['yield_window'] = dict(
+                w, max_appends=self.yield_window_max, per_window=dict(w['per_window']), ends=dict(w['ends']),
+                gap_ms=dict(w['gap_ms'], buckets=dict(w['gap_ms']['buckets'])), not_served=dict(w['not_served']),
+                gap_by_path={k: dict(v) for k, v in w['gap_by_path'].items()})
+        if self.yield_window_fix:               # the window-begin fix: present only with its flag on
+            result.setdefault('queue_policy', {})['yield_window_fix'] = dict(self.yield_window_fix_counts)
+        return result
 
     def _next_transaction(self, request, start, chunk_end):
         self.txn_seq += 1
@@ -1771,7 +2826,29 @@ class PrefillAdmissionController:
             if found is None:
                 return None
             queue, request = found
+        else:
+            # returning-append: while a yield runs, only its current target (the
+            # short request, then the bulk's reopen) may be admitted; while the
+            # bulk row is being closed nothing is.
+            target_query = getattr(owner, 'append_yield_target', None)
+            target = target_query() if callable(target_query) else None
+            if target is not None:
+                phase, wanted = target
+                if wanted is None:
+                    return None
+                found = self._waiting_object(scheduler, queue, wanted)
+                if found is None:
+                    owner.append_yield_target_lost(phase)
+                    return None
+                queue, request = found
         policy = getattr(owner, 'auto_arm', None)
+        if (self.shortest_bulk and policy is not None and policy.active and retained is None
+                and (not callable(target_query) or target is None)):
+            selected = policy._request()
+            found = None if selected is None else self._waiting_object(scheduler, queue, selected)
+            if found is None:
+                return None
+            queue, request = found
         if policy is not None and policy.active and not policy.permits(request):
             return None
         if self._request_refuses(scheduler, request):
@@ -1794,16 +2871,31 @@ class PrefillAdmissionController:
             return self._refuse(request, 'resumed-with-output', prompt_tokens=prompt_end,
                                 start=start,
                                 output_tokens=getattr(request, 'num_output_tokens', None))
-        if prompt_end - start <= 1:
+        # coverage-soak-fix: the native end, and the stock rows it leaves (r on a geometry tail, else the one-row handback).
+        tail = self.geometry_tail(scheduler, request)
+        native_end = prompt_end - (tail or 1)
+        if native_end - start <= 0:
             return None
 
         new_computed_blocks = None
         num_new_computed = 0
+        residue_site = None
+        turn_history = 0                # coverage-soak-fix: a turn's first admission, its cached start (the RSS law's history)
         if start == 0:
-            new_computed_blocks, num_new_computed, _ = (
-                manager.get_computed_blocks(request))
-            start = num_new_computed
-            if prompt_end - start <= 1:
+            if self.native_residue:
+                # coverage-residue: the same hit the auto-arm planned from; the junction is the stock split's stop, as stock
+                # sets it at its own lookup, so the chunk ending there publishes the shared prefix's state.
+                new_computed_blocks, num_new_computed, junction, lowered = residue_hit(
+                    scheduler, request, self.minimum_stage_rows, native_end)
+                request.shared_prefix_boundary = junction
+                residue_site = 'lowered' if lowered else ('junction' if junction else 'plan')
+                if self.junction_yield:
+                    self._yield_lookup_receipt(request, 'admission-'+residue_site, num_new_computed, junction)
+            else:
+                new_computed_blocks, num_new_computed, _ = (
+                    manager.get_computed_blocks(request))
+            start = turn_history = num_new_computed
+            if native_end - start <= 0:
                 # Everything except the final token is cached: stock handback,
                 # which only the FULL route can run.  Typed (native39).
                 return self._refuse(request, 'full-prefix-hit', prompt_tokens=prompt_end,
@@ -1811,15 +2903,17 @@ class PrefillAdmissionController:
         budget = getattr(scheduler, 'max_num_scheduled_tokens', None)
         if type(budget) is not int or budget < 1:
             raise E3ContractError('scheduler token budget is not declared')
-        cap = min(self.chunk_tokens, budget)
+        cap = native_chunk_cap(self.chunk_tokens, budget)
         if self.minimum_stage_rows > 1:
+            view = self.plan_view(scheduler, request)
             def projected_split(position, limit):
+                limit = bounded_limit(self.chunk_bound, position, limit)
                 if position == start:
                     return self._aligned_split(
-                        scheduler, request, limit,
+                        scheduler, view, limit,
                         num_new_local_computed_tokens=num_new_computed)
                 return self._aligned_split(
-                    scheduler, _ProjectedPrefillRequest(request, position), limit)
+                    scheduler, _ProjectedPrefillRequest(view, position), limit)
             key = self._plan_key(scheduler, request, start, prompt_end, cap)
             receipt = (None if retained is not None
                        else self._memoised_plan_refusal(request, key))
@@ -1830,7 +2924,7 @@ class PrefillAdmissionController:
                 return self._refuse(request, 'no-staged-plan', memoised=True, **receipt)
             trace = {}
             self.plan_searches += 1
-            plan = staged_chunk_plan(start, prompt_end - 1, cap,
+            plan = staged_chunk_plan(start, native_end, cap,
                                      self.minimum_stage_rows, projected_split,
                                      trace=trace)
             if not plan:
@@ -1840,11 +2934,11 @@ class PrefillAdmissionController:
                     raise E3ContractError('retained native request has no staged chunk plan')
                 furthest = trace.get('furthest_boundary')
                 receipt = {'prompt_tokens': prompt_end, 'start': start,
-                           'native_end': prompt_end - 1, 'cap': cap,
+                           'native_end': native_end, 'cap': cap,
                            'minimum_rows': self.minimum_stage_rows,
                            'furthest_boundary': furthest,
                            'furthest_basis': FURTHEST_BASIS,
-                           'gap': (prompt_end - 1 - furthest
+                           'gap': (native_end - furthest
                                    if type(furthest) is int else None),
                            'queries': trace.get('queries'),
                            'exhausted': trace.get('exhausted'),
@@ -1854,7 +2948,7 @@ class PrefillAdmissionController:
             num_new = plan[0]
         else:
             num_new = self._aligned_split(
-                scheduler, request, min(cap, prompt_end - 1 - start),
+                scheduler, request, bounded_limit(self.chunk_bound, start, min(cap, native_end - start)),
                 num_new_local_computed_tokens=num_new_computed)
         if num_new < 1:
             return self._refuse(request, 'no-aligned-chunk', prompt_tokens=prompt_end,
@@ -1869,6 +2963,10 @@ class PrefillAdmissionController:
         input_ids = tuple(tokens[start:chunk_end])
         if len(input_ids) != num_new or any(type(t) is not int for t in input_ids):
             return self._refuse(request, 'token-ids-invalid')
+        mm_plan = None
+        if getattr(request, 'has_encoder_inputs', False):
+            from native_mm import request_plan
+            mm_plan = request_plan(request)
 
         # A source-backed provider scopes the global manager queues around
         # exactly this allocation; a legacy callable keeps the old contract.
@@ -1927,13 +3025,16 @@ class PrefillAdmissionController:
                         'unpublished_blocks'}
             if type(details) is not dict or set(details) != required:
                 raise E3ContractError('admission metadata is incomplete')
+            mm_fields = ({} if mm_plan is None else
+                         {'mm': mm_plan.chunk(transaction, self._next_state_epoch)})
             record = _wire_admission()(
                 transaction=transaction, prompt_end=prompt_end,
                 state_epoch=self._next_state_epoch, committed_end=start,
                 block_tables=block_tables, slot_mappings=(),
                 new_block_ids_to_zero=details['new_block_ids_to_zero'],
                 cow_pairs=details['cow_pairs'], input_ids=input_ids,
-                ngram_context=details['ngram_context'], sparse_active=False)
+                ngram_context=details['ngram_context'], sparse_active=False,
+                native_end=native_end, **mm_fields)
             self.parked.admission = record
             row_blocks = {b for b in record.flat_blocks() if b > 0}
             if not set(details['new_block_ids_to_zero']) <= row_blocks:
@@ -1960,6 +3061,10 @@ class PrefillAdmissionController:
             unpublished = details['unpublished_blocks']
             if type(unpublished) is not tuple or not set(unpublished) <= set(flat):
                 raise E3ContractError('unpublished pages are outside the source lease')
+            check = getattr(owner, 'append_yield_check_blocks', None)
+            if callable(check):
+                check(request, set(unpublished) | set(details['new_block_ids_to_zero'])
+                      | {pair[1] for pair in record.cow_pairs})
             self.frontier.reserve(transaction, unpublished)
         except BaseException:
             self.parked.failed = True
@@ -1972,6 +3077,11 @@ class PrefillAdmissionController:
         self._split_hold = None
         self._split_hold_requests.clear()
         self.admitted += 1
+        if residue_site in ('junction', 'lowered') and start == num_new_computed:
+            self.residue_totals[residue_site] += 1
+        self.coverage.note_native_admit(scheduler, request, transaction, residue_site)
+        if turn_history:
+            self.coverage.note_append(turn_history)
         return record
 
     # -- driver-facing state ----------------------------------------------
@@ -2112,6 +3222,9 @@ class PrefillAdmissionController:
             # it here means the hold was retired through a foreign path.
             raise E3ContractError('source hold was released without a copy proof')
         manager = self._scheduler.kv_cache_manager
+        if self.append_no_block_stop:       # append-pieces lever A: a fused piece's stale block is not hashed below
+            fused = self._append_unpublish_stale(parked.request, transaction)
+            self._append_note_commit(parked.request, transaction, admission.terminal, fused)
         # Delayed allocation skipped this call; publish exactly once now.
         manager.cache_blocks(parked.request, transaction.chunk_end)
         parked.cache_published = True
@@ -2135,6 +3248,7 @@ class PrefillAdmissionController:
             if parked.capture.release_retained(self._scheduler):
                 self.retained_releases += 1
         parked.request.num_computed_tokens = transaction.chunk_end
+        self.coverage.note_native_commit(transaction)
         self._committed[transaction] = dict(
             committed_end=transaction.chunk_end,
             remaining=admission.remaining_tokens,
@@ -2144,12 +3258,25 @@ class PrefillAdmissionController:
         while len(self._committed) > self.max_history:
             self._committed.pop(next(iter(self._committed)))
         self.parked = None
-        if admission.remaining_tokens == 1:
+        if admission.terminal:
             self._request_identities.pop(transaction.request_uid, None)
         self.commits += 1
         if admission.remaining_tokens > 0:
-            # One-token handback: the pinned waiting branch schedules the rest.
-            parked.queue.prepend_request(parked.request)
+            # One-token handback (coverage-soak-fix: or a geometry tail's r rows): the pinned waiting branch schedules the rest.
+            if admission.terminal:
+                # the class is stock's geometry now (r == num_tokens % block, 2..64), checked against what was planned
+                self.coverage.note_handback(parked.request, admission.remaining_tokens,
+                                            geometry_tail_rows(self._scheduler, parked.request, self.minimum_stage_rows)
+                                            if prompt_end_tail(admission) else 0)
+            queue = parked.queue
+            if admission.terminal and self.native_hold_s and queue is getattr(self._scheduler, 'waiting', None):
+                # decode-phase hold: FCFS serves skipped-waiting first, and the split held every arrival there, so the last
+                # row waited behind them (dnr: 7.2 s median from the last chunk to the first output). Ahead of them now.
+                served = getattr(self._scheduler, 'skipped_waiting', None)
+                if served is not None:
+                    queue = served
+                    self.handback_front += 1
+            queue.prepend_request(parked.request)
         return parked.request
 
     def cancel(self, transaction, *, proof=None, never_submitted=False):
@@ -2200,6 +3327,7 @@ class PrefillAdmissionController:
         self.parked = None
         self._request_identities.pop(transaction.request_uid, None)
         self.cancels += 1
+        self.coverage.note_native_cancel(transaction)
         return parked.request
 
     def _parked_for(self, transaction):
@@ -2279,6 +3407,10 @@ def note_source_owners(scheduler, transaction, lanes, layer_count):
 
 
 def after_schedule(scheduler, scheduler_output):
+    controller = getattr(scheduler, '_flash_s5_admission', None)
+    coverage = getattr(controller, 'coverage', None)
+    if isinstance(coverage, PrefillCoverage):
+        coverage.note_stock(scheduler, scheduler_output)      # counts never raise
     guard = _guard(scheduler)
     if guard is None:
         return None
@@ -2344,7 +3476,22 @@ def defer_stock_prefix_hit(scheduler, computed_blocks, *, request=None):
     if guard is not None and guard.defer_stock_prefix_hit(computed_blocks):
         return True
     # Independent of the lease guard: the applied route decides the hold.
-    return _defer_stock_while_split_armed(scheduler, 'fresh', request)
+    if _defer_stock_while_split_armed(scheduler, 'fresh', request):
+        return True
+    return _native_hold(scheduler, request)
+
+
+def _native_hold(scheduler, request):
+    """decode-phase hold: a waiting request the auto-arm policy can take natively stays in skipped-waiting this step,
+    unallocated, for at most its arm's native_hold_s; stock admits what is behind it. Off (0) on every arm but the lever's."""
+    policy = getattr(getattr(scheduler, '_flash_s5_driver', None), 'auto_arm', None)
+    holds = getattr(policy, 'holds_from_stock', None)
+    if request is None or not callable(holds) or not holds(request):
+        return False
+    controller = getattr(scheduler, '_flash_s5_admission', None)
+    if controller is not None:
+        controller.native_hold_deferrals = getattr(controller, 'native_hold_deferrals', 0) + 1
+    return True
 
 
 def defer_stock_positive_frontier(scheduler, request):
@@ -2357,7 +3504,12 @@ def defer_stock_positive_frontier(scheduler, request):
     every stock step from the terminal commit until the FULL ack, and that
     ack clears the intent (engine_driver ``_drive_route``/transition ack).
     """
-    return _defer_stock_while_split_armed(scheduler, 'positive-frontier', request)
+    if _defer_stock_while_split_armed(scheduler, 'positive-frontier', request):
+        return True
+    # build-2b (lead, 6 Nov): a yielded bulk the re-entry could not plan waits for native here, never continues on stock.
+    policy = getattr(getattr(scheduler, '_flash_s5_driver', None), 'auto_arm', None)
+    holds = getattr(policy, 'holds_frontier_from_stock', None)
+    return bool(request is not None and callable(holds) and holds(request))
 
 
 def defer_stock_running_prefill(scheduler, request):
@@ -2376,7 +3528,20 @@ def _defer_stock_while_split_armed(scheduler, kind, request=None):
     if not isinstance(controller, PrefillAdmissionController):
         raise E3ContractError('scheduler E3 admission controller is invalid')
     # Historical helper name; stock safety is independent of admission policy.
-    if controller._stock_hold_owner(scheduler) is None:
+    split_owner = controller._stock_hold_owner(scheduler)
+    if split_owner is None:
+        # returning-append A1: the yield's FULL window (the append's handback and
+        # the bulk's re-entry) keeps every stock prefill held but that handback.
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        holds = getattr(owner, 'append_yield_holds', None)
+        if not (callable(holds) and holds(request, kind)):
+            return False
+        controller.note_yield_hold(kind)
+        return True
+    # lane-o3: the kept run's one-row handback runs on the split bank beside the decoders (graph_hooks.handback_uniform
+    # classifies that batch decode-shaped); every other stock prefill stays held.
+    permits = getattr(split_owner, 'o3_handback_permits', None)
+    if callable(permits) and permits(request, kind):
         return False
     controller._note_split_hold(scheduler, kind, request)
     return True
@@ -2398,7 +3563,7 @@ __all__ = [
     'SCHEDULER_E2_SHA256', 'SCHEDULER_PATH', 'SCHEDULER_PINNED_SHA256',
     'SchedulerLeases', 'SourceHold', 'after_schedule',
     'before_scheduler_shutdown', 'before_touch', 'block_held',
-    'blocked_deferred', 'defer_request_free', 'defer_stock_positive_frontier',
+    'blocked_deferred', 'decode_merge_cap', 'defer_request_free', 'defer_stock_positive_frontier',
     'defer_stock_prefix_hit', 'defer_stock_running_prefill',
     'flash_s5_admit',
     'generate_block_pool', 'generate_scheduler', 'hold_leased_blocks',

@@ -1,0 +1,24 @@
+{
+  "parent": "75f71897aac4bf0764596c83d6ddbbba4b343301",
+  "paths": [
+    "A\tharness/native39_lifecycle_fixture_leaves.json",
+    "A\tharness/native39_lifecycle_gate.py",
+    "A\tharness/runs/q18a_native39_lifecycle.draft.sh",
+    "A\tharness/runs/q18a_native39_lifecycle_declare.sh",
+    "A\tharness/runs/q18a_native39_lifecycle_settings.sh",
+    "M\tharness/selftest.py",
+    "A\tharness/test_native39_lifecycle_queue.py",
+    "A\ttools/build_native39_lifecycle.py",
+    "A\ttools/native39_lifecycle_bundle_selfrun.py",
+    "A\ttools/native39_lifecycle_cpu_probe.py",
+    "A\ttools/native39_lifecycle_declarations.json",
+    "A\ttools/native39_lifecycle_delivery_record.py",
+    "A\ttools/native39_lifecycle_freeze.py",
+    "A\ttools/native39_lifecycle_precheck_conf.py",
+    "A\ttools/native39_lifecycle_queue_drafts.py",
+    "A\ttools/native39_lifecycle_tools_derive.py"
+  ],
+  "definitions": {
+    "harness/selftest.py": ["module:For#12"]
+  }
+}

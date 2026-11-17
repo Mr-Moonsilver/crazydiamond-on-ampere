@@ -3244,7 +3244,9 @@ PINS = {
 # The existing standalone A+B variant remains accepted for offline fixtures.
 MODEL_RUNNER_AFTER_AB_SHA256 = (
     '1841a6dc838554c9f2df410c5a809f7eed8136b10de517d115b9563c8e598ffa')
-MODEL_RUNNER_PACKAGE_SHA256 = '61aeb2053b423e4278b43bef90bcd582b762a4282777b3425751af19b25c36a9'
+# lane-o3 (7 Nov 2026): was 61aeb2053b423e4278b43bef90bcd582b762a4282777b3425751af19b25c36a9 (reproduced from a HEAD export at
+# this point of make_s5_overlap.build); + graph_hooks' three handback_uniform lines (operation_source.S5_RUNNER_SHA256).
+MODEL_RUNNER_PACKAGE_SHA256 = 'f876a138b106bfb854c158238b2b77551a4226bd18e2c9994c401795ffd92eb3'
 CUDAGRAPH_AFTER_WORKER_SHA256 = '283a654aa858fce0f29b1cbd761685dfee32bc3a02de731305452ddeadafc584'
 ACCEPTED = {
     'v1/worker/gpu/model_runner.py': (

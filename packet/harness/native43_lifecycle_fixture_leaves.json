@@ -1,0 +1,70 @@
+{
+ "leaves": [
+  {
+   "box_evidence": false,
+   "cannot_prove": "The engine's own pause/prepare behaviour after a native disconnect and drained reuse (e3_q18a_lifecycle is a leaf here); typed-ack timing",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): The trunk's double (test_native39_trunk_queue.NativeSession, declared there under the same name) unchanged. The lifecycle region calls only pause and resume (the instruments check's all-rank barrier) and prepare full + resume (PY_HYGIENE with the real NativeRuntimeClient, which checks the typed TransitionAck rows, the full bank and the route); the double answers with the field names those clients read. stuck=True answers prepare with HTTP 409 as the engine refuses a transition it cannot take. Native43 short scope: the region calls the same four actions (pause/resume at both instruments receipts, prepare full + resume in PY_HYGIENE); nothing after the hygiene return calls the session.",
+   "name": "queue-native-session",
+   "replaces": "NativeOverlapSession behind POST /v1/flash_s5_native_overlap (patches/s5_engine/native_overlap_session.py) over engine_driver._status_record, engine_driver.transition_ack_rows and the worker barrier rows (native_overlap_worker)",
+   "test": "test_native43_lifecycle_queue.Tail"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "That docker exec as the queue's user may read a worker's maps on the box (the trunk's first box run measures it before W1)",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): The trunk's leaf of the same name, same semantics: FAKE/maps/<pid> is printed when the id is the current container and the command is exactly `cat /proc/<pid>/maps`; clean maps carry libcuda and libcupti only, the mapped case adds flash_s5_replay_observer.so on one rank. The real e3_native39_trunk_checks instruments check reads only the mapped paths. Native43 short scope: the same instruments check reads the same per-rank maps before and after the block.",
+   "name": "queue-docker-exec-maps",
+   "replaces": "`docker exec <container id> cat /proc/<worker pid>/maps` for each rank's worker process in qwen-flash-prod",
+   "test": "test_native43_lifecycle_queue.Tail"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Mount content hashes of the real overlay (the bundle declaration on the hub)",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): The trunk's Launcher.declared, called unchanged: test_identity_declare.DeclareTests.setUp plus its S5 overlay names, the real setcfg algorithm, the S5 launcher rendered from deploy/run-flash-prod.sh and identity_declare.declare. The lifecycle, trunk and P-c settings files are sourced as they are; the declared env (EXTRA_ENV words included) is what PoolTelemetry and Tail hand to the engine telemetry. Native43 short scope: the native43 lifecycle, Codex dense-arm and native39 lifecycle settings files are sourced as they are; the declared env is what Settings hands to the native43 engine parser (qsa_operation.native_qsa_settings) and what Tail writes as the identity-start capture.",
+   "name": "queue-declare-fixture-tree",
+   "replaces": "The box task tree and S5 overlay mounted by the launcher (file stubs with SHA256SUMS)",
+   "test": "test_native43_lifecycle_queue.Settings, test_native43_lifecycle_queue.Tail"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Engine token counts and metrics content (the w2-length guard measures the counts before row1)",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): health_ok (the queue's own curl line) reads only the status code; the fake pressure2 and partial-tail drivers POST /tokenize once each as their real tools do first and read nothing back; /metrics is not read by the region. Every POST records its Authorization header, so the test sees the bearer the real e3_auth_exec hook, NativeRuntimeClient and the instruments check send. Native43 short scope: only /health (health_ok) and POST /v1/flash_s5_native_overlap are reached; no fake pressure or partial-tail driver exists in this suite, so /tokenize and /v1/chat/completions stay unreached (asserted: 0 calls).",
+   "name": "lifecycle-engine-leaf",
+   "replaces": "The vLLM API server's /health, /metrics and /tokenize on the loopback bind",
+   "test": "test_native43_lifecycle_queue.Tail"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "That docker inspect/exec as the queue user reach the container on the box",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): An executable on PATH answering exactly those argv forms and failing any other. docker logs (no --follow) prints the retained container log so far once with an RFC3339 nanosecond stamp per line and exits, as the json-file driver does: the n-th call prints FAKE/engine.raw.<n> (before the pressure interval, then after it). pp_release_grade lifetime reads only FLASH_PP_LAYOUT / FLASH_POOL_STATS lines from it. Native43 short scope: the short region calls only `docker inspect --format {{.Id}}` and `docker exec <id> cat /proc/<pid>/maps`; no docker logs call exists after the hygiene return (asserted: no docker-logs row).",
+   "name": "lifecycle-docker-cli",
+   "replaces": "The docker CLI for qwen-flash-prod as the lifecycle region uses it: `docker inspect --format '{{.Id}}'`, `docker exec <id> cat /proc/<pid>/maps` and the one-shot `docker logs --timestamps qwen-flash-prod` before and after the pressure interval",
+   "test": "test_native43_lifecycle_queue.Tail"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "docker inspect of the box container; that identity-start passes on the box",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): Q/engine.identity-start.json holds the declared identity from the real launcher render of the settings (lifecycle or, for the negative, trunk): engine_identity.compare passes identity-start only when every identity key of the capture equals the declaration, and the trunk prefix stops the queue before the lifecycle region otherwise. The pool-telemetry record reads only identity.env.FLASH_POOL_STATS from it. Native43 short scope: Q/engine.identity-start.json holds the declared identity from the real launcher render of the native43 lifecycle settings; no pool-telemetry record reads it in this queue.",
+   "name": "lifecycle-identity-capture",
+   "replaces": "engine_identity capture of the running qwen-flash-prod container at identity-start (docker inspect Config.Env -> identity.env) in Q/engine.identity-start.json",
+   "test": "test_native43_lifecycle_queue.Tail"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Anything after the first control call",
+   "equivalence": "Reused unchanged from test_native39_lifecycle_queue (declared there under the same name): A freshly bound and closed loopback port: the real CLI parses the queue's argv, loads and validates the trunk W2 manifest and builds its client; the refused connection is caught by run() as a native-lifetime refusal, which shows the inputs passed. Native43 short scope: the argv lines are byte-identical to the box-run native39 lifecycle draft (asserted).",
+   "name": "lifecycle-refused-port",
+   "replaces": "The engine's loopback API server for the lifecycle CLI's first control call",
+   "test": "test_native43_lifecycle_queue.Workload"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Whether the native43 dense engine completes the 197,270-token reuse within the 180 s read, and whether the reuse grade's per-call bracket proof (e3_native_performance.native_window over native43_boundary_clock.prove, d57ed99; standalone commit 1594bd0) holds for the box CT's engine records: both are box/engine facts outside this leaf (the hub clock split exercises the proof across a CT-vs-container split; the box views decide)",
+   "equivalence": "A record writer at the lifecycle CLI path with the record shape of e3_q18a_lifecycle.run that native35_lifetime_grade (called unchanged by native43_lifecycle_grade) reads: verdict, cancel_grade.verdict, reuse.complete; exit 0 for PASS and 2 for INCONCLUSIVE as the real main() returns. Its PASS record is the shape a completed reuse writes; with FAKE/reuse-incomplete it writes the INCONCLUSIVE record native39 lifecycle held-a run 1 retained on the box (missing native-reuse-incomplete, reuse.complete false). argv is recorded and asserted exactly against the queue line. The real CLI input step is test_native43_lifecycle_queue.Workload; its real certified-close grading is test_e3_native_measurement_clients.ActualCertifiedClosure.",
+   "name": "native43-lifecycle-client",
+   "replaces": "e3_q18a_lifecycle.py (harness/e3_q18a_lifecycle.py run(): one owned native disconnect during a split fresh prefill, typed close and queried reports, drain, then one drained reuse through e3_native_performance.prefill) against the native43 dense engine",
+   "test": "test_native43_lifecycle_queue.Tail"
+  }
+ ],
+ "schema": "fixture-leaves/1",
+ "scope": "test_native43_lifecycle_queue: the native43 lifecycle queue's short lifecycle region and on_exit grade lines under bash, the native43 lifecycle grade over record shapes, the lifecycle CLI's input step and the sourced native43 lifecycle settings with the native43 engine's own policy parser. Every object below stands in for the real engine object named in 'replaces'; everything else in those tests is the queue's own bytes or the real harness tool or engine function."
+}

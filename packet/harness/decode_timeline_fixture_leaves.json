@@ -1,0 +1,41 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "CPU diagnostic proof, not a green-context CUDA or full-model proof",
+  "leaves": [
+    {
+      "name": "generated-worker-with-pinned-order-runner",
+      "tests": "test_decode_timeline.Case",
+      "replaces": "The generated WorkerProc dispatch/reply path is real. RunnerV2.execute_model, model, PP Group/Work and async outputs come from test_stage1_handler_anatomy; its descriptor string is replaced with scheduler_output.descriptor using a real ExecutionDescriptor mirror. SimpleNamespace native controller/split/operation-device fields provide queried route, rank and measured SM metadata (total_sms=82 in the FULL-bank metadata case).",
+      "equivalence": "All four ranks run actual executor_hooks, actual handler_anatomy.Recorder and actual FusedPhaseSpans. Shape and UID facts reach the real logging path. Real graph replay, model math and TP/PP communication are not executed.",
+      "cannot_prove": "CUDA execution, actual GPU metadata values, peer clock correlation or performance."
+    },
+    {
+      "name": "two-stream-device-clock-and-phase-context",
+      "tests": "test_decode_timeline.Case",
+      "replaces": " LeafTorch, Stream, Event.query, Event.elapsed_time and Event.record from test_stage1_handler_anatomy; Port.timing_event, Port.stream_token and Port.query; FusedPhaseSpans operation _current_run and _layers metadata; all_phases constructs the declared recorder event sequence.",
+      "equivalence": "A shared synthetic device clock gives separate compute/copy stream tails. Added Event.record count is zero. Event.synchronize, Stream.synchronize and torch.cuda.synchronize raise on use. gc/weakref asserts that retaining one completed Event never retains a native trace/op, and releases the Event on anchor rotation. Cross-context timing refusal and pending anchors are injected and must remain incomplete, without changing RPC/native behavior. Existing source-completeness rules still run.",
+      "cannot_prove": "Cross-green Event.elapsed_time compatibility, real GPU clock precision, actual DMA overlap or allocator headroom."
+    },
+    {
+      "name": "receipt-and-budget-faults",
+      "tests": "test_decode_timeline.Case; test_decode_timeline.Mutants",
+      "replaces": " emit_receipt_lines capture, False return and OSError injection; actual ReceiptWriter's os.write capture via capture_writer; MAX_FORWARDS, MAX_METADATA, MAX_PHASES and the bytes budget boundary are reduced for cap tests. sys.modules holds source-text mutant modules; os.environ selects the observer per fixture. SHA parent AST fixtures bind db9d358c.",
+      "equivalence": "The real atomic writer/parser checks the new prefix and 3968-byte bound. Sink faults retain original native/RPC results. Mutants exercise offset order, readiness, forward/log budgets and source completeness. No container/box result is fabricated.",
+      "cannot_prove": "Live pipe pressure, CUDA API latency, GPU event memory or observer throughput cost."
+    },
+    {
+      "name": "outside-native-progress-wire-and-local-event-proof",
+      "tests": "test_decode_timeline.OutsideWire and Case.test_outside_*",
+      "replaces": "Two connected CPU halves: test_e3_native_reply_hol.Network supplies Queue-backed broadcast/response rings and a no-model execute leaf for the actual generated collective_rpc, ReplyTransport and generated WorkerProc dispatch. The existing handler Rig separately runs actual OutsideSampler tags through the real generated WorkerProc and recorder on all four ranks, with its declared CPU model/stream/event leaves. EngineSide policy/epoch uses SimpleNamespace. os.environ selects the observer. No CUDA work, stock output or all-rank completion is fabricated.",
+      "equivalence": "Engine sends preserve call order, reply FIFO, original args/results and future._progress=None; the diagnostic tag is popped before dispatch. Four-rank handler tests have no native operation and no native progress header, yet record metadata and each rank's own queried forward-event completion. Event query pending, malformed tag, unsupported cross-green timing, intervening execute and shared log cap are checked. Explicit manual SPLIT capture and manual FULL exclusion are covered.",
+      "cannot_prove": "A complete four-worker Core/model/GPU run, existence of same-SPLIT far strata, cross-green timing compatibility, real sampling overhead, NCCL or GPU timing accuracy."
+    },
+    {
+      "name": "actual-manual-split-route-lease",
+      "tests": "test_decode_timeline.RealManualSplit; Case.test_manual_split_requires_real_current_route_lease; OutsideWire",
+      "replaces": "Uses test_e3_native_overlap idle_stack/core_for four real bridge workers on its declared fake GPU/transport leaves. After the real typed enter_split/leave_split Future settles, the read-only auto policy fact is a SimpleNamespace(manual_owned=True); no auto-policy scheduling or GPU completion is claimed.",
+      "equivalence": "Actual NativeControlClient, generated Core utility, NativeSegmentDriver and all-rank transition produce the actual _control_route dict. The real timeline gate enables on this lease only while split-ready, bound to its current engine epoch and route generation, and disables after the actual FULL return. None/string/wrong owner/intent/stale epoch/stale generation/unready states refuse; the existing wire/reply test uses the real dict vocabulary; a removed-dict-gate mutant is caught.",
+      "cannot_prove": "Device elapsed-time support, actual quiet-SPLIT coverage in a rendered arm, or performance. Existing process-wide diagnostic quotas remain unchanged."
+    }
+  ]
+}

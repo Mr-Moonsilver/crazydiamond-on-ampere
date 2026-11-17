@@ -1,0 +1,19 @@
+# Conf for tools/attn_meta_box_vmc.py (attn-meta run c on the box). KEY=VALUE, no shell. Every @...@ must be filled; a value with @ refuses.
+# The input, built on the hub by tools/attn_meta_vm_input_c.py (unchanged), copied to the box as it is.
+INPUT_DIR=@ABSOLUTE/attn-meta-vm-c-input@
+# sha256 of INPUT_DIR/SHA256SUMS, as printed by the build.
+INPUT_MANIFEST=@64-hex@
+# The q18a-attn-meta bundle that went on the box: its engine sources are compared with the input's engine_bytes.
+BUNDLE_DIR=@ABSOLUTE/q18a-attn-meta-bundle-PIN@
+# sha256 of BUNDLE_DIR/SHA256SUMS (build.json 'manifest').
+BUNDLE_MANIFEST=@64-hex@
+# Exactly one card, an nvidia-smi index: probe c runs on one card.
+GPUS=@one index, e.g. 0@
+# A directory that exists, run-scoped, named by the lead. The record is written to OUT_ROOT/<name> (must not exist yet).
+OUT_ROOT=@ABSOLUTE/run-scoped-dir@
+# The engine image id. The queue's own expected image is sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b.
+IMAGE=@sha256:64-hex@
+# Optional; these are the defaults.
+# ENGINE_UNIT=vllm-flash
+# ENGINE_NAME_RE=vllm|qwen|flash|engine
+# GPU_IDLE_MAX_MIB=512

@@ -384,6 +384,10 @@ class FakeChunk(LaneChunk):
 
 
 class FakeOperation:
+    def boundary_evidence(self, tensor, *, selection=False):
+        # Diagnostic readback leaf: no real device or native43 declaration.
+        return None
+
     """Real driver protocol with one pending bucket then completion."""
 
     def __init__(self, *, pending=1, probe=None):

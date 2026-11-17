@@ -1,0 +1,38 @@
+{
+  "schema": "n3-fused-phases-fixture-leaves/1",
+  "box_evidence": false,
+  "leaves": [
+    {
+      "name": "passive-event-device-port",
+      "tests": "test_n3_fused_phases.BoundsAndScope; IndexerCPU",
+      "replaces": "NativeQsaDevice.timing_event/query and CUDA Event.elapsed_time",
+      "implementation": "Device/Event records stream labels and asserts queries/elapsed reads happen only during emit. Constant0.25ms is a receipt plumbing sentinel, never a GPU timing measurement. Event allocation can raise OSError, endpoints can remain pending, caps are exercised. Real operation sampling and old fused_refusal execute.",
+      "equivalence": "Event count, deferred query/read, caps, incomplete/cancel behavior and exact context reset execute real recorder code. CPU sentinel values only test accounting.",
+      "cannot_prove": "CUDA event allocation bytes, driver overhead or device timing/numerics."
+    },
+    {
+      "name": "real-indexer-host-cpu-kernel-ports",
+      "tests": "test_n3_fused_phases.IndexerCPU; test_n3_indexer_lifetime",
+      "replaces": "_qsa_mqa_paged_prefill_kernel and torch.ops._C topk CUDA kernels via test_n3_indexer_lifetime.Ports",
+      "implementation": "Actual fully pinned generated indexer host functions, real CPU BF16/FP32 tensors and numerical mm/topk ports. ContextVar is the same native_measurement.INDEXER_PHASE_CONTEXT scoped by the driver. Compare all outputs/score bytes/launch geometry and the one-live-score invariant; no GPU initialized.",
+      "equivalence": "Observational hooks do not change numerical operands or order. Actual GPU kernels remain unchanged by AST, but CPU ports do not certify GPU numerical equality.",
+      "cannot_prove": "Actual CUDA numerical results, concurrent streams or GPU allocator headroom."
+    },
+    {
+      "name": "real-four-worker-fused-composition",
+      "tests": "test_n3_fused_phases.RealFused",
+      "replaces": "Existing test_e3_native_qsa_fused.FusedNetwork and its declared step_a/submission-credit device/model/TP/PP leaves",
+      "implementation": "Real controller, NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, QsaLayerDriver, QsaPrefillOperation and generated dense staged attention; three buckets. CUDA timing events extend the existing FakeSparseDevice with labeled FakeEvents. Stage1 has the existing NoQsaDriver. Indexer remains its original kernel leaf and deliberately emits NO score/topk markers, so phase receipts must be INCOMPLETE rather than forged complete.",
+      "equivalence": "Same fused command list, copy spans, waits, output plumbing and released source holds off/on; all work can enqueue with no ready device events or host readback. Late release/phase sink exceptions or False returns do not quarantine or strand owners.",
+      "cannot_prove": "Actual device timing/values, TP/PP kernels or GPU memory. Separate actual-indexer-host proof exercises score/topk markers."
+    },
+    {
+      "name": "atomic-receipt-writer-reader",
+      "tests": "test_n3_fused_phases.BoundsAndScope.test_real_atomic_writer_integrity_and_budget",
+      "replaces": "os.write with existing test_alpha_next_receipts.capture_writer capture on a real pipe fd",
+      "implementation": "Real ReceiptWriter, same new JSON prefix, record identity, byte budget and receipt_lines integrity check. Nested emit_receipt_lines interception in other tests captures formatted rows; failure paths raise OSError or return False explicitly.",
+      "equivalence": "End-to-end serializer/prefix/integrity behavior and3968-byte bound execute. Capture avoids writing a log file as engine output.",
+      "cannot_prove": "Box pipe pressure or actual log-reader throughput."
+    }
+  ]
+}

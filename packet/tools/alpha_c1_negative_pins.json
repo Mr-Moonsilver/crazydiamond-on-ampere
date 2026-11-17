@@ -1,0 +1,57 @@
+{
+ "cases": {
+  "alpha-c1-local-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst-slow1": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-serial-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ]
+ },
+ "frozen_record_sha256": "012a79b7942c956588a7fac6d336318c9de7c4421a8de739fc4254e030d6624e",
+ "tests": {
+  "test_alpha_c1_report.RealLines.test_interleaved_rows_return_to_their_chunk": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_overlap'"
+  ],
+  "unittest.loader._FailedTest.test_alpha_c1_box": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_overlap'"
+  ],
+  "unittest.loader._FailedTest.test_alpha_c1_queue": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_overlap'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_overlap": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_overlap'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_overlap_control": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_overlap'"
+  ]
+ }
+}

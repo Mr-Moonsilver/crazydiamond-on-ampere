@@ -1,0 +1,50 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "Opt-in n3 junction yields and exact selected-nonhead admission; CPU only",
+  "inherits": [
+    "append_yield_fixture_leaves.json",
+    "n3_shortest_bulk_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "name": "real-stock-split-and-numeric-prefix-cache",
+      "test": "test_n3_junction_yield.JunctionPlanning",
+      "replaces": "Pinned stock Scheduler with real KVCacheManager block pools and live prefix lookup",
+      "equivalence": "Uses test_coverage_residue.SPLIT extracted from the pinned stock _mamba_block_aligned_split unchanged. Full geometry is block4048/hash176, scheduler token budget1024, nativecap2048/min64. JunctionManager supplies numeric cached4048/junction4576 and blocks.blocks=(); coordinator.get_num_blocks_to_allocate returns outstanding rows, watermark_blocks=0, block_pool.get_num_free_blocks=1000000. Real residue_hit, complete staged_chunk_plan, controller admission, pending/completion/commit and cache publication execute. The lookup changes to4752 before admission to prove relookup. Fixture allocation captures host endpoints only. This standalone SPLIT fixture explicitly sets mamba_fine_grained_prefix_cache=True to cover the optional sub-block checkpoint branch; it exceeds the actual frozen packet flag state False. The generated-package packet probe preserves False and verifies exact main-policy plan [2048,2000,2048,1824] rather than a528-row first chunk.",
+      "cannot_prove": "Device numerical equality of Mamba/QSA state at a 4048-row boundary, live cache eviction/CoW lifetimes, GPU allocation or copy timing",
+      "box_evidence": false
+    },
+    {
+      "name": "four-rank-junction-yield-and-survivor",
+      "test": "test_n3_junction_yield.JunctionYieldReopen",
+      "replaces": "Served four-rank worker/model/CUDA/PP transport and stock sampled handback",
+      "equivalence": "Inherits the real-driver test_append_yield.Rig with typed all-rank close, actual controller, both native/staged drivers, real private row/source lifetime and FULL/split route proofs. Scaled stock geometry block8/hash2/cap4/min1 supplies sharedstop6 and terminal11. Scheduler pause and policy intent are real methods; the selected-nonhead fixture rebinds a real policy request_ref under pause then arms its exact intent, without pretending the FCFS head moved. Stock last-row token and device completion are inherited declared leaves.",
+      "cannot_prove": "GPU collectives, numerical correctness, elapsed times or physical memory use",
+      "box_evidence": false
+    },
+    {
+      "name": "candidate-logging-env-and-mutants",
+      "test": "test_n3_junction_yield",
+      "replaces": "engine_driver._progress_logger, OS environment and controlled runtime methods",
+      "equivalence": "mock.patch.object(ed, _progress_logger) captures bounded info JSON; logging.info raises OSError to prove observational failures never change scheduling. mock.patch.dict(os.environ) tests strict launch flags. Mutants compile inspect.getsource of actual methods into their real module globals and must fail an assertion with zero unrelated errors. _mamba_block_aligned_split returns0 only for no-plan refusal; get_num_free_blocks returns0 only for allocation refusal.",
+      "cannot_prove": "Filesystem logging cost; boxed handler safety beyond logging API; device execution",
+      "box_evidence": false
+    },
+    {
+      "name": "replay-client-first-network-boundary",
+      "test": "test_compose4_request_ids",
+      "replaces": "urllib.request.urlopen real OpenAI SSE server and live wall-clock agent transport",
+      "equivalence": "mock.patch.object(replay.urllib.request, urlopen) returns io.BytesIO scripted SSE data with choices/usage/event.id from the pinned OpenAI shape. stream_turn parses real bytes, validates stable chatcmpl-body IDs and agent_loop records real results. The injected stream/clock/sleep advance deterministic per-turn time; token text draws, salt and prompt construction remain real. Client body request_id is supported by pinned image source as separately hashed in request-id-proof.json; actual engine request IDs append an eight-lowerhex suffix.",
+      "cannot_prove": "A live API server response or GPU model output; request join is required on the box record and incomplete evidence stays HOLD",
+      "box_evidence": false
+    },
+    {
+      "name": "mechanism-reader-file-fixtures",
+      "test": "tools/test_n3_junction_rule.py",
+      "replaces": "A fetched owner box record with real HTTP requests, worker execution, numerics and log writes",
+      "equivalence": "Synthetic arm/status/journal/UID receipt files are written through pathlib and parsed by the actual reader. Real compose5 coverage_windows, o3_numerics, compose4 journal/serving helpers and engine death reader execute. Unrelated queue/startup/ingress phases are represented by the explicit raw PASS-grade fixture; the fixture does not constitute a whole-queue startup proof. Tests alter receipt identities, epoch, counts, flags, raw evidence and thresholds; a real frozen q2024rc6144 helper check independently reproduces34 burst appends and489.88117418898037 agent-seconds.",
+      "cannot_prove": "Real server request IDs, performance effects, hardware numerical equality or isolated shortest-picker causality",
+      "box_evidence": false
+    }
+  ]
+}

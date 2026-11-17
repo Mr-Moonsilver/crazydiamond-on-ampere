@@ -1,0 +1,61 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "alpha-next stop-fix matrix (harness/test_alpha_next_stopfix_matrix.py): fix 1 and fix 2 per driver (stepped, fused, grouped, C0 staged) and the item-1 stop receipts; hub CPU tests; no box or GPU evidence",
+ "inherits": [
+  "alpha_stopfix_fixture_leaves.json",
+  "stage_fixture_leaves.json",
+  "step_b_fixture_leaves.json",
+  "step_a_fixture_leaves.json",
+  "native41_held_g_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "pending-peer-endpoint",
+   "test": "test_alpha_next_stopfix_matrix.FusedGrouped (test_e3_native_layer_groups.PendingPeer)",
+   "replaces": "a TP peer whose lane submission credit refuses a command (typed E3Pending before any enqueue)",
+   "equivalence": "Step B's declared PendingPeer: the peer bridge answers a typed pending SegmentAcceptance for the chosen kind, consuming no op_seq and enqueuing nothing, on the same reply path a credit refusal takes; with defer cleared the real bridge accepts the same command",
+   "cannot_prove": "device-side waiting of the accepted peer in its collective",
+   "box_evidence": false
+  },
+  {
+   "name": "busy-dispatcher",
+   "test": "test_alpha_next_stopfix_matrix.C0Base.busy, SteppedReceipts",
+   "replaces": "the same credit refusal, on the C0 staged network",
+   "equivalence": "as test_e3_stopfix_partial_segment.Base.busy (alpha_stopfix_fixture_leaves.json): the target rank's real dispatcher raises E3Pending for the first n submits of one kind in the first chunk, before calling the real submit",
+   "cannot_prove": "as above",
+   "box_evidence": false
+  },
+  {
+   "name": "fused-latch-at-refused-open",
+   "test": "test_alpha_next_stopfix_matrix.FusedRefusedOpen",
+   "replaces": "a fused chunk whose continuation open the ring refused",
+   "equivalence": "fix 1 acts in NativeSegmentDriver._drive_stop at phase 'open' before any segment exists; the open request's qsa_fused flag never reaches a worker on this path (the open was refused) and the only fused-dependent code the stop reaches is _stop_round's time bound (_fused_stop_round), which runs because _tx_fused is set; the stepped network's QSA-free workers are therefore equivalent for this state",
+   "cannot_prove": "a fused chunk's own refused open on a network with QSA stacks",
+   "box_evidence": false
+  },
+  {
+   "name": "fused-stop-clock",
+   "test": "test_alpha_next_stopfix_matrix.FusedGrouped.test_a_peer_that_never_accepts_stops_at_the_fused_bound_with_its_receipt",
+   "replaces": "wall time elapsing past FusedQsa.stall_s during a fused stop",
+   "equivalence": "_fused_stop_round reads only self.clock() differences against stall_s; a counting clock with stall_s 0 exhausts the bound on the second round, the same branch a real stall reaches",
+   "cannot_prove": "the real stall duration",
+   "box_evidence": false
+  },
+  {
+   "name": "stop-receipt-logger",
+   "test": "test_alpha_next_stopfix_matrix.capture_receipts",
+   "replaces": "vLLM's init_logger behind engine_driver._progress_logger",
+   "equivalence": "the driver writes each stop receipt as one INFO message through _progress_logger(); the capture handler records the formatted message unchanged",
+   "cannot_prove": "the container log path; PLAN section 2's writer and its witness cover that",
+   "box_evidence": false
+  },
+  {
+   "name": "peak-cuda",
+   "test": "test_alpha_next_peak_receipt.PeakReceipt",
+   "replaces": "torch.cuda's caching-allocator counters (memory_stats peak and current, reset_peak_memory_stats, is_initialized) on a worker rank",
+   "equivalence": "a counter object with torch's documented semantics: a peak is the maximum current value since the last reset, and a reset sets the peak to the current value; the bridge reads only these keys and the reset",
+   "cannot_prove": "the real allocator's peak values, the reset's cost on the device thread, or interaction with stock QSA_STAGE_TIMING's own reset beyond the declared stage_timer flag",
+   "box_evidence": false
+  }
+ ]
+}

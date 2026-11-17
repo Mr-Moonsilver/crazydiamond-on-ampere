@@ -1,0 +1,92 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "alpha-next-c1 queue (arm table, budget, arm control (C1 selection and defer_bind), grade with the C1 additions, derived texts, arm loop, post-run report) hub CPU tests; no box or GPU evidence",
+  "inherits": [
+    "alpha_next_queue_fixture_leaves.json",
+    "stage_overlap_fixture_leaves.json",
+    "c1_rebind_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "name": "arm-control-fake-client",
+      "test": "test_alpha_next_c1_queue.ArmControl",
+      "replaces": "The engine control client replies to native_stage_local with and without the overlap field and with the defer_bind field echoed, replaced by another value or absent (FakeClient defer_reply), and the status block with and without stage_overlap and its defer_bind block {installed, selected, counters}",
+      "equivalence": "The question is what the arm does with each reply: forward overlap, record the stage switch, refuse a reply or a status that does not prove the C1 selection. The field names are the engine's (test_alpha_next_c1_queue.Forwarding reads native_overlap_session's forwarding from the source). The defer_bind reply and status shapes are the coordinator's announced API (21:0x: reply defer_bind and previous_defer_bind; status native_stage_local.overlap.defer_bind); the counter names are stage_overlap.py's (deferred_opens, deferred_binds).",
+      "cannot_prove": "The real control plane with an OverlapSegmentDriver installed; that the engine honours the selection; the engine's defer_bind control (not on this branch yet: Forwarding skips its check)",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "c1-emitter-overlap-order",
+      "test": "test_alpha_next_c1_queue.Grade",
+      "replaces": "The engine log of a C1-on arm: alpha-next's emitter (test_alpha_next_queue.AlphaEmit) with a successor opened early, its flushes interleaved, one flash-s5 stage-overlap line per transaction after the stage-local line, memory and memory-peak receipts in the PLAN 2 writer's format; per chunk the flash-s5 overlap-observe lines, formatted by the engine's own stage_overlap.OverlapObserver.lines over synthetic ops: stage-1 STATE_FINALIZE bounds and stage-0 LAYER bounds placed so a C1-defer arm's successors read OVERLAP and a C1-on arm's read NONE (C1Emit.observe)",
+      "equivalence": "The line formats are the engine's (C1Parity reads stage_overlap.py and native_measurement.py). The order (successor open before the predecessor's release, one host command in flight per stage) is the one test_e3_stage_overlap and test_alpha_c1_box prove on the real composition.",
+      "cannot_prove": "Real timing, real memory values, the order under the composition of 382ed704 (lean replies on successors); real device bounds, whether the deferred bind overlaps on the box",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "c1-mutants",
+      "test": "test_alpha_next_c1_queue.Engagement, Tears, InFlight, Oom, Signatures",
+      "replaces": "Engine faults: no early open, two host commands in flight on one stage, a torn overlap line, a lost engine flush on an on-arm, an OOM counter rise, an overlap signature line",
+      "equivalence": "Each mutant edits one line or one stamp of the synthetic log; the grade must name the fault and fail or hold the arm as declared.",
+      "cannot_prove": "That the engine produces these faults in these forms",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "arm-loop-clients",
+      "test": "test_alpha_next_c1_queue.ArmLoop",
+      "replaces": "The arm CLI and the check client in the arm loop (stub box arm, stub checks, fake nvidia-smi/docker/systemctl); the grade and the read are the real e3_alpha_next_c1_box over the synthetic run; one test edits a C1-defer arm's record to an acknowledged defer_bind false (run_loop edit)",
+      "equivalence": "The loop body is the derived draft text, run under real bash with SECONDS jumps for the entry limits and a verbatim engine-death line for the crash path.",
+      "cannot_prove": "Real arm walls; the engine's crash forms beyond the declared death line",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "report-synthetic-run",
+      "test": "test_alpha_next_c1_queue.Report",
+      "replaces": "A box run directory for tools/alpha_next_c1_report.py: the synthetic core run's arm records and engine log",
+      "equivalence": "The report wraps alpha_next_report with the grade's own regroup; the test checks the keys and that a regrouped C1-on chunk holds its own commands.",
+      "cannot_prove": "The report over a real run's log (rotation, compressed parts, real tears)",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "grade-raises-inside",
+      "test": "test_alpha_next_c1_queue (test_the_seams_are_this_call_only)",
+      "replaces": "alpha-next's grade (an.grade) by one that raises RuntimeError('inside'), for one call",
+      "equivalence": "a failure inside the composed grade; the test checks the C1 grade's temporary module seams are restored on the exception path as on the normal one",
+      "cannot_prove": "nothing about the real grade's verdicts; those run unpatched in the same suite",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "defer-bind-record-mutants",
+      "test": "test_alpha_next_c1_queue.DeferBind",
+      "replaces": "Arm records and status views with the defer_bind acknowledgement, the status selection or the installed flag changed, or the record's defer_bind block removed or partial; status delta counters edited for engagement",
+      "equivalence": "Each mutant edits one field the arm writes (box.release_c1, box.stage_view); the grade must refuse the arm as declared (FAIL ENGINE or HARNESS, INC for coverage).",
+      "cannot_prove": "That the engine ever acknowledges another value; the real reply field names until the engine change lands",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "observe-line-edits",
+      "test": "test_alpha_next_c1_queue.Observe",
+      "replaces": "Overlap-observe lines torn (broken JSON), a chunk no arm holds appended, lines re-stamped into another arm's span, a C1-on control placed to read OVERLAP",
+      "equivalence": "The read is c1_overlap_read's own (parse, overlap_read, read_pair), unchanged; the edits test the join by sequence and the counting of lines kept out of the read.",
+      "cannot_prove": "Real tears of long observe lines on the box log; real successor timing",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "numbers-client-basis",
+      "test": "test_alpha_next_c1_queue.Numbers",
+      "replaces": "Three arms' client prefill tok/s edited so live and solo, defer and on differ",
+      "equivalence": "The numbers are read from the grade's own table cell, slow_rank and memory read; the edit only makes the episode-loss and ratio arithmetic non-trivial.",
+      "cannot_prove": "Real speeds",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

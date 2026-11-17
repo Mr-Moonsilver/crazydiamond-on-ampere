@@ -1,0 +1,22 @@
+{
+  "schema": "n3-indexer-lifetime-fixture-leaves/1",
+  "box_evidence": false,
+  "leaves": [
+    {
+      "name": "actual-indexer-host-with-cpu-kernel-ports",
+      "tests": "test_n3_indexer_lifetime.CpuLifetime",
+      "replaces": "_qsa_mqa_paged_prefill_kernel, torch.ops._C.persistent_topk/cooperative_topk, CUDA allocations and capability query",
+      "implementation": "The pinned _prefill_logits, _topk and qsa_select_paged_prefill functions execute unchanged through AST extraction. Real Torch CPU BF16 inputs, FP32 score tensors, mm and topk stand in for the GPU kernels; current_platform selects the RTX3090 persistent branch; the launch cap is the real 64 MiB. Weakref finalizers observe actual score-tensor lifetime without owning tensors. Input dimension is reduced to 4; page geometry, history, rows, logits width and 512 selected indices are real. One spare 4048-row page exercises padded logits width.",
+      "equivalence": "Parent/fix use identical CPU kernels and inputs; all score bytes, output bytes and launch geometry/order compare equal. The full-module AST changes only by del logits after the last top-k read, so no numerical operation or caller changes. Parent/revert mutant retains two score tensors; fix retains one.",
+      "cannot_prove": "CUDA kernel numerical values, allocator reserved/free behavior, GPU timing or concurrent-stream execution. The GPU kernel ports are CPU equivalents for equality/lifetime control flow, not GPU exactness evidence."
+    },
+    {
+      "name": "package-fixture-pinned-indexer",
+      "tests": "test_e3_package.SyntheticTests; test_n3_indexer_lifetime.Transform",
+      "replaces": "Synthetic E2 package/reference files and generated test launcher",
+      "implementation": "Existing package fixture retains its existing composition stubs and now copies the real hash-pinned indexer into its synthetic reference tree. FullPinnedTests also builds from the real reference. The actual generator emits, checksums and mounts ops_qsa_indexer.py under S5.",
+      "equivalence": "The indexer transform itself is never stubbed in the normal test; unreviewed input bytes and reapplication refuse. Default-off launcher branch and generated checksummed file are checked.",
+      "cannot_prove": "Running the launcher or engine on the box."
+    }
+  ]
+}

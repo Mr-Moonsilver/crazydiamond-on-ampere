@@ -1,0 +1,156 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "alpha-next-c1 composition fixes in stage_overlap.py (per-frame composed fields; the successor's recorder view): test_alpha_next_c1_composed_fields on C1's ring fixture with alpha-next's fused, grouped and lean selections installed on the real driver and latched by the real dispatchers; CPU only, no box or GPU evidence; and the per-arm deferred bind (test_alpha_next_c1_defer_control on the same ring fixture, C0's and C1's control router fixtures) with its default-off proof (test_alpha_next_c1_rebind_default_off over tools/alpha_next_c1_rebind_default_off.py)",
+  "inherits": [
+    "stage_overlap_fixture_leaves.json",
+    "step_a_fixture_leaves.json",
+    "step_b_fixture_leaves.json",
+    "c1_rebind_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "name": "auto-arm-ownership",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed",
+      "replaces": "the auto-arm policy (native_auto_arm) and its admission intent, which own every chunk of an auto-armed arm on the box",
+      "equivalence": "the driver reads exactly policy.manual_owned/phase/active and the intent's origin/phase/seq through _progress_owned(); the values are the ones the real policy holds while an auto-armed native chunk runs, as Step A's FusedNetwork sets them (step-a-auto-arm-state)",
+      "cannot_prove": "the policy's own arming and disarming; those run in test_native41_autoarm and the Step A/B probes",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "no-qsa-layer-driver",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed (dispatcher.driver_factory)",
+      "replaces": "the real layer driver factory, here through Step A's declared NoQsaDriver (step-a-no-qsa-driver)",
+      "equivalence": "the ring model's four layers are GDN only, so PREPARE's fused plan is empty, as on a stage with no QSA layer; the dispatcher still latches fused and the group at OPEN and checks every command against them",
+      "cannot_prove": "QSA grants and fused profiles under two frames; the per-frame fields that carry them (_tx_fused, _tx_group) are the ones witnessed here",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "fake-lane-stage-end",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed (lane.end_layer)",
+      "replaces": "the real lane's end_layer, set by the model runner to its PP stage's layer end",
+      "equivalence": "max(lane.layers) + 1 is the stage end of r4's FakeLane (layers (0,1) and (2,3)), the value _do_layer_group saves and restores around a group command, as Step B's equip_stack sets it (step-b-fake-layers)",
+      "cannot_prove": "a real model's layer bounds; those are Step B's connected-lane-end",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "lean-recorder-direct",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed (install_progress('burst'); progress.replies = 'lean')",
+      "replaces": "the held-g startup seam and the per-arm reply-mode control that set progress.replies on the box",
+      "equivalence": "the driver reads only progress.replies and _progress_owned() in _open_replies(); the recorder is the real one, installed through the real seam",
+      "cannot_prove": "the per-arm control's own validation; tested in alpha-next's held-g suites",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "watchdog-clock",
+      "test": "test_alpha_next_c1_composed_fields.Composed.test_fused_stall_watchdog_with_two_frames_in_flight",
+      "replaces": "time.monotonic as the driver's clock, and FusedQsa.STALL_S (300 s) by 5 s",
+      "equivalence": "the driver takes its clock as an injected callable and reads stall_s from the FusedQsa object; the watchdog compares the same per-chunk mark against the same bound",
+      "cannot_prove": "that _fused_mark/_fused_mark_at must be per frame: with both shared the stall in this test is caught at the same tick, so no mutant here separates them. They are kept per frame so each chunk's watchdog reads its own tickets and reports, as serially; a successor's stage is driven only after the older chunk released it (_frame_ready), and one stage's chunk work is seconds against a 300 s bound",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "peak-allocator",
+      "test": "test_alpha_next_c1_composed_fields.Composed.test_overlap_arms_emit_one_peak_receipt_per_chunk_per_rank",
+      "replaces": "torch.cuda's allocator counters on each rank (the bridge's _memory_cuda), and FLASH_S5_AUTO_ARM's receipt flag set on each bridge after construction; the receipt writer's emit (native_measurement.emit_receipt_kv) captured into a list instead of the process ReceiptWriter",
+      "equivalence": "the peak test's PeakCuda (test_alpha_next_peak_receipt) has the reset/peak/allocated surface peak_reset and peak_receipt read; the flag is the attribute the bridge sets from the environment at construction; open and release ordering per rank is the real bridge's; the captured argument is the exact line the bridge passes to the writer, which writes it unchanged (alpha-next PLAN 2, tested in test_alpha_next_receipts)",
+      "cannot_prove": "real allocator peaks and stage 1's margin at 131k under overlap; those are the box's per-chunk receipt read against the matched off arm. The inherited flash-s5 memory receipt counts errors here because PeakCuda refuses memory_stats; only the peak line is read",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "composed-fix-mutants",
+      "test": "test_alpha_next_c1_composed_fields.Mutants",
+      "replaces": "stage_overlap's fixes reverted in memory for the mutant tests only: so.COMPOSED_CHUNK_FIELDS with one field dropped, so._ProgressNoBegin replaced by a function returning None (C1's form), and OverlapSegmentDriver._new_frame/_scope/_show_rest by C0's",
+      "equivalence": "each patch is exactly the code before the fix (C0's frame swap, C1's set-aside recorder) or the fix minus one field; the Composed tests run the unpatched module",
+      "cannot_prove": "nothing about the shipped engine; the mutants only show the witness fails without each fix",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "paused-engine",
+      "test": "test_alpha_next_c1_defer_control.Fixture.control",
+      "replaces": "the engine's scheduler pause, as seen by the driver's control path: driver.engine is a namespace whose is_scheduler_paused() answers True for that one call",
+      "equivalence": "C0's _stage_control reads exactly engine.is_scheduler_paused() for its paused condition; every other condition of the paused idle FULL rule (no frame, no retained row, no live chunk or PP ticket) is read from the real driver and dispatchers, so the idle part of the rule runs unchanged",
+      "cannot_prove": "the real router pause/resume sequence; that runs in the Router tests (C0's control router fixture) and in C0's control suites",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "second-request",
+      "test": "test_alpha_next_c1_defer_control.Fixture.add_request (Switch)",
+      "replaces": "a client admitting a further request into a running engine: test_e3_admission_native.Request(uid, tokens) prepended to the real scheduler's waiting queue, then OverlapStack.run_request again",
+      "equivalence": "the real StagedAdmissionController admits it through the same scheduler queue the first request used; driver, workers, dispatchers and PP channel are the same objects (one incarnation), so the per-arm switch is applied between two requests of one engine as on the box",
+      "cannot_prove": "the HTTP front end's request intake and the box's request mix; those are the queue's arms",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "installed-by-env",
+      "test": "test_alpha_next_c1_defer_control.Fixture.network; RouterBase.asyncSetUp/env; Startup",
+      "replaces": "the startup environment of the engine process: FLASH_S5_STAGE_OVERLAP(_DEFER_BIND) set or removed with mock.patch.dict(os.environ) around the driver's construction and the router's calls; Startup patches s5_startup._enabled to True (test_e3_native_layer_groups.Startup's leaf) so the early guards are reached",
+      "equivalence": "the driver, the session and the control client read these names from os.environ exactly where the patch sets them; the startup guards read the env mapping install_engine is given",
+      "cannot_prove": "the VM/box launcher's own environment; the queue's settings env and the arm record's acknowledged defer_bind cover that (the grade refuses a mismatch)",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "held-finalize",
+      "test": "test_alpha_next_c1_defer_control.Switch",
+      "replaces": "a slow receiver finalize on the device: stage 1's (ranks 2, 3) STATE_FINALIZE ControllableEvent of the arm's first chunk is held incomplete (event.complete False) for a fixed number of ticks, every other event completes promptly (as scratch/c1_finalize_hold.py, the lead's 18:4x witness)",
+      "equivalence": "the workers read completion only through event.query(), as r4's ControllableEvent fixture declares; holding it is what a device still running that finalize answers",
+      "cannot_prove": "real device timing or whether the box ever holds a finalize this long; the grade's per-op device bounds read that from the box records",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "unacknowledging-control-call",
+      "test": "test_alpha_next_c1_defer_control.Router.test_an_unacknowledged_value_is_refused_by_the_client",
+      "replaces": "a router or engine that drops the defer_bind field: control._call is wrapped to forward the command without it",
+      "equivalence": "the wrapper calls the real _call with exactly the command minus defer_bind; the client then reads the real reply, which lacks the acknowledgement",
+      "cannot_prove": "nothing about the shipped path, which forwards the field (Router.test_field_reaches_the_driver_and_is_acknowledged); the patch only shows the client refuses an unacknowledged value",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "defer-mutants",
+      "test": "test_alpha_next_c1_defer_control.Mutants",
+      "replaces": "the per-arm rules faulted in memory for the mutant tests only: StagedSegmentDriver._stage_control without its paused idle FULL rule; OverlapSegmentDriver._stage_control recompiled from its own source with the install check or the overlap check removed (as a method of a subclass body, so super() resolves); install_engine without the rebind guard; the session's _action_native_stage_local without its refusal",
+      "equivalence": "each mutant is the shipped source with exactly one rule removed; the other tests run the unpatched modules",
+      "cannot_prove": "nothing about the shipped engine; the mutants only show the suite fails without each rule",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "rebind-event-query-counter",
+      "test": "test_c1_rebind_witness (run_counted: ControllableEvent.query)",
+      "replaces": "r4.ControllableEvent.query wrapped by a counter that calls the real query and returns its answer",
+      "equivalence": "the answer is the real one; only the number of host event queries is recorded, to show observation adds none",
+      "cannot_prove": "the cost of cudaEventQuery on the device; the box's observe log bytes per arm are recorded by the queue",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "default-off-proof-faults",
+      "test": "test_alpha_next_c1_rebind_default_off.Live",
+      "replaces": "the proof tool's own tables and readers patched for the fault tests only: PER_ARM/OTHERS with one projection dropped or turned into an added statement, git_show returning an engine file with one extra byte, REFUSAL_TESTS naming a missing test, subprocess.run returning a fixed result (to read the child's environment)",
+      "equivalence": "Holds runs the unpatched tool on this tree (exit 0, receipt written once); each fault is one table entry or one reader changed",
+      "cannot_prove": "nothing about the engine; the faults only show each check in the proof is live",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "negative-guard-fakes",
+      "test": "test_alpha_next_c1_negative_guard (HangingSuite, EndToEnd)",
+      "replaces": "the docker container of the negative control: step_a.container replaced by a function that makes the same guarded subprocess.call (client with --name, stdout to suites.log, stderr folded) on a local python process (a unittest blocked on a pipe nobody writes, or an exit with a chosen rc); _stop_container (docker stop -t 30) replaced by a SIGTERM to that process or by nothing; the wall limit and stop grace patched to 2 s; frozen() and PINS pointed at a temporary frozen record and an AWAITING-OBSERVATION stub; patched names: sr.step_a.container, sr._stop_container, sr.NEGATIVE_WALL_LIMIT_S and sr.NEGATIVE_STOP_GRACE_S (2 s each), sr.frozen and sr.PINS (sr = tools/alpha_next_c1_engine_selfrun)",
+      "equivalence": "the guarded call, the guard (alpha_next_wall_guard.run_bounded, inc_reasons, verdict) and negative()'s judging and record writing run unpatched; only what runs inside the container and how it is stopped differ",
+      "cannot_prove": "docker's own stop and the container's real suites and cases; the chain's negative runs those over alpha-next's overlay",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

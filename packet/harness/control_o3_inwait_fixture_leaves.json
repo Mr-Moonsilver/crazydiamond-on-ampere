@@ -1,0 +1,43 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "CPU kept-SPLIT finite output-cut ordering only; no CUDA/PP-device, numerics, peak-memory or performance evidence.",
+  "inherits": ["control_inwait_fixture_leaves.json", "append_yield_fixture_leaves.json"],
+  "leaves": [
+    {
+      "name": "kept-split-native-retirement-and-handoff",
+      "test": "test_control_o3_inwait.kept_rig, CoreOrder, YieldCore, WindowCore",
+      "replaces": "GPU execution and ordinary handback scheduling in test_lane_o3.o3_rig/yield_rig",
+      "equivalence": "Real controller/driver/four bridge workers run the native request to its typed terminal/row closure before any new census. Existing split_handback_step, landed and first_decode_step leaves establish the handed-back request and its first scheduled decode. The new real generated Core then issues actual CPU stock futures and applies them through the installed output hook. Model execute/sample, graph capability and device completion leaves are inherited from test_control_inwait; none are counted as device evidence.",
+      "cannot_prove": "Real QSA/Mamba state numerics, PP/NCCL or CUDA stream completion, graph coverage or peak memory under increased overlap.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "finite-output-prefix-and-adversarial-hook-order",
+      "test": "test_control_o3_inwait.CoreOrder, CutOwnership, Mutants",
+      "replaces": "Scheduling of Core hooks and worker replies for race injection",
+      "equivalence": "Uses real ReplyTransport, StockLocalFuture and four ordered worker threads. sample_gate holds a genuine sample, and delayed_update holds the original scheduler output leaf before it returns. Two adversarial cases call the real idle hook again without letting Core apply the old output: ready census must retain its cut and a failed census must not switch banks. These are safety tests, not claims that the frozen Core normally calls its hook twice that way. No future readiness, queue-pop or all-rank completion is forged. Equal-valued foreign SchedulerOutput objects cannot satisfy identity; failed updates retain ownership; duplicate/over-wide cuts and duplicate hooks refuse.",
+      "cannot_prove": "Frequency of those races or measured decoder-stall savings. The original scheduler output contents are CPU leaves declared by control_inwait_fixture_leaves.json.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "cohort-selection-and-yield-faults",
+      "test": "test_control_o3_inwait.CoreOrder, YieldCore, WindowCore, Composition",
+      "replaces": "Client completion/abort, request replacement and yield revocation timing",
+      "equivalence": "Injects cohort removal, same-UID Request replacement, selected-request removal, zero first-output count and revoked joined ledger/yield at scheduler output application. Real selection, membership, graph-count and per-rank census checks decide the outcome. Failed observations drain later queued outputs before the real FULL transition. All eight A/Y1/Y2 combinations run the kept-yield path; a separate Y2 multi-append window checks its unchanged bulk-bound cycle intent, actual next-append admission and unsubmitted cancellation/queue restoration via the controller API. No frontier is moved by a cut or census.",
+      "cannot_prove": "Real abort transport, output text or end-to-end service liveness; no new native kernels are qualified by these tests.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "genuine-a15-default-off-reference",
+      "test": "test_control_o3_inwait.Settings",
+      "replaces": "Frozen source transport into a read-only CPU container",
+      "equivalence": "Loads genuine a15bed1d native_auto_arm.py (SHA256 8090de4a9c349c89666916358b0c26f61c3ec0e8a6366545a4d990b4e89f5ee5), via git show on the hub or CONTROL_O3_PARENT_SOURCE in the container. Reuses the same completed native/handback fixture state with the genuine parent policy class. OFF commands, pauses and policy status must equal the parent and no scheduler hook may be installed. Both versions retain the queue-empty census gate in the OFF trace.",
+      "cannot_prove": "Whole-engine byte identity with the flag enabled, device behavior or performance. Comparisons exclude nondeterministic timestamps.",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

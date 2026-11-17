@@ -1,0 +1,32 @@
+{
+  "schema": "native-uva-fixture-leaves/1",
+  "leaves": [
+    {
+      "name": "real-pools-and-writers-with-cpu-registered-memory-and-delayed-launch",
+      "tests": "test_native_uva_retirement; test_native_uva_batch",
+      "replaces": "buffer_utils.UvaBuffer allocation/accelerator mapping, torch allocation, async_tensor_h2d, _apply_write_kernel launch, CUDA streams and Event record/query/synchronize",
+      "implementation": "pinned_buffers compiles unchanged class ASTs for UvaBufferPool, UvaBackedTensor, StagedWriteTensor and FusedStagedWriter from reference/vllm-src. UvaBuffer is NumPy-backed CPU alias storage; Tensor supplies shape/stride/data_ptr/numel/element_size. async_tensor_h2d owns an independent contents copy. The launch leaf queues the same descriptor-indexed writes on independently advanced decode/native queues. The CPU Event records on the current stream and synchronize executes only through that event. Real buffer algorithms, NativeUvaSlots, real legacy/B dispatcher scope and B source/PP protocol remain unpatched. Pool depth3 models V2+async+PP2; depth2 controls are explicitly synthetic. Device.current follows the linked na stream simulator in the legacy test.",
+      "equivalence": "Demonstrates descriptor overwrite in both directions, unchanged stock slot cadence, disjoint native descriptor allocations, actual retirement before slot reuse/growth, scalar native view lifetime, ordinary captured allocation preservation and failure retention. Pending ordinary readers are never synchronously drained by native isolation.",
+      "cannot_prove": "CUDA mapped-memory visibility or fault frequency, physical CUDA event/green-context/NCCL order, actual Triton writes, kernel output numerics or driver event overhead. NumPy views retain storage, so growth UAF itself is not emulated; retirement order is checked.",
+      "box_evidence": false
+    },
+    {
+      "name": "pinned-state-constructors-on-real-cpu-tensors",
+      "tests": "test_native_uva_pinned",
+      "replaces": "UvaBuffer's pinned/accelerator allocation with CpuUvaBuffer using real CPU torch storage; device='cpu'; max_model_len64 for state destination sizing; optional RoPE/prompt-embedding model construction",
+      "implementation": "Unchanged ASTs of the four pool/writer classes plus RequestState, BlockTables, RopeState and PromptEmbedsState execute their real constructors. NativeUvaSlots and its classification run unchanged. Production max_num_reqs10, native total rows2048 and pool depth3 are supplied. Group counts3 and39 are geometry projections, not a measured box group census. The real 262144-token maximum grows only the private token-content pool and proves its exact3MiB bound. No kernel bodies or whole model are built; no platform/libcuda/device stub or tensor is shipped as engine code.",
+      "equivalence": "Checks actual pinned field shapes/types including fused and single tensor descriptors, scalar pools and optional model branches, exact host byte ledger, zero new GPU tensor allocations and CUDA remains uninitialized.",
+      "cannot_prove": "Real registered host allocation costs/availability, the box's group count, real mapped-memory or event semantics, VRAM consumed internally by CUDA events.",
+      "box_evidence": false
+    },
+    {
+      "name": "legacy-nt-na-adoption-and-startup-constructor-ports",
+      "tests": "test_native_uva_legacy",
+      "replaces": "PinnedPorts.load, tensor/model/Mamba/stream allocation and host request/table constructors in existing test_e3_lane_chunk, test_prepare_ahead and test_parity_ahead fixtures",
+      "implementation": "Real LaneChunkFactory.stage_ahead/adopt/_finish/LaneRequest.update and LaneAlign.postprocess execute. Native and descriptor simulators share the same current prefill queue. Actual production-depth3 UvaBufferPool/StagedWriteTensor classes enqueue delayed writes; three pending ordinary publications overwrite the adopted reader without isolation, for both nt and na. Fixed scopes preserve the native update/finalize. The startup test passes ports=None and routes only NativeUvaSlots buffer allocation to the same real class with the CPU allocation module; its production constructor installs the owner and all three real publication paths refuse outside it. No-op old FakeStates/FakeBlockTables registration/allocation remain constructor/host-control leaves; actual writer use is attached after staging in the adoption test. FakeMambaContext models call order only.",
+      "equivalence": "Old and fixed adopted native update values are observed, both stream choices exercised, no blocking input copy is manufactured at adopt. Scope guards precede request mutation. Same common owner/helper bytes as the B fix.",
+      "cannot_prove": "Real mapped host-memory/event semantics, numerical Mamba or QSA state, peer ordering, hardware race frequency or GPU output exactness.",
+      "box_evidence": false
+    }
+  ]
+}

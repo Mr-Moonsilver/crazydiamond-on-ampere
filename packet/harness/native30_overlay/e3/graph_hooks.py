@@ -47,6 +47,20 @@ _CHECK_NEW = ('        _flash_e3_graph.check_route(\n'
               '            num_reqs, num_toks, uniform_tok_count, batch_req_state,\n'
               '        )\n' + _CHECK_OLD)
 
+# lane-o3 (7 Nov 2026): the one-row handback on the split bank. The pinned gather_batch_req_state counts a row at
+# prompt_len-1 as prefilling, so stock's handback batch has no uniform count and dispatches eager (NONE) under the box's
+# FULL_DECODE_ONLY (parity-b/scratch/o3/dispatch_probe.out). handback_uniform returns 1 for exactly that batch on the
+# split route with FLASH_S5_O3=1; batch_req_state.has_prefill is untouched, so prepare_prefill_inputs still writes the
+# prompt token. Off, on the full route, or any other batch: the stock value.
+_UNIFORM_OLD = ('        batch_req_state, uniform_tok_count = self.gather_batch_req_state(\n'
+                '            scheduler_output, dummy_run\n'
+                '        )\n')
+_UNIFORM_NEW = (_UNIFORM_OLD +
+                '        uniform_tok_count = _flash_e3_graph.handback_uniform(\n'
+                '            self, scheduler_output, batch_req_state, uniform_tok_count,\n'
+                '        )\n')
+O3_ENV = 'FLASH_S5_O3'
+
 _EARLY_OLD = '            if scheduler_output.total_num_scheduled_tokens == 0:\n'
 _EARLY_NEW = ('            _flash_e3_graph.check_empty(self, scheduler_output)\n' + _EARLY_OLD)
 
@@ -99,6 +113,7 @@ def source_kind(source):
 def _forward(source):
     """Ordered B transforms on top of an A-composed runner."""
     text = _replace(source, _IMPORT_OLD, _IMPORT_NEW)
+    text = _replace(text, _UNIFORM_OLD, _UNIFORM_NEW)
     text = _replace(text, _CHECK_OLD, _CHECK_NEW)
     text = _replace(text, _EARLY_OLD, _EARLY_NEW)
     text = _replace(text, _REPLAY_OLD, _REPLAY_NEW)
@@ -134,6 +149,7 @@ def revert(source, expected=None):
     text = _replace(text, _REPLAY_NEW, _REPLAY_OLD)
     text = _replace(text, _EARLY_NEW, _EARLY_OLD)
     text = _replace(text, _CHECK_NEW, _CHECK_OLD)
+    text = _replace(text, _UNIFORM_NEW, _UNIFORM_OLD)
     text = _replace(text, _IMPORT_NEW, _IMPORT_OLD)
     if expected is not None:
         if text != expected:
@@ -210,6 +226,48 @@ def _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens):
 def _is_prefill(router, transaction):
     active = router.worker.active_prefill
     return active is not None and transaction == active
+
+
+def o3_enabled():
+    value = os.environ.get(O3_ENV, '0')
+    if value not in ('0', '1'):
+        raise GraphRoutingError('invalid boolean setting: ' + O3_ENV)
+    return value == '1'
+
+
+def handback_shaped(batch_state):
+    """True for a batch whose only prefilling row is one row short of its prompt and scheduled for exactly that row, every
+    other row a one-token decode, no drafts: stock's one-row handback beside the decoders. Two prefilling rows: False."""
+    try:
+        rows = [int(n) for n in batch_state.num_scheduled_tokens]
+        prefilling = [bool(p) for p in batch_state.is_prefilling_np]
+        done = batch_state.num_computed_prefill_tokens_np
+        need = batch_state.prefill_len_np
+        if (not rows or any(n != 1 for n in rows) or len(prefilling) != len(rows)
+                or int(batch_state.num_tokens) != len(rows)):
+            return False
+        index = [i for i, p in enumerate(prefilling) if p]
+        return len(index) == 1 and int(done[index[0]]) + 1 == int(need[index[0]])
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return False
+
+
+def handback_uniform(runner, scheduler_output, batch_state, uniform):
+    """lane-o3: the uniform count stock's dispatch reads; 1 only for the split route's one-row handback batch."""
+    if uniform is not None or batch_state is None or not o3_enabled():
+        return uniform
+    router = _router(runner)
+    if (router is None or isinstance(router, DecodeProbeRouter) or not _native_decode(router)
+            or router.current_mode == 'ordinary'
+            or getattr(scheduler_output, 'flash_e3_transaction', None) is not None
+            or getattr(scheduler_output, 'scheduled_spec_decode_tokens', None)
+            or getattr(runner, 'decode_query_len', None) != 1
+            or not batch_state.has_prefill or not handback_shaped(batch_state)):
+        return uniform
+    census = getattr(runner, '_flash_s5_native_census', None)
+    if census is not None:
+        census.o3_handbacks = getattr(census, 'o3_handbacks', 0) + 1
+    return 1
 
 
 def check_empty(runner, output):

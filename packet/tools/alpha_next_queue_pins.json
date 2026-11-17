@@ -1,0 +1,31 @@
+{
+  "schema": "alpha-next-queue-pins/1",
+  "status": "FILLED: from the gate chain build at build_out",
+  "overlay_manifest_sha256": "00eec3267c3b0c33d0fd0f80cd3bef2cecef7395c74e9db28cb13595bd20e71e",
+  "package_sha256": "04401eb6d89edc725da40f55e7dd064192acfe06060344b2e736af869ce23204",
+  "harness_bundle_sha256": "11aba623c723f281ad9de715f77afb109cd260872ec9935ec051d82df1c74e03",
+  "build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next/build-g5",
+  "build_json_sha256": "b80119316084ab34bcc43cac21c539484c2ce2ae04d6448da946248f15d9b79e",
+  "source_commit": "fedfdfaf4099804c1ee22919ded5a3a69c3f8248",
+  "review_sha256": "ed5ffc0c87af154a641dcbb647126acc262ffc4bb57fffd358378d89cc112af2",
+  "runner_sha256": "92990f95605548fbfd5c99b22c074d27fcb504f054d5e4f56b2c517dd23cc503",
+  "written_by": "tools/alpha_next_queue_pins_write.py",
+  "note": "Hub-side queue pins, written by tools/alpha_next_queue_pins_write.py from the gate chain build OUT and committed by the lead. overlay_manifest_sha256 = sha256 of the held bundle native30_overlay/SHA256SUMS; package_sha256 = its S5-OVERLAP-GENERATION.json package_sha256; harness_bundle_sha256 = sha256 of the held bundle SHA256SUMS. No harness text holds them (the review the build prepares pins the declaration text, and the overlay covers the review); the waiter and tools/alpha_next_delivery.py compare against this file. A placeholder means not packaged yet.",
+  "history": [
+    {
+      "schema": "alpha-next-queue-pins/1",
+      "status": "FILLED: from the gate chain build at build_out",
+      "overlay_manifest_sha256": "287240dc976806b244f31892e7fa70daee812589d45ddccf598028fab77767b3",
+      "package_sha256": "41b070868fab3d76740fef08da7fbb1d7d7ce2de40c5c762036d2fbaa580d6f2",
+      "harness_bundle_sha256": "8f6c76e29a9760c753400aa14e917ae7bfc449cd73f7c6ffb35a1964f78a6474",
+      "build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next/build-g4",
+      "build_json_sha256": "09b11c191a440650c59e8d92649af5a46bef7b020daa5fd1d7e6ca9d9a3a368f",
+      "source_commit": "754e79688a22cb20d6e64629ab0527e8b5aeffa9",
+      "review_sha256": "ab2d23ea59ea77e858f6af3441676ed37ee1ce44adc6c6a0a85abc9cb116bf9c",
+      "runner_sha256": "669eba74c35e3a1e2a3c6759da0f39469f0b1442b6779a610cfbc88572b9ef0d",
+      "written_by": "tools/alpha_next_queue_pins_write.py",
+      "superseded_because": "g5 build over 48aca6b2 after g4 stopped at engine-selfrun (HARNESS, probe capture vs PLAN 2 writer)",
+      "superseded_by_build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next/build-g5"
+    }
+  ]
+}

@@ -21,11 +21,15 @@ import time
 import threading
 import os
 import json
+import logging
+import sys
 
 from e3_types import E3ContractError, E3Pending
 from reply_transport import (Backpressure, DirectReply, NotReady, ReplyTransport, TransportError,
                              WorkerRPCError)
-from native_measurement import (PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
+from stage_wire import STAGE_SKIP, StageScoped, stage_rpc
+from native_measurement import (INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS, PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
+                                emit_receipt_lines,
                                 encode_progress_meta, progress_mode)
 
 
@@ -162,6 +166,11 @@ _EXECUTOR_FORWARD = (
 '''),
     ('        if response_mqs := getattr(self, "response_mqs", None):\n',
      '        if (response_mqs := getattr(self, "response_mqs", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
+    # Native43 le-fix: the stock broadcast write (timeout=None) through the bounded hook; with the
+    # fatal channel absent (overlap off) the hook makes the identical unbounded call.
+    ('        self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))\n',
+     '        _flash_s5_hooks.bounded_enqueue(self, self.rpc_broadcast_mq,\n'
+     '                                        (send_method, args, kwargs, output_rank))\n'),
 )
 
 
@@ -338,6 +347,9 @@ _CORE_FORWARD = (
 
 
 _CORE_FORWARD += (
+    ('        self.scheduler.add_request(request)\n',
+     '        self.scheduler.add_request(request)\n'
+     '        _flash_s5_hooks.engine_request_admitted(self, request)\n'),
     ('        elif request_type == EngineCoreRequestType.EXECUTOR_FAILED:\n            raise RuntimeError("Executor failed.")\n',
      '        elif request_type == EngineCoreRequestType.EXECUTOR_FAILED:\n            _flash_s5_hooks.raise_worker_failure(self)\n            raise RuntimeError("Executor failed.")\n'),
     ('    def _make_ready_response(self) -> EngineCoreReadyResponse:\n',
@@ -368,8 +380,71 @@ def revert_core(source, expected=None):
 
 # --- worker -----------------------------------------------------------------
 
+# stage1-step L1 (FLASH_S5_LAZY_RECV, default off, per RPC by the engine's mark on the scheduler output): the PP receive
+# runs at the runner's first read of ``.tensors``, after the CPU prep, instead of before the runner starts.  Same RPC, same
+# order against stage 0's sends; only the host position inside this execute_model moves.  Unmarked, the stock branch runs.
+_LAZY_RECV_CLASS = '''class FlashS5LazyIntermediateTensors(AsyncIntermediateTensors):
+    """stage1-step L1: AsyncIntermediateTensors whose receive itself waits for the first ``.tensors``."""
+
+    def __init__(self, receive) -> None:
+        super().__init__({})
+        self._flash_s5_receive = receive
+
+    def wait_for_comm(self) -> None:
+        receive = object.__getattribute__(self, "_flash_s5_receive")
+        if receive is not None:
+            self._flash_s5_receive = None
+            tensor_dict, comm_handles, comm_postprocess = receive()
+            assert tensor_dict is not None
+            self.tensors = tensor_dict
+            self._comm_handles = comm_handles
+            self._comm_postprocess = comm_postprocess
+        AsyncIntermediateTensors.wait_for_comm(self)
+
+    def __getitem__(self, key):
+        # The stock slice calls ``self.__class__(tensors)``; here a slice is a plain, received view.
+        if isinstance(key, slice):
+            return AsyncIntermediateTensors({k: v[key] for k, v in self.tensors.items()})
+        return self.tensors[key]
+
+    def flash_s5_require_received(self) -> None:
+        # Fail closed: an unconsumed receive would hand stage 0's next batch to the next step.
+        if object.__getattribute__(self, "_flash_s5_receive") is not None:
+            raise RuntimeError("stage1-step lazy PP receive was never consumed by the runner")
+
+
+'''
+
 _WORKER_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
+    ('class Worker(WorkerBase):\n', _LAZY_RECV_CLASS + 'class Worker(WorkerBase):\n'),
+    ('''        if forward_pass and not get_pp_group().is_first_rank:
+            tensor_dict, comm_handles, comm_postprocess = (
+''', '''        if (
+            forward_pass
+            and not get_pp_group().is_first_rank
+            and _flash_s5_hooks.lazy_recv_marked(scheduler_output)
+        ):
+            intermediate_tensors = FlashS5LazyIntermediateTensors(
+                lambda: get_pp_group().irecv_tensor_dict(
+                    all_gather_group=get_tp_group(),
+                    all_gather_tensors=all_gather_tensors,
+                )
+            )
+        elif forward_pass and not get_pp_group().is_first_rank:
+            tensor_dict, comm_handles, comm_postprocess = (
+'''),
+    ('''                scheduler_output, intermediate_tensors
+            )
+            if (
+                self.use_v2_model_runner
+''', '''                scheduler_output, intermediate_tensors
+            )
+            if type(intermediate_tensors) is FlashS5LazyIntermediateTensors:
+                intermediate_tensors.flash_s5_require_received()
+            if (
+                self.use_v2_model_runner
+'''),
     ('    def shutdown(self) -> None:\n', _WORKER_METHODS + '    def shutdown(self) -> None:\n'),
 )
 
@@ -528,8 +603,10 @@ class StockLocalFuture(LocalFuture):
             return self._stock_result(timeout)
         finally:
             progress[0].counters['waits'] += 1
+            ended = time.monotonic_ns()
             progress[0].trace.record('w', self.sequence, progress[1], started,
-                                     time.monotonic_ns(), sends, capped)
+                                     ended, sends, capped)
+            progress[0].steps.waited(started, ended)
 
     def _stock_result(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -793,11 +870,95 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
             # Ring position for in-wait progress: native commands may follow a
             # sample_tokens, never sit between an execute_model and its sample.
             progress.last_stock_kind = kind
-        executor.rpc_broadcast_mq.enqueue((send_method, args, wire_kwargs,
-                                           broadcast_rank))
+        if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+            side = executor.__dict__.get('_flash_s5_decode_timeline')
+            if side is not None:
+                try:
+                    from decode_timeline import OUTSIDE_KEY
+                    tag = side.wire(kind, sequence, args, progress is None)
+                    if tag is not None:
+                        wire_kwargs = dict(wire_kwargs)
+                        wire_kwargs[OUTSIDE_KEY] = tag
+                except Exception:
+                    pass  # Diagnostic omission; it never changes a stock dispatch.
+        if _DECODE_STEP:
+            # decode-step (FLASH_S5_DECODE_SAMPLE_FAST / FLASH_S5_DECODE_ANATOMY): the per-arm tag; popped by the worker.
+            side = executor.__dict__.get('_flash_s5_decode_step')
+            tag = side.wire(kind, sequence) if side is not None else None
+            if tag is not None:
+                wire_kwargs = dict(wire_kwargs)
+                wire_kwargs[_DECODE_STEP.WIRE_KEY] = tag
+        bounded_enqueue(executor, executor.rpc_broadcast_mq,
+                        (send_method, args, wire_kwargs, broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
                                 timeout_s=effective_timeout, aggregate=None)
     return future if non_block else future.result(timeout=effective_timeout)
+
+
+# Native43 le-fix: one bounded slice of the broadcast write.  acquire_write raises TimeoutError
+# before it claims a block, so a timed-out slice has written nothing and the next slice is the
+# same single write.
+ENQUEUE_SLICE_S = 1.0
+LONG_WAIT_FALLBACK = (60, 'No available shared memory broadcast block found in %d seconds. This '
+                          'typically happens when some processes are hanging or doing some '
+                          'time-consuming work (e.g. compilation, weight/kv cache quantization).')
+
+
+def _long_wait(queue):
+    """The stock long-wait warning of the queue's own module (vLLM's shm_broadcast): interval, text, logger.
+
+    Read from the already-imported module of the queue's class; no import happens here.  A queue from
+    another module (CPU fixtures) gets the same text at the stock 60 s on this module's logger."""
+    module = sys.modules.get(getattr(type(queue), '__module__', None))
+    interval = getattr(module, 'VLLM_RINGBUFFER_WARNING_INTERVAL', None)
+    message = getattr(module, 'LONG_WAIT_TIME_LOG_MSG', None)
+    log = getattr(getattr(module, 'logger', None), 'info', None)
+    if type(interval) in (int, float) and interval > 0 and type(message) is str and callable(log):
+        return interval, message, log
+    return LONG_WAIT_FALLBACK[0], LONG_WAIT_FALLBACK[1], logging.getLogger(__name__).info
+
+
+def _enqueue_abandoned(executor, queue):
+    """The typed reason a blocked broadcast write must stop, or None while the executor lives."""
+    failure = getattr(executor, '_flash_s5_fatal_failure', None)
+    if failure is not None:
+        return failure  # the stored WorkerRPCError (fatal channel or worker death)
+    if getattr(executor, 'is_failed', False):
+        return RuntimeError('Executor failed.')
+    if getattr(executor, 'shutting_down', False) or getattr(queue, 'shutting_down', False):
+        return TransportError('broadcast write abandoned: executor shutting down')
+    return None
+
+
+def bounded_enqueue(executor, queue, envelope, *, slice_s=ENQUEUE_SLICE_S, clock=time.monotonic,
+                    long_wait=None):
+    """Native43 le-fix: a broadcast write cannot outlive a failed executor.
+
+    l-e (1 Nov 2026): the EngineCore busy loop sat in ``acquire_write`` (``enqueue`` with
+    ``timeout=None``) while the fatal channel marked the executor failed and shut it down, so
+    ``EXECUTOR_FAILED`` was never processed and no ``ENGINE_CORE_DEAD`` was sent.  With the fatal
+    channel installed (overlap on), the write waits in slices of ``slice_s``; after a timed-out
+    slice a failed executor raises its stored typed failure, a shutting-down executor or queue
+    raises, and a live but full ring keeps waiting with the stock long-wait warning.  The busy
+    loop then dies loudly ("EngineCore encountered a fatal error") and sends ENGINE_CORE_DEAD.
+    Without the fatal channel (overlap off) this is the stock unbounded call, unchanged.
+    """
+    if getattr(executor, '_flash_s5_fatal_lock', None) is None:
+        return queue.enqueue(envelope)
+    started = clock()
+    warnings = 1
+    while True:
+        try:
+            return queue.enqueue(envelope, timeout=slice_s)
+        except TimeoutError:
+            pass
+        reason = _enqueue_abandoned(executor, queue)
+        if reason is not None:
+            raise reason
+        interval, message, log = long_wait if long_wait is not None else _long_wait(queue)
+        if clock() - started > interval * warnings:
+            log(message, interval)
+            warnings += 1
 
 
 def config_reply_timeout(executor):
@@ -885,11 +1046,22 @@ def after_engine_startup(engine):
     return install_engine(engine)
 
 
+def lazy_recv_marked(scheduler_output):
+    """stage1-step L1, worker: the engine's per-RPC mark; both TP peers read the same broadcast object."""
+    return getattr(scheduler_output, 'flash_s5_lazy_recv', False) is True
+
+
 def park_prefill(engine, scheduler_output):
     """True when E3 took this whole scheduled step as an asynchronous chunk."""
     driver = _driver(engine)
     if driver is None:
         return False
+    if getattr(driver, 'lazy_recv', False) is True:
+        driver.mark_lazy_recv(scheduler_output)
+    steps = _steps(engine)
+    if steps is not None:
+        # Held-g R5: scheduler.schedule returned (an empty batch or tokens).
+        steps.scheduled(scheduler_output)
     parked = driver.park(scheduler_output)
     return parked is not None and parked is not False
 
@@ -898,7 +1070,32 @@ def before_step_with_batch_queue(engine):
     """Bounded engine bypass: drive one typed step; never wait for a layer."""
     driver = _driver(engine)
     if driver is not None:
-        return _stock_step_bypass(driver, driver.advance())
+        if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+            try:
+                from decode_timeline import engine_step as timeline_step
+                timeline_step(engine)
+            except Exception:
+                pass  # Diagnostic omission; no scheduler or route change.
+        if (side := _decode_step_engine(engine)) is not None:
+            side.step(engine)      # decode-step: the per-arm gate and the clean anatomy window (installed only)
+        started = time.monotonic_ns()
+        result = _stock_step_bypass(driver, driver.advance())
+        sync = getattr(driver, 'sync_decode_merge', None)
+        if sync is not None:
+            # stage1-step L2: read by this step's schedule() (scheduler_hooks.decode_merge_cap).
+            sync(engine.scheduler)
+        steps = _steps(engine)
+        if steps is not None:
+            # Held-g R5: read after the advance, which may have begun the chunk.
+            steps.advanced(started, result is not None)
+            if result is None and driver.idle_wait_permit() and _stock_step_idle(engine):
+                # Held-g L3 (arm idle=wait): this step's schedule() and
+                # execute_model would carry nothing; wait for the owed native
+                # reply instead (bounded), then return as the idle tick does.
+                driver.idle_wait()
+                steps.bypass('idle')
+                result = _stock_step_bypass(driver, ({}, False))
+        return result
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -949,6 +1146,64 @@ def _stock_step_bypass(driver, result):
 
 
 def engine_idle_tick(engine):
+    """The first seam of every engine step; held-g R5 starts a step here.
+
+    With no auto-owned native chunk recording (always, with the progress
+    setting unset) this is exactly ``_idle_tick``.
+    """
+    steps = _steps(engine)
+    if steps is None:
+        return _idle_tick(engine)
+    steps.begin()
+    result = _idle_tick(engine)
+    if result is not None:
+        steps.bypass('tick')
+    return result
+
+
+def _stock_step_idle(engine):
+    """Held-g L3, engine side: a stock step now would schedule and send nothing.
+
+    The scheduler holds no running, waiting or skipped request (a parked
+    native request sits outside them) and nothing its next SchedulerOutput
+    would hand the workers: no finished or preempted request id, new block to
+    zero, pending CoW copy or freed encoder entry, and no KV/EC connector. No
+    abort is pending. A stock future still queued must be an empty batch: its
+    SchedulerOutput already reached the workers and only its empty update is
+    left, which the next stock step performs as before (with two queue slots
+    the stock loop always keeps one such future). Read-only peeks; an unknown
+    shape answers False, so the stock step runs.
+    """
+    try:
+        scheduler = engine.scheduler
+        if any(entry[1].total_num_scheduled_tokens != 0 for entry in engine.batch_queue):
+            return False
+        if (scheduler.running or len(scheduler.waiting)
+                or len(scheduler.skipped_waiting) or scheduler.finished_req_ids
+                or scheduler.reset_preempted_req_ids or scheduler.connector is not None
+                or getattr(scheduler, 'ec_connector', None) is not None):
+            return False
+        aborts = getattr(engine, 'aborts_queue', None)
+        if aborts is not None and not aborts.empty():
+            return False
+        for manager in scheduler.kv_cache_manager.coordinator.single_type_managers:
+            if getattr(manager, 'new_block_ids', None) or getattr(manager, '_pending_cow_copies', None):
+                return False
+        cache = scheduler.encoder_cache_manager
+        return not any(getattr(cache, name, None) for name in ('freed', 'to_free', 'allocated'))
+    except (AttributeError, TypeError, IndexError):
+        return False
+
+
+def _steps(engine):
+    """Held-g R5: the recording chunk's step anatomy, else None."""
+    progress = getattr(getattr(engine, '_flash_s5_driver', None), 'progress', None)
+    if progress is None or not progress.recording:
+        return None
+    return progress.steps
+
+
+def _idle_tick(engine):
     """Advance one bounded control/paused-native tick without a reply wait.
 
     PAUSED_ALL hides ordinary scheduler work. Native ownership must nevertheless
@@ -960,6 +1215,11 @@ def engine_idle_tick(engine):
     policy = getattr(driver, 'auto_arm', None)
     if policy is not None and policy.tick():
         return _stock_step_bypass(driver, ({}, False))
+    if (policy is not None and getattr(policy, 'control_inwait', None) is not None
+            and (policy.phase == 'control_observe' or (getattr(policy.control_inwait, 'o3', False)
+                 and policy.phase in ('control_o3_observe', 'control_o3_cut')))):
+        # Only the policy's read-only identity may share ordinary decode RPC order.
+        return None
     tick = getattr(driver, 'control_tick', None)
     pump = getattr(driver, 'pump_control', None)
     if not callable(tick) and not callable(pump):
@@ -1100,6 +1360,10 @@ def _wire_method(message):
                          (TransitionCommand, 'transition')):
         if type(message) is record:
             return name
+    # host-gap batch registration (FLASH_S5_SMALL_PIECE_BATCH): sent only with the setting on.
+    from small_piece_batch import SegmentBatch
+    if type(message) is SegmentBatch:
+        return 'submit'
     return None
 
 
@@ -1115,6 +1379,12 @@ def _wire_bridge(worker):
 
 def worker_rpc(worker, name, message):
     """Generated worker entry point for typed open/submit/poll/commit/cancel."""
+    if type(message) is StageScoped:
+        # FLASH_S5_STAGE_LOCAL only: the engine never sends this record otherwise.
+        if _wire_method(message.message) != name:
+            raise E3ContractError('S5 RPC method and wire record disagree')
+        return stage_rpc(_wire_bridge(worker), name, message,
+                         lambda inner: worker_rpc(worker, name, inner))
     wire_name = _wire_method(message)
     if wire_name is not None:
         # Wire-v1 records carry their own exact type; they have no legacy
@@ -1169,6 +1439,109 @@ _WORKER_PROGRESS = None
 _WORKER_PROGRESS_LOCK = threading.Lock()
 _REPLY_LOCKS_LOCK = threading.Lock()
 _progress_log = None
+# Stage-1 handler anatomy (FLASH_S5_HANDLER_ANATOMY=1, default off): None until
+# first read, False when off, else this process's handler_anatomy.Recorder. Read
+# only under a live progress state, so with progress unset it is never read.
+_ANATOMY = None
+# decode-step (FLASH_S5_DECODE_SAMPLE_FAST=1 or FLASH_S5_DECODE_ANATOMY=1, default off): None until first read, False
+# when both are off, else the decode_step module. Both unset: the module is never imported and no RPC is tagged.
+_DECODE_STEP = None
+_DECODE_STEP_WORKER = None
+
+
+class _CleanRpc(list):
+    """decode-step clean-window RPC state: handler-anatomy rows only, never a native progress trace record."""
+
+
+def _decode_step():
+    global _DECODE_STEP
+    if _DECODE_STEP is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _DECODE_STEP is None:
+                if (os.environ.get('FLASH_S5_DECODE_SAMPLE_FAST', '0') == '1'
+                        or os.environ.get('FLASH_S5_DECODE_ANATOMY', '0') == '1'):
+                    import decode_step
+                    _DECODE_STEP = decode_step
+                else:
+                    _DECODE_STEP = False
+    return _DECODE_STEP or None
+
+
+def _decode_step_engine(engine):
+    """The engine core's decode-step side on its executor, or None (switches off)."""
+    module = _decode_step()
+    if module is None:
+        return None
+    executor = getattr(engine, 'model_executor', None)
+    if executor is None:
+        return None
+    side = executor.__dict__.get('_flash_s5_decode_step')
+    if side is None:
+        side = module.EngineSide(logger=_progress_logger())
+        executor._flash_s5_decode_step = side
+    return side
+
+
+def _decode_step_rpc(proc, method, kwargs):
+    """Worker: pop the tag before dispatch. Returns a clean-window RPC state, or None."""
+    global _DECODE_STEP_WORKER
+    module = _decode_step()
+    if module is None:
+        return None
+    if _DECODE_STEP_WORKER is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _DECODE_STEP_WORKER is None:
+                _DECODE_STEP_WORKER = module.WorkerSide(logger=_progress_logger())
+    name = method if type(method) is str else 'callable'
+    popped = _DECODE_STEP_WORKER.pop(proc, name, kwargs)
+    if popped is None or popped[1] == module.TAG_NONE:
+        return None
+    state = _worker_progress(proc.rank)
+    anatomy = _anatomy(proc) if state is not None else None
+    if anatomy is None:
+        return None
+    if popped[1] == module.TAG_CLOSE:
+        # the window closed on the engine: this rank's clean rows as handler lines; the RPC itself is not a row
+        anatomy.flush(_progress_logger())
+        _DECODE_STEP_WORKER.counters['flushes'] += 1
+        return None
+    anatomy.begin(popped[2], name)
+    _DECODE_STEP_WORKER.counters['clean_rows'] += 1
+    return _CleanRpc([popped[2], name, time.monotonic_ns(), None, False])
+
+
+# decode-merge probe (FLASH_S5_SUBMIT_CPU=1, default off): thread CPU time beside the wall stamps of flash_s5_submit on
+# this worker, cumulative, one 'flash-s5 submit-cpu' line per chunk release. None until first read, False when off.
+_SUBMIT_CPU = None
+SUBMIT_CPU_BUCKETS_MS = (5, 10, 20)
+
+
+def _submit_cpu():
+    global _SUBMIT_CPU
+    if _SUBMIT_CPU is None:
+        _SUBMIT_CPU = ({'n': 0, 'wall_ns': 0, 'cpu_ns': 0, 'max_wall_ns': 0, 'max_cpu_ns': 0,
+                        'by_wall_ms': {str(b): [0, 0, 0] for b in SUBMIT_CPU_BUCKETS_MS + ('more',)}}
+                       if os.environ.get('FLASH_S5_SUBMIT_CPU', '0') == '1' else False)
+    return _SUBMIT_CPU or None
+
+
+def _note_submit_cpu(rpc):
+    """decode-merge probe: one flash_s5_submit's (wall, thread CPU); host clocks only, never raises."""
+    try:
+        acc = _submit_cpu()
+        wall, cpu = rpc[3] - rpc[2], time.thread_time_ns() - rpc[5]
+        acc['n'] += 1
+        acc['wall_ns'] += wall
+        acc['cpu_ns'] += cpu
+        acc['max_wall_ns'] = max(acc['max_wall_ns'], wall)
+        acc['max_cpu_ns'] = max(acc['max_cpu_ns'], cpu)
+        key = next((str(b) for b in SUBMIT_CPU_BUCKETS_MS if wall <= b * 1_000_000), 'more')
+        row = acc['by_wall_ms'][key]
+        row[0] += 1
+        row[1] += wall
+        row[2] += cpu
+    except Exception:  # noqa: BLE001 - a measurement never fails the RPC
+        pass
 
 
 def _progress_logger():
@@ -1200,6 +1573,27 @@ def _worker_progress(rank):
     return state or None
 
 
+def _anatomy(proc):
+    """This worker's handler-anatomy recorder, or None. Unset: never imports handler_anatomy."""
+    global _ANATOMY
+    state = _ANATOMY
+    if state is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _ANATOMY is None:
+                if os.environ.get('FLASH_S5_HANDLER_ANATOMY', '') != '1':
+                    _ANATOMY = False
+                else:
+                    try:
+                        import handler_anatomy
+                        _ANATOMY = handler_anatomy.install(proc)
+                    except Exception as error:
+                        # A measurement never fails the RPC: refuse once, visibly, and stay off.
+                        _ANATOMY = False
+                        _progress_logger().warning('flash-s5 handler install refused: %s', type(error).__name__)
+            state = _ANATOMY
+    return state or None
+
+
 def _reply_lock(proc):
     lock = proc.__dict__.get('_flash_s5_reply_lock')
     if lock is None:
@@ -1213,11 +1607,25 @@ def _reply_lock(proc):
 
 def worker_rpc_begin(proc, method, kwargs):
     """Pop the engine's progress meta before dispatch; stock methods never see it."""
+    clean = _decode_step_rpc(proc, method, kwargs) if _DECODE_STEP is not False else None
+    if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+        tag = kwargs.pop('_flash_s5_dt', None) if type(kwargs) is dict else None
+        try:
+            from decode_timeline import worker_rpc as timeline_rpc
+            anatomy = _anatomy(proc) if tag is not None else _ANATOMY
+            sequence = timeline_rpc(proc, method, tag, anatomy or None)
+            if sequence is not None and PROGRESS_META_KEY not in kwargs and clean is None:
+                anatomy.begin(sequence, method)
+                clean = _CleanRpc([sequence, method, time.monotonic_ns(), None, False])
+        except Exception:
+            if _ANATOMY:
+                _ANATOMY.counters['observer_errors'] += 1
     if type(kwargs) is not dict or PROGRESS_META_KEY not in kwargs:
-        return None
+        return clean
     sequence, direct = decode_progress_meta(kwargs.pop(PROGRESS_META_KEY))
     name = method if type(method) is str else 'callable'
-    if direct and name not in PROGRESS_DIRECT_METHODS:
+    if direct and name not in PROGRESS_DIRECT_METHODS and not (
+            name in PROGRESS_DIRECT_INWAIT_METHODS and os.environ.get(INWAIT_ENV, '0') == '1'):
         # Raised inside the RPC's try: the monitored worker-failure report and a
         # FAILURE wire, which the engine receiver poisons on before matching.
         raise ValueError('flash-s5 direct reply refused for this method')
@@ -1225,11 +1633,24 @@ def worker_rpc_begin(proc, method, kwargs):
     if state is not None and name == 'flash_s5_release':
         # One receipt line per chunk: everything this rank recorded before the
         # chunk's release. Logging failures are counted by the trace, never raised.
+        # Alpha-next PLAN 2: one atomic write per part through the process receipt writer.
         try:
-            for text in state[0].lines():
-                _progress_logger().info(text)
+            emit_receipt_lines(state[0].lines(), _progress_logger())
         except Exception:
             state[0].dropped_total += 1
+        if (anatomy := _anatomy(proc)) is not None:
+            anatomy.flush(_progress_logger())
+        if (acc := _submit_cpu()) is not None:
+            # decode-merge probe: cumulative submit wall/CPU of this rank, one line per chunk release.
+            try:
+                _progress_logger().info('flash-s5 submit-cpu ' + json.dumps(dict(acc, rank=proc.rank), sort_keys=True, separators=(',', ':')))
+            except Exception:  # noqa: BLE001 - a measurement never fails the RPC
+                pass
+    if state is not None and (anatomy := _anatomy(proc)) is not None:
+        anatomy.begin(sequence, name)
+    if state is not None and name == 'flash_s5_submit' and _submit_cpu() is not None:
+        # decode-merge probe: thread CPU stamp beside the wall stamp (rpc[5]).
+        return [sequence, name, time.monotonic_ns(), None, direct, time.thread_time_ns()]
     return [sequence, name, time.monotonic_ns(), None, direct]
 
 
@@ -1237,10 +1658,14 @@ def worker_rpc_returned(proc, rpc, output_rank):
     if rpc is None:
         return
     rpc[3] = time.monotonic_ns()
+    if len(rpc) > 5:
+        _note_submit_cpu(rpc)       # decode-merge probe (FLASH_S5_SUBMIT_CPU=1 only)
+    if _ANATOMY:
+        _ANATOMY.returned(rpc, output_rank)
     if output_rank is None or proc.rank == output_rank:
         return
     state = _worker_progress(proc.rank)
-    if state is not None:
+    if state is not None and type(rpc) is not _CleanRpc:
         state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], None, int(rpc[4]), 0)
 
 
@@ -1249,6 +1674,12 @@ _DIRECT_WRITE = threading.local()
 
 def worker_handle_output(proc, rpc, output):
     """Route one reply: direct (typed native command flow) or stock-ordered."""
+    if output is STAGE_SKIP:
+        # A stage-scoped command for other ranks: no reply is expected or written.
+        state = None if rpc is None else _worker_progress(proc.rank)
+        if state is not None:
+            state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], None, int(rpc[4]), 0)
+        return
     if rpc is not None and rpc[4]:
         # Written by this RPC thread now, not queued behind async decode output.
         # A raised command still goes through stock enqueue_output, which turns
@@ -1267,6 +1698,8 @@ def worker_handle_output(proc, rpc, output):
     if state is not None:
         # Ordered replies leave in exactly handle_output order (async FIFO).
         state[1].append(rpc)
+        if rpc is not None and (anatomy := _anatomy(proc)) is not None:
+            return anatomy.handle_output(proc, rpc, output)
     proc.handle_output(output)
 
 
@@ -1283,7 +1716,10 @@ def worker_enqueue_reply(proc, result):
     except IndexError:
         return
     if rpc is not None:
-        state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 0, 1)
+        if type(rpc) is not _CleanRpc:
+            state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 0, 1)
+        if (anatomy := _anatomy(proc)) is not None:
+            anatomy.replied(rpc)
 
 
 __all__ = [
@@ -1294,8 +1730,8 @@ __all__ = [
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
     'config_reply_timeout', 'control_pending', 'engine_idle_tick', 'executor_shutdown',
     'native_progress_wait',
-    'generate_core', 'generate_executor',
-    'generate_worker', 'install', 'native_control', 'native_work_pending', 'park_prefill',
+    'generate_core', 'generate_executor', 'engine_request_admitted',
+    'generate_worker', 'install', 'log_worker_failure', 'native_control', 'native_work_pending', 'park_prefill',
     'retain_mq', 'revert_core',
     'revert_executor', 'revert_worker', 'worker_rpc',
 ]
@@ -1304,6 +1740,58 @@ __all__ = [
 _FATAL_WRITER = None
 _FATAL_LOCK = threading.Lock()
 _FATAL_SENT = False
+FATAL_RECORD_MAX = 1024  # monitor_fatal_workers reads one record with recv_bytes(1024)
+# Native43 le-fix (b): bounded metadata that lets the parent log the cause.  ``where`` and ``cause`` are code
+# locations and type names; ``detail`` is the message of this package's own typed errors only (foreign exception
+# payloads are normally omitted). Native dispatcher quarantine is the explicit
+# diagnostic exception: bounded cause text and frame locations, without locals.
+FATAL_OPTIONAL = {'detail': 160, 'where': 100, 'cause': 80,
+                  'native_message': 160, 'native_trace': 320}
+
+
+def _fatal_own_error(error):
+    module = sys.modules.get(type(error).__module__)
+    path = getattr(module, '__file__', None)
+    return bool(path) and os.path.dirname(os.path.abspath(path)) == os.path.dirname(os.path.abspath(__file__))
+
+
+def _fatal_metadata(error):
+    """CPU-only cause metadata for the fatal record; never raises."""
+    rows = {}
+    try:
+        tb, last = error.__traceback__, None
+        while tb is not None:
+            last, tb = tb, tb.tb_next
+        if last is not None:
+            code = last.tb_frame.f_code
+            rows['where'] = '%s:%d:%s' % (os.path.basename(code.co_filename), last.tb_lineno, code.co_name)
+        linked = error.__cause__ if error.__cause__ is not None else error.__context__
+        if linked is not None:
+            rows['cause'] = type(linked).__name__
+        if _fatal_own_error(error):
+            rows['detail'] = str(error)
+            # Native quarantine wraps the useful device error; do not lose it
+            # when this worker parks before its normal exception logger runs.
+            if type(error).__name__ == 'LaneDispatchError' and str(error).startswith('dispatcher quarantined:'):
+                root, seen = error, set()
+                while id(root) not in seen and len(seen) < 8:
+                    seen.add(id(root))
+                    linked = root.__cause__ if root.__cause__ is not None else root.__context__
+                    if linked is None or id(linked) in seen:
+                        break
+                    root = linked
+                rows['native_message'] = type(root).__name__ + ': ' + str(root)
+                frames, tb = [], root.__traceback__
+                while tb is not None:
+                    code = tb.tb_frame.f_code
+                    frames.append('%s:%d:%s' % (os.path.basename(code.co_filename), tb.tb_lineno, code.co_name))
+                    tb = tb.tb_next
+                # No locals, source lines, tensor contents or absolute paths.
+                rows['native_trace'] = ' <- '.join(frames[-8:])[-FATAL_OPTIONAL['native_trace']:]
+    except Exception:  # noqa: BLE001 - metadata is best effort; the record itself must go out
+        pass
+    return {k: v.encode('ascii', 'backslashreplace').decode('ascii')[:FATAL_OPTIONAL[k]]
+            for k, v in rows.items() if type(v) is str}
 
 
 def make_fatal_pipe(context):
@@ -1332,14 +1820,51 @@ def report_worker_failure(rank, method, error):
             record = dict(schema='s5-worker-fatal/1', rank=rank, pid=os.getpid(),
                           method=method[:80] if type(method) is str else 'callable',
                           error_type=type(error).__name__[:80], code='worker-rpc-exception')
+            record.update(_fatal_metadata(error))
+            data = json.dumps(record).encode()
+            for key in ('detail', 'where', 'cause'):
+                if len(data) <= FATAL_RECORD_MAX:
+                    break
+                record.pop(key, None)
+                data = json.dumps(record).encode()
+            # Escape-heavy device messages must still fit the existing pipe.
+            for key in ('native_trace', 'native_message'):
+                while len(data) > FATAL_RECORD_MAX and len(record.get(key, '')) > 32:
+                    record[key] = record[key][32:] if key == 'native_trace' else record[key][:-32]
+                    data = json.dumps(record).encode()
             try:
-                _FATAL_WRITER.send_bytes(json.dumps(record).encode())
+                _FATAL_WRITER.send_bytes(data)
             except (OSError, EOFError):
                 raise SystemExit(1) from None
     # No queue/log/device work after publication. Parent death monitoring or
     # supervisor termination also retires this worker if the reader dies.
     threading.Event().wait()
     raise SystemExit(1)
+
+
+def log_worker_failure(worker, record, unreadable=None):
+    """Native43 le-fix (b): the parent names the shutdown cause before the teardown it starts.
+
+    l-e (1 Nov 2026) shut the executor down from this channel and no process logged why: the worker parks
+    without logging (report_worker_failure) and the parent stored the record silently.  One ERROR line,
+    after the futures are poisoned and Core is notified, before executor.shutdown(); it never raises.
+    """
+    try:
+        logger = logging.getLogger(__name__)
+        if record is None:
+            logger.error('FLASH_S5_WORKER_FAILURE rank=%s pid=%s record=unavailable (%s); '
+                         'executor shutdown follows (worker fatal channel)',
+                         getattr(worker, 'rank', '?'), getattr(getattr(worker, 'proc', None), 'pid', '?'),
+                         unreadable or 'unknown')
+        else:
+            logger.error('FLASH_S5_WORKER_FAILURE rank=%s pid=%s method=%s error_type=%s code=%s cause=%s '
+                         'where=%s detail=%r native_message=%r native_trace=%r; '
+                         'executor shutdown follows (worker fatal channel)',
+                         record.get('rank'), record.get('pid'), record.get('method'), record.get('error_type'),
+                         record.get('code'), record.get('cause'), record.get('where'), record.get('detail'),
+                         record.get('native_message'), record.get('native_trace'))
+    except Exception:  # noqa: BLE001 - logging must never stop the teardown
+        pass
 
 
 def notify_worker_failure(executor, record):
@@ -1379,23 +1904,27 @@ def monitor_fatal_workers(executor):
     executor._flash_s5_fatal_lock = threading.Lock()
     executor._flash_s5_fatal_failure = None
     def receive(worker):
+        unreadable = None
         try:
-            raw = worker.fatal_reader.recv_bytes(1024)
+            raw = worker.fatal_reader.recv_bytes(FATAL_RECORD_MAX)
             record = json.loads(raw)
             if (type(record) is not dict or record.get('schema') != 's5-worker-fatal/1'
                     or record.get('rank') != worker.rank
                     or type(record.get('pid')) is not int
                     or record['pid'] != worker.proc.pid
                     or any(type(record.get(k)) is not str or len(record[k]) > 80
-                           for k in ('method', 'error_type', 'code'))):
+                           for k in ('method', 'error_type', 'code'))
+                    or any(k in record and (type(record[k]) is not str or len(record[k]) > n)
+                           for k, n in FATAL_OPTIONAL.items())):
                 raise ValueError('invalid worker fatal record')
-        except (OSError, EOFError, ValueError):
-            record = None
+        except (OSError, EOFError, ValueError) as exc:
+            record, unreadable = None, type(exc).__name__
         if getattr(executor, 'shutting_down', False):
             return
         try:
             notify_worker_failure(executor, record)
         finally:
+            log_worker_failure(worker, record, unreadable)
             worker.fatal_reader.close()
             # Death pipes/signals, never an RPC to peers blocked in PP/NCCL.
             executor.shutdown()
@@ -1409,6 +1938,27 @@ def raise_worker_failure(engine):
     failure = getattr(engine.model_executor, '_flash_s5_fatal_failure', None)
     if failure is not None:
         raise failure
+
+
+def engine_request_admitted(engine, request):
+    """Timestamp scheduler acceptance, not the client's pre-tokenization send."""
+    try:
+        driver = getattr(engine, '_flash_s5_driver', None)
+        emit = getattr(driver, '_gap_event', None)
+        if callable(emit):
+            # night-pack fix 3: the API process's arrival stamp (wall clock) and the admission's wall clock beside it,
+            # so arrival -> admit reads in one clock domain and splits the sent -> admit constant (log-only)
+            emit('request_admitted', request_uid=request.request_id,
+                 prompt_tokens=request.num_prompt_tokens, arrival_s=getattr(request, 'arrival_time', None),
+                 admit_wall_s=time.time())
+    except Exception:
+        pass
+    try:                                # ingress prefix counter: log-only, engine arms only (the driver decides)
+        note = getattr(getattr(engine, '_flash_s5_driver', None), 'note_ingress_prefix', None)
+        if callable(note):
+            note(engine, request)
+    except Exception:
+        pass
 
 
 def require_startup_owner(engine):

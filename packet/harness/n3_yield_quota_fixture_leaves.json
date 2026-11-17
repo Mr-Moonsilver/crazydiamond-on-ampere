@@ -1,0 +1,37 @@
+{
+  "schema": "n3-yield-quota-fixture-leaves/1",
+  "scope": "j2 quota observation and connected eight-yield CPU guard; no hardware proof",
+  "leaves": [
+    {
+      "name": "connected-eight-yield-workers",
+      "seams": [
+        "test_append_yield.Rig",
+        "Rig.stock_handback",
+        "Rig.stock_finish"
+      ],
+      "real": "NativeSegmentDriver and StagedSegmentDriver through the existing real four-worker NativeWorkerBridge/LaneDispatcher admission, close, publication and reopen paths",
+      "limit": "Inherited test_append_yield and bridge fixtures replace pinned model/device tensors, request/allocator and completion events. Bulk token fields are consistently expanded to80, giving enough real4-row chunks for8yields; per_bulk comes from the real AppendYieldConfig. Each request receives the declared synthetic one-row stock handback and finishes before the next cycle, so the supported decode-cohort count stays unchanged. No fake all-rank close/report is added. Physical CUDA/PP stream ordering and model outputs are not tested."
+    },
+    {
+      "name": "quota-logging-and-lookup-faults",
+      "seams": [
+        "_progress_logger",
+        "get_computed_blocks",
+        "BrokenQueue",
+        "logger.info"
+      ],
+      "real": "vLLM logger.info and scheduler queue/cache interfaces",
+      "limit": "The existing _progress_logger returns unittest.mock.Mock. OSError at logger.info and an iterator failure are declared report-only faults. get_computed_blocks raises if called during quota observation, proving the observer makes no prefix lookup/allocation. Tests verify unchanged refusal state/frontier, the shared4096log bound, explicit passedbulk UID, first8 queue entries, same-length queue replacements and dedupe. No request content or auth is logged."
+    },
+    {
+      "name": "quota-inspect-source-mutants",
+      "seams": [
+        "mock.patch.object",
+        "NativeSegmentDriver._yield_offer",
+        "PrefillAdmissionController._yield_quota_receipts"
+      ],
+      "real": "quota boundary, observation call and snapshot bound",
+      "limit": "Three in-memory mutants remove the observation, allow a ninth yield, or scan9entries. The positive connected test uses both actual driver classes; mutants must fail an assertion with0unrelated errors. Existing fullclose/reopen algorithms remain untouched."
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "leaves": [
+    {
+      "name": "n3-gap-core-and-four-worker-cpu-path",
+      "test": "test_n3_gap_receipts.GapReceipts",
+      "box_evidence": false,
+      "replaces": "EngineCore, Scheduler requests and four CUDA workers during native and stock steps",
+      "implementation": "The actual generated EngineCore.add_request AST over the pinned reference executes with a SimpleNamespace scheduler that records acceptance. test_e3_native_overlap.idle_stack/core_for executes the real control Future/transport/four worker adapters. test_e3_r4_worker_bridge.Stack executes the real controller/driver/bridge/dispatcher open and commit with CPU EventBus, fake torch events/streams/model/PP as in that fixture. Actual work envelopes, computed frontier and cache publication are identical with receipts off/on and a failed sink. No GPU operations execute.",
+      "equivalence": "The hooks read the same request_id, num_prompt_tokens, engine epoch, route generation and real native transaction. The recorder never mutates these fields. Actual generated Core revert equality, typed control sequence and four-worker cache publication are checked.",
+      "cannot_prove": "GPU ordering or timing, real mailbox/pipe backpressure and diagnostic overhead on the box; CPU event completions are manually supplied. The first API admission record precedes allocation of the native request_generation; request_key joins it to later real transaction identities."
+    },
+    {
+      "name": "n3-gap-policy-and-log-faults",
+      "test": "test_n3_gap_receipts.GapReceipts",
+      "box_evidence": false,
+      "replaces": "The live AutoArmPolicy scheduler/cohort and receipt sink",
+      "implementation": "test_compose5_declines.Stage(req()) supplies the declared FCFS scheduler/request/plan fields to the unpatched AutoArmPolicy selection/pause/drain. ed.emit_receipt_lines is captured, returns True or raises OSError. A driver._gap_event callback also raises OSError; work still advances. NativeProgress.GAP_LIMIT ( GAP_LIMIT ) is reduced to2 in the budget test, proving the production32768-event branch emits one coverage-incomplete marker then no more lines. A real os.pipe, real ReceiptWriter and real receipt_lines.check/verdict validate the new prefix, pid/seq/sha and unique gap_seq without mocking either allowlist.",
+      "equivalence": "Actual selection and control branches execute; diagnostic failures cannot change the call or its final state. Production uses the same budget and formatter with a larger limit. The writer uses the same atomic-fifo path; no copied or hand-built receipt bypasses its prefix guard.",
+      "cannot_prove": "The live plan/KV and pause durations; worker/GPU resource fit; production stderr/file throughput. Fields and event-query results in borrowed CPU rigs are fixtures, not device receipts."
+    }
+  ]
+}

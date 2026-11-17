@@ -1,0 +1,39 @@
+{
+  "native": {
+    "e4096": {
+      "engine_epoch": 860779427291779526,
+      "native_control_history": [],
+      "provenance": {
+        "bind_sha256": "61697485af935106c7566e1835049a6cee30366a36677d951813fd27906fcb50",
+        "record_sha256": "64dae7fb2528e06ce4a60df851102e9d77f1593425ae6c644df58e5487b886b7"
+      },
+      "reason": "QualificationRefused: response-identity-differs at e3_native_qualification_driver.py:559",
+      "response_scope": "raw rejected HTTP body was not retained; null run_id established by the actual NativeOverlapSession.execute source, exercised in the CPU stub",
+      "route": "full",
+      "route_generation": 2,
+      "run_id_before_prepare": null,
+      "stages": []
+    },
+    "e6": {
+      "engine_epoch": 3865471148276547890,
+      "native_control_history": [],
+      "provenance": {
+        "bind_sha256": "5ca03cd8f1964b828389a3935269a3eab975f500cf03475e073cc862357440c9",
+        "record_sha256": "a2141fa56d118275f124fe945687fd6544faea1f1a7ed202f856c8b406700666"
+      },
+      "reason": "QualificationRefused: response-identity-differs at e3_native_qualification_driver.py:559",
+      "response_scope": "raw rejected HTTP body was not retained; null run_id established by the actual NativeOverlapSession.execute source, exercised in the CPU stub",
+      "route": "full",
+      "route_generation": 2,
+      "run_id_before_prepare": null,
+      "stages": []
+    }
+  },
+  "schema": "fit-w20-regression/1",
+  "source": "read-only boxro records; every fetched file remote/local SHA256 matched",
+  "stock": {
+    "exception": "Traceback (most recent call last):\n  File \"<stdin>\", line 6, in <module>\n  File \"/home/<service-user>/harness/75b7122e881a/e3_builder/native_readiness.py\", line 152, in verify_finalized_package\n    _require(generation.get('package_sha256')==payload==ready.get('package_sha256'),\n  File \"/home/<service-user>/harness/75b7122e881a/e3_builder/native_readiness.py\", line 29, in _require\n    if not ok:raise NativeReadinessError('require_native_ready: '+reason)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nnative_readiness.NativeReadinessError: require_native_ready: final candidate payload identity differs\n",
+    "log_sha256": "934b8125fb12e8b99618b9200964805be5010d54fb7974b8a73521425409af38",
+    "reason": "native-package-closure"
+  }
+}

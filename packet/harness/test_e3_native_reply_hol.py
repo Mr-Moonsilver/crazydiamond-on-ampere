@@ -775,6 +775,7 @@ class PairLeaf:
         self._inflight = {7: 'segment'}
         self._retry = None
         self._in_wait = False
+        self._tx_fused = False
         self._progress_origin = 'tick'
         self.error = self.stop_kind = self._profile_failure = None
         self._control = None

@@ -67,6 +67,11 @@ def full11_launcher_text():
 
 def without_native28_log_cap(text):
     """Rebuild immutable pre-native28 queue fixture bytes from the new generator."""
+    # Native35's added indexer mount is absent from these frozen historical fixtures.
+    text = text.replace('qsa.py ops_qsa.py ops_qsa_indexer.py; do', 'qsa.py ops_qsa.py; do')
+    text = text.replace('''      -v "$OVERLAY/e3_sources/model.py:/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py:ro"
+      -v "$OVERLAY/ops_qsa_indexer.py:/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/ops/qsa_indexer.py:ro")''',
+                        '''      -v "$OVERLAY/e3_sources/model.py:/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py:ro")''')
     text = text.replace('s5=(); s5_auth=(); s5_log=()', 's5=(); s5_auth=()')
     text = text.replace(
         "  # Bound Docker's ephemeral json-file log; the queue follows the full stream\n"

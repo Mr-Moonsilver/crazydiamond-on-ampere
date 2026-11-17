@@ -55,27 +55,47 @@ ROOT = HERE.parents[1]
 E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm',
-              'admission_metadata', 'worker_bridge',
+              'admission_metadata', 'worker_bridge', 'native_mm',
               'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma',
               'native_source', 'row1_oracle', 'row1_exactness',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers',
+              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'native_uva', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers',
               # Native control over the pinned EngineCore utility channel.
               'native_overlap_metrics', 'native_overlap_worker',
               'native_overlap_control', 'native_overlap_session',
-              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness')
+              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness',
+              # C0: stage-local prefill progress (FLASH_S5_STAGE_LOCAL).
+              'stage_wire', 'stage_progress',
+              # Stage-1 handler anatomy (FLASH_S5_HANDLER_ANATOMY, default off): imported by executor_hooks only under the switch.
+              'handler_anatomy',
+              # C1: two chunks in flight (FLASH_S5_STAGE_OVERLAP).
+              'stage_overlap',
+              # attn-meta (FLASH_ATTN_META_GDN_BATCH, default off): imported by s5_startup / native_overlap_worker only under it.
+              'attn_meta_batch', 'attn_meta_select',
+              # host-gap batch (FLASH_S5_SMALL_PIECE_BATCH, default off).
+              'small_piece_batch',
+              # ingress-incremental (FLASH_S5_INGRESS_INCREMENTAL, default off) and the log-only append prefix counter.
+              'ingress_incremental',
+              # decode-step (FLASH_S5_DECODE_SAMPLE_FAST / FLASH_S5_DECODE_ANATOMY, default off): executor_hooks imports it only under either.
+              'decode_step', 'decode_timeline',
+              # lever 2 soft split (FLASH_S5_DECODE_OVERLAP_SMS, default off): native_startup imports it only under the flag.
+              'decode_overlap')
 # Modules packaged, mounted with the whole e3 dir and listed in the overlay
 # SHA256SUMS, but left out of the launcher's name-only checksum loop so the
 # reviewed launcher stays byte-identical (pin 22473a90). That loop greps names,
 # not digests; the queue preflight checks every overlay file's digest against
 # the manifest and refuses any file outside it.
-LAUNCHER_LIST_EXEMPT = ('native_auto_arm',)
+LAUNCHER_LIST_EXEMPT = ('native_mm', 'native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
+                        'attn_meta_batch', 'attn_meta_select', 'small_piece_batch', 'ingress_incremental', 'decode_step', 'decode_timeline',
+                        'decode_overlap')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
 MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
+INDEXER_PATH = 'models/qwen4_exp/nvidia/ops/qsa_indexer.py'
+INDEXER_SHA256 = '2c34883a6396bac0238f6308196854b653eadab8bbebbe7dd2d558e30d065cbb'
 BUILD_GREEN_HELPER = '''#!/bin/bash
 # Owner-only CPU compiler container; new output, no GPU or engine access.
 # Same sm_86/shared-cudart recipe qualified by q17a. Container is retained.
@@ -119,6 +139,7 @@ REFERENCE_INPUTS.update(worker_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.CAPTURE_REFERENCE_PINS)
 REFERENCE_INPUTS.update(model_hooks.PINS)
 REFERENCE_INPUTS.update(probe_control_hooks.PINS)
+REFERENCE_INPUTS[INDEXER_PATH] = INDEXER_SHA256
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
 S5_LAUNCHER_NAME = 'run-flash-s5-test.sh'
 
@@ -216,6 +237,31 @@ def revert_runner(source, expected):
     return text
 
 
+def compose_indexer(source):
+    """Retire each score slice after its last consumer, before the next allocation."""
+    if _sha_text(source) != INDEXER_SHA256:
+        raise ValueError('unreviewed QSA indexer source')
+    text = _replace(source, '            topk_workspace,\n        )\n\n\n__all__ = [',
+                    '            topk_workspace,\n        )\n'
+                    '        # Top-k is the last reader; same-stream reuse is ordered after it.\n'
+                    '        del logits\n\n\n__all__ = [')
+    text = _replace(text, 'import torch\n',
+                    'import torch\nfrom vllm.v1.flash_e3.native_measurement import INDEXER_PHASE_CONTEXT\n')
+    text = _replace(text, '    rows = q.shape[0]\n    # No row scores',
+                    '    rows = q.shape[0]\n    _phase = INDEXER_PHASE_CONTEXT.get()\n    # No row scores')
+    text = _replace(text, '        logits = _prefill_logits(\n',
+                    "        if _phase is not None:\n            _score = _phase.begin('score', _phase.operation.device.compute)\n"
+                    '        logits = _prefill_logits(\n')
+    text = _replace(text, '        _topk(\n            logits,\n',
+                    "        if _phase is not None:\n            _phase.end(_score)\n            _top = _phase.begin('topk', _phase.operation.device.compute)\n"
+                    '        _topk(\n            logits,\n')
+    text = _replace(text, '        # Top-k is the last reader;',
+                    '        if _phase is not None:\n            _phase.end(_top)\n'
+                    '        # Top-k is the last reader;')
+    return text
+
+
+
 def _s5_launcher(source):
     """Extend the reviewed E2 test launcher with an off-by-default S5 branch."""
     # Keep the E2 branch and all its checks byte-identical; only add a guarded
@@ -231,7 +277,7 @@ if [[ -d $OVERLAY/e3 ]]; then
   # Bound Docker's ephemeral json-file log; the queue follows the full stream
   # into its own retained host artifact before engine startup.
   s5_log=(--log-opt max-size=512m --log-opt max-file=4 --ulimit core=0)
-  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES if name not in LAUNCHER_LIST_EXEMPT) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES if name not in LAUNCHER_LIST_EXEMPT) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py ops_qsa_indexer.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -243,7 +289,8 @@ if [[ -d $OVERLAY/e3 ]]; then
       -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"
       -v "$OVERLAY/e3_sources/async_utils.py:$V/worker/gpu/async_utils.py:ro"
       -v "$OVERLAY/e3_sources/api_routers.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py:ro"
-      -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro")
+      -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro"
+      -v "$OVERLAY/ops_qsa_indexer.py:/usr/local/lib/python3.12/dist-packages/vllm/''' + INDEXER_PATH + ''':ro")
 fi
 '''
     text = _replace(source, '# VISION=1: image input', addition + '# VISION=1: image input')
@@ -488,6 +535,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     for name in NATIVE_FILES:
         files['e3/' + name] = (HERE / name).read_text()
     files['e3/native/build_green_helper.sh'] = BUILD_GREEN_HELPER
+    files['ops_qsa_indexer.py'] = compose_indexer((reference / INDEXER_PATH).read_text())
     files[S5_LAUNCHER_NAME] = _s5_launcher(launcher_source)
     graph_record = {'module': 'graph_hooks.py',
                     'sha256': sha(HERE / 'graph_hooks.py'),

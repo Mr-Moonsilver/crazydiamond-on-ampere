@@ -1,0 +1,73 @@
+{
+ "inherits": [
+  "native41_progress_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "box_evidence": false,
+   "cannot_prove": "shared memory, ZMQ overflow, memory ordering between processes",
+   "equivalence": "same slot rule as acquire_write (written flag, per-reader read flags, one index per reader), read through the same get_metadata/current_idx surface BoundedSender uses; every envelope is pickled and each reader gets its own copy; the ring has the pinned default of 10 slots",
+   "more_convenient": true,
+   "name": "ring-buffer",
+   "replaces": "vllm MessageQueue writer and ShmRingBuffer (rpc_broadcast_mq)",
+   "test": "alpha_stopfix_net.FakeRing, alpha_stopfix_net.FakeBuffer"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "real queue latency",
+   "equivalence": "single-writer single-reader FIFO with a timeout that raises TimeoutError; the wire tuple is pickled; the real ReplyTransport and its receiver threads read it",
+   "more_convenient": true,
+   "name": "reply-queue",
+   "replaces": "each worker's response MessageQueue",
+   "test": "alpha_stopfix_net.ReplyQueue"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "decode occupancy of the worker main thread; that is a box receipt",
+   "equivalence": "the same hook calls in the same order as the generated text at executor_hooks._EXECUTOR_FORWARD (worker_rpc_begin, the method, worker_rpc_returned, the output-rank guard, worker_handle_output, worker_enqueue_reply); the generated source itself runs in test_e3_native_reply_hol; replies are written synchronously, without the async output thread, so head-of-line blocking behind decode is not modelled here",
+   "more_convenient": true,
+   "name": "worker-loop",
+   "replaces": "generated WorkerProc.worker_busy_loop and handle_output/enqueue_output",
+   "test": "alpha_stopfix_net.RingNetworkMixin.step, alpha_stopfix_net.FakeProc"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "stock future handling; test_e3_stock_rpc_credits and test_e3_native_reply_hol cover it",
+   "equivalence": "takes one slot under the same rule and asserts it would not block; its reply path (output_rank -1) is not under test",
+   "more_convenient": true,
+   "name": "stock-rpc",
+   "replaces": "a stock execute_model or sample_tokens enqueue on the same ring",
+   "test": "alpha_stopfix_net.RingNetworkMixin.stock_send"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "numerics; the matched box arms compare real bytes",
+   "equivalence": "an observer of per-rank command order and PP identity; numerics follow from equal per-rank order only if each handler is deterministic in that order",
+   "more_convenient": false,
+   "name": "device-ledger",
+   "replaces": "nothing: it records around the real dispatcher handlers and the PP channel leaf",
+   "test": "alpha_stopfix_net.RingStack._wrap_device_leaves"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "device order, NCCL behaviour, memory",
+   "equivalence": "as declared in test_e3_r4_worker_bridge: events resolve only when the test completes them, and the PP channel leaf withholds a send's completion until its receive is posted (rendezvous); LaneDispatcher, NativeWorkerBridge, WorkerState, route controller and graph router are real",
+   "more_convenient": true,
+   "name": "worker-owners",
+   "replaces": "CUDA events and streams, the lane forward, the chunk factory, the PP channel's NCCL calls",
+   "test": "r4.Stack._add_worker (via alpha_stopfix_net.RingStack)"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "allocator behaviour",
+   "equivalence": "C0 calls allocate_slots and cache_blocks at the same points with the same arguments as the frozen path (compared in Identity); the real manager proof is the C1 provisional-allocation proof",
+   "more_convenient": true,
+   "name": "scheduler-and-manager",
+   "replaces": "stock Scheduler and KVCacheManager for C0's protocol proofs",
+   "test": "r4.Scheduler, r4.Manager, r4.Request"
+  }
+ ],
+ "schema": "fixture-leaves/1",
+ "scope": "stop after a refused continuation open: test_e3_stopfix_refused_open",
+ "source": "C0's harness/stage_fixture_leaves.json at ac54f88, the leaves this network uses"
+}

@@ -1,0 +1,40 @@
+{
+ "leaves": [
+  {
+   "box_evidence": false,
+   "cannot_prove": "Shared-memory timing, the spinloop extension (off on the box: VLLM_USE_SPINLOOP_EXT unset) and the zmq overflow path. The pinned-image probe (tools/native43_le_fix_enqueueprobe.py) repeats every case on vLLM's real MessageQueue",
+   "equivalence": "bounded_enqueue uses only enqueue(obj, timeout) and the queue's shutting_down attribute. The fixture keeps the pinned contract of shm_broadcast.py 648-683 and 823-880: a free block is written at once; with no free block a timeout raises TimeoutError before any block is claimed (nothing written), and None waits until a reader frees one",
+   "implementation": "Ring: a threading.Condition over a count of free blocks; enqueue(obj, timeout=None) waits for a free block (wait_for with the timeout), raises TimeoutError on expiry, else takes the block and appends obj; drain() frees blocks. buffer/current_idx/_is_writer/n_remote_reader are the attributes install() and BoundedSender read (as test_e3_executor_threads.Broadcast). ScriptedRing advances a fake clock by each slice for the warning cadence",
+   "name": "broadcast-ring",
+   "replaces": "vllm.distributed.device_communicators.shm_broadcast.MessageQueue, the writer side of the EngineCore rpc_broadcast_mq (four local readers on the box)",
+   "test": "test_native43_le_bounded_enqueue"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "The real MultiprocExecutor.shutdown and the EngineCore busy loop: that the raised error reaches run_engine_core's except branch, which logs \"EngineCore encountered a fatal error\" and calls _send_engine_dead (pinned core.py; generated e3_sources/core.py 1394-1395 in the l-e overlay). That composition runs only on the box",
+   "equivalence": "monitor_fatal_workers, notify_worker_failure, log_worker_failure and bounded_enqueue read exactly these attributes. The fatal record arrives on a real multiprocessing Pipe through the actual receive thread, as on the box; the worker side is its record, sent the way report_worker_failure sends it",
+   "implementation": "SimpleNamespace(rpc_broadcast_mq=<Ring>, response_mqs, is_failed, futures_queue, shutting_down, world_size=1, failure_callback=None, workers=[SimpleNamespace(rank=0, proc=SimpleNamespace(pid=<this pid>), fatal_reader=<real Connection>)], shutdown). shutdown records the call and sets shutting_down. FLASH_S5_OVERLAP=1 only for the install, the box value. publish_fatal sends the l-e record shape (QsaDriverError caused by Row1OracleError)",
+   "name": "fatal-executor-namespace",
+   "replaces": "MultiprocExecutor in the EngineCore process with the flash-s5 fatal channel installed; the box worker that published the l-e record",
+   "test": "test_native43_le_bounded_enqueue; tools/native43_le_fix_enqueueprobe.py"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Real reply traffic; no reply is ever due in these cases",
+   "equivalence": "The owned route registers its reply before the broadcast and the write is the call under test; the readers are only polled by the ReplyTransport receiver threads",
+   "implementation": "Reader.dequeue(timeout) sleeps up to 50 ms and raises TimeoutError",
+   "name": "owned-reply-readers",
+   "replaces": "The four worker response MessageQueues the owned ReplyTransport reads",
+   "test": "test_native43_le_bounded_enqueue.GeneratedSitesTests.test_the_owned_route_fails_loud_and_poisons_the_transport; tools/native43_le_fix_enqueueprobe.py (owned cases)"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "The reply path after the write (get_response), which these cases never reach on a failed executor",
+   "equivalence": "The generated stock collective_rpc returns the wrapper unread with non_block=True; the cases test the write before it",
+   "implementation": "FutureWrapper = lambda queue, get_response, aggregate: SimpleNamespace(queue=queue) in the exec scope of the actual generated _flash_s5_stock_collective_rpc",
+   "name": "stock-future-wrapper",
+   "replaces": "vllm.v1.executor.multiproc_executor.FutureWrapper",
+   "test": "test_native43_le_bounded_enqueue.GeneratedSitesTests; tools/native43_le_fix_enqueueprobe.py (stock cases)"
+  }
+ ]
+}

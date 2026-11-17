@@ -43,6 +43,15 @@ ACTIONS = ('identity', 'census', 'status', 'barrier', 'drain', 'poll_native',
 QUALIFICATION_ACTIONS = ('teacher_configure', 'teacher_evidence',
                          'observer_begin', 'observer_end',
                          'row1_configure', 'row1_evidence')
+# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector (patches/s5_engine/attn_meta_select.py),
+# answered in the row's ``qualification`` mapping; known only where the switch is on.
+ATTN_META_ACTIONS = ('attn_meta_select', 'attn_meta_read')
+_ATTN_META_FIELDS = {'attn_meta_select': {'action', 'on', 'engine_epoch', 'route_generation'},
+                     'attn_meta_read': {'action', 'engine_epoch', 'route_generation'}}
+
+
+def attn_meta_actions():
+    return ATTN_META_ACTIONS if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()
 
 # One exact field vocabulary for every worker row.  The engine refuses a row
 # whose key set differs, so a worker that silently adds or drops an observation
@@ -487,7 +496,7 @@ def handle(worker, command, *, clock=time.monotonic_ns, torch_module=None):
     if type(command) is not dict:
         raise NativeOverlapUnavailable('native-overlap-command-not-object')
     action = command.get('action')
-    if action not in ACTIONS and action not in QUALIFICATION_ACTIONS:
+    if action not in ACTIONS and action not in QUALIFICATION_ACTIONS and action not in attn_meta_actions():
         raise NativeOverlapUnavailable('native-overlap-unknown-action')
     runner, native = _worker_native(worker)
     census = getattr(runner, '_flash_s5_native_census', None)
@@ -522,11 +531,66 @@ def handle(worker, command, *, clock=time.monotonic_ns, torch_module=None):
     if action in QUALIFICATION_ACTIONS:
         return _row(worker, native, 'qualification', command, clock,
                     qualification=_qualification(runner, command), **common)
+    if action in attn_meta_actions():
+        return _row(worker, native, 'qualification', command, clock,
+                    qualification=_attn_meta(runner, command), **common)
     raise NativeOverlapUnavailable('native-overlap-action-not-implemented')
 
 
+INWAIT_RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify', 'ple_private', 'ple_witness')    # the flush first: the cap is sized after it
+
+
+def _attn_meta(runner, command):
+    """The attn-meta selector's typed select / read on this rank; counters and wrapper order, never a verdict."""
+    action = command.get('action')
+    fields = set(command)
+    levers = {}
+    if action == 'attn_meta_select' and os.environ.get('FLASH_S5_INWAIT', '0') == '1':
+        # inwait build-2 and build-3 (DESIGN-2, DESIGN-3): this rank's levers, the same pause as the attn-meta selection.
+        for name in INWAIT_RANK_LEVERS:
+            if name in fields:
+                fields.discard(name)
+                levers[name] = command[name]
+                if type(levers[name]) is not bool:
+                    raise NativeOverlapUnavailable('native-attn-meta-' + name.replace('_', '-') + '-not-bool')
+    if fields != _ATTN_META_FIELDS[action]:
+        raise NativeOverlapUnavailable('native-attn-meta-fields-differ')
+    import attn_meta_select
+    try:
+        if action == 'attn_meta_select':
+            if type(command['on']) is not bool:
+                raise NativeOverlapUnavailable('native-attn-meta-select-not-bool')
+            record = attn_meta_select.select(runner, command['on'])
+        else:
+            record = attn_meta_select.read(runner)
+    except attn_meta_select.AttnMetaSelectError as error:
+        raise NativeOverlapUnavailable('native-' + str(error)) from None
+    result = copy.deepcopy(record)
+    if os.environ.get('FLASH_S5_INWAIT', '0') == '1':
+        # Inside ``after`` and ``counters``: the rows the box's attn-meta reader keeps.
+        import lane_chunk
+        import model_hooks
+        row = result['after' if action == 'attn_meta_select' else 'counters']
+        selects = dict(slots_fast=(lane_chunk.select_slots_fast, lane_chunk.SLOTS_FAST),
+                       prepare_slices=(lane_chunk.select_prepare_slices, lane_chunk.PREPARE_SLICES),
+                       score_warm=(lane_chunk.select_score_warm, lane_chunk.SCORE_WARM),
+                       score_warm_rank0=(lane_chunk.select_score_warm_rank0, lane_chunk.SCORE_WARM_RANK0),
+                       allocator_flush=(lane_chunk.select_allocator_flush, lane_chunk.ALLOCATOR_FLUSH),
+                       cow_fast=(lane_chunk.select_cow_fast, lane_chunk.COW_FAST),
+                       cow_host_filter=(lane_chunk.select_cow_host_filter, lane_chunk.COW_HOST_FILTER),
+                       cow_verify=(lane_chunk.select_cow_verify, lane_chunk.COW_VERIFY),
+                       reserved_cap=(lane_chunk.select_reserved_cap, lane_chunk.RESERVED_CAP),
+                       ple_private=(model_hooks.select_ple_private, model_hooks.PLE_PRIVATE),
+                       ple_witness=(model_hooks.select_ple_witness, model_hooks.PLE_WITNESS))
+        for name in INWAIT_RANK_LEVERS:
+            select, state = selects[name]
+            row[name] = select(levers[name]) if name in levers else dict(state)
+    result.update(worker_action=action, graded_by='attn_meta_select', engine_supplied_verdict=False)
+    return result
+
+
 __all__ = [
-    'ACTIONS', 'CLOCK_BASIS', 'NativeCensus', 'NativeOverlapUnavailable',
+    'ACTIONS', 'ATTN_META_ACTIONS', 'CLOCK_BASIS', 'NativeCensus', 'attn_meta_actions', 'NativeOverlapUnavailable',
     'QUALIFICATION_ACTIONS', 'ROW_BOOL_FIELDS', 'ROW_FIELDS', 'ROW_INT_FIELDS',
     'ROW_LIST_FIELDS', 'ROW_NULLABLE', 'ROW_STR_FIELDS', 'SCHEMA',
     'handle', 'install_census', 'live_census', 'measure_memory',

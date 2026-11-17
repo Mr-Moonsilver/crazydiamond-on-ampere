@@ -31,6 +31,7 @@ Request UIDs, token ids and physical block tables never appear in ``repr``.
 """
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 
 from e3_types import (
     CompletionKind,
@@ -44,6 +45,10 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from sparse_history_dma import ARENA_PAGES, ARENA_ROWS, MAX_DESCRIPTORS, MAX_LAYER_PAGES
+
+# coverage-soak-fix: the most prompt rows a terminal chunk leaves stock (a geometry tail; scheduler_hooks pins the same, the
+# staged minimum qsa.py _QSA_STAGE_MIN_ROWS); 1 is the one-row handback.
+GEOMETRY_TAIL_MAX = 64
 
 WIRE_VERSION = 1
 
@@ -149,6 +154,11 @@ class AdmissionRecord:
     least the final token for the ordinary handback path. ``committed_end`` is
     the committed frontier BEFORE this chunk (chunk_start); the worker's
     private align seed is derived from it, never sent.
+
+    ``native_end`` (coverage-soak-fix) is where the native turn ends: the
+    prompt's last row (``prompt_end - 1``, the default, 0 on the wire means it)
+    or, on a geometry tail, the last Mamba block boundary, leaving stock at most
+    ``GEOMETRY_TAIL_MAX`` rows. The chunk ending there is the terminal one.
     """
     transaction: TransactionId
     prompt_end: int
@@ -161,6 +171,8 @@ class AdmissionRecord:
     input_ids: tuple = field(repr=False)
     ngram_context: tuple = field(default=(), repr=False)
     sparse_active: bool = False
+    native_end: int = 0
+    mm: object = field(default=None, repr=False)
 
     def __post_init__(self):
         transaction = self.transaction
@@ -169,9 +181,17 @@ class AdmissionRecord:
         _int('prompt_end', self.prompt_end, 2)
         if transaction.chunk_start >= transaction.chunk_end:
             raise E3ContractError('admission chunk is empty')
+        if type(self.native_end) is not int:
+            raise E3ContractError('native_end must be an int')
+        if self.native_end == 0:
+            object.__setattr__(self, 'native_end', self.prompt_end - 1)
+        if not 1 <= self.prompt_end - self.native_end <= GEOMETRY_TAIL_MAX:
+            raise E3ContractError('native_end leaves stock more than a geometry tail')
         if transaction.chunk_end > self.prompt_end - 1:
             raise E3ContractError(
                 'admission must leave the last prompt token for handback')
+        if transaction.chunk_end > self.native_end:
+            raise E3ContractError('admission chunk ends past the native end')
         _int('state_epoch', self.state_epoch, 1)
         _int('committed_end', self.committed_end, 0)
         if self.committed_end != transaction.chunk_start:
@@ -209,6 +229,11 @@ class AdmissionRecord:
         _ints('ngram_context', self.ngram_context, minimum=0, unique=False)
         if type(self.sparse_active) is not bool:
             raise E3ContractError('sparse_active must be bool')
+        if self.mm is not None:
+            from native_mm import MMChunk
+            if type(self.mm) is not MMChunk:
+                raise E3ContractError('MM admission needs its typed frozen chunk')
+            self.mm.validate(transaction, self.state_epoch)
 
     @property
     def chunk_tokens(self):
@@ -221,12 +246,13 @@ class AdmissionRecord:
 
     @property
     def terminal(self):
-        """This chunk hands the request to stock for its final prompt token.
+        """This chunk hands the request to stock for its final prompt token
+        (coverage-soak-fix: or a geometry tail's rows): it ends at ``native_end``.
 
         Only a terminal chunk releases the worker's request row; a chunk that
         is followed by another native chunk keeps the row for ``update()``.
         """
-        return self.remaining_tokens == 1
+        return self.transaction.chunk_end == self.native_end
 
     @property
     def align_accepted(self):
@@ -249,7 +275,7 @@ class AdmissionRecord:
                 f'prompt_end={self.prompt_end}, state_epoch={self.state_epoch}, '
                 f'committed_end={self.committed_end}, groups={groups}, '
                 f'blocks={blocks}, chunk_tokens={self.chunk_tokens}, '
-                f'sparse_active={self.sparse_active})')
+                f'sparse_active={self.sparse_active}, native_end={self.native_end})')
 
 
 @dataclass(frozen=True, repr=False)
@@ -321,6 +347,10 @@ class SourceLeaseDescriptor:
                 f'ranks={len(self.consumer_ranks)})')
 
 
+# Step B: the group sizes a transaction can latch; 1 is Step A's command stream.
+LAYER_GROUP_SIZES = (1, 2, 4)
+
+
 @dataclass(frozen=True, repr=False)
 class SegmentDescriptor:
     """One bounded worker operation. No transaction-wide forward exists.
@@ -336,6 +366,8 @@ class SegmentDescriptor:
     layer_start: int | None = None
     layer_end: int | None = None
     seq: int | None = None
+    # Step B: the transaction's latched group size; 1 is Step A's one layer per segment.
+    layer_group: int = 1
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
@@ -359,7 +391,10 @@ class SegmentDescriptor:
         if self.kind is SegmentKind.LAYER:
             start = _int('layer_start', self.layer_start, 0)
             end = _int('layer_end', self.layer_end, 1)
-            if end != start + 1:
+            if self.layer_group != 1:
+                if not start < end <= start + self.layer_group:
+                    raise E3ContractError('a layer group covers 1..size consecutive layers')
+            elif end != start + 1:
                 raise E3ContractError('one layer per segment in the first cut')
         else:
             if self.layer_start is not None or self.layer_end is not None:
@@ -368,6 +403,10 @@ class SegmentDescriptor:
             _int('seq', self.seq, 0)
         elif self.seq is not None:
             raise E3ContractError('only PP segments carry a transfer seq')
+        if self.layer_group != 1 and (self.kind is not SegmentKind.LAYER
+                                      or type(self.layer_group) is not int
+                                      or self.layer_group not in LAYER_GROUP_SIZES):
+            raise E3ContractError('only a layer segment carries a known group size')
 
     @property
     def is_pp(self):
@@ -375,7 +414,7 @@ class SegmentDescriptor:
 
     @property
     def layers(self):
-        return () if self.kind is not SegmentKind.LAYER else (self.layer_start,)
+        return () if self.kind is not SegmentKind.LAYER else tuple(range(self.layer_start, self.layer_end))
 
     def satisfied(self, completed_tickets):
         """True when every dependency is present in the completed set."""
@@ -501,6 +540,235 @@ class WorkerCompletionReport:
                 f'watermark={self.completed_sequence}, proofs={len(self.proofs)}, '
                 f'phase={self.cursor.phase}, layer={self.cursor.layer}, '
                 f'state_epoch={self.state_epoch}, failed_code={self.failed_code})')
+
+
+# -- held-g L4: lean completion reports -------------------------------------
+#: The per-transaction reply format, chosen by the engine at OPEN. ``full`` is
+#: the earlier behaviour: every reply carries the rank's whole report.
+REPLIES = ('full', 'lean')
+LEAN_DIGEST_SIZE = 32
+LEAN_DIGEST_START = bytes(LEAN_DIGEST_SIZE)
+
+
+def lean_digest(prior, bases, completed_op_seqs, proofs, host_submit_ns):
+    """The next link of one rank's lean report chain; both sides compute it.
+
+    It covers the delta's bases (completed, proof and submit-time counts), its
+    op_seqs, each proof's (op_seq, kind, completion_seq) and its submit times,
+    in the order sent. The engine re-derives the chain from what it applied,
+    so a gap, replay, reorder or substitution changes it.
+    """
+    if type(prior) is not bytes or len(prior) != LEAN_DIGEST_SIZE:
+        raise E3ContractError('lean digest link must be 32 bytes')
+    body = repr((tuple(bases), completed_op_seqs,
+                 tuple((p.ticket.op_seq, p.kind.value, p.completion_seq) for p in proofs),
+                 host_submit_ns))
+    return hashlib.sha256(prior + body.encode()).digest()
+
+
+@dataclass(frozen=True, repr=False)
+class LeanCompletionReport:
+    """One rank's completion delta in a ``replies='lean'`` transaction (held-g L4).
+
+    ``completed_op_seqs``, ``proofs`` and ``host_submit_ns`` hold only what the
+    rank had not reported before in this transaction. ``pending_op_seqs``,
+    ``completed_sequence``, ``cursor`` and ``failed_code`` are its whole current
+    values, as in a :class:`WorkerCompletionReport`. ``base_completed``,
+    ``base_proofs`` and ``base_hosts`` count what it reported before, and
+    ``digest`` is the chain end after this delta (:func:`lean_digest`). The
+    engine extends its own accumulated report with :class:`LeanStream`.
+    """
+    transaction: TransactionId
+    worker_rank: int
+    base_completed: int
+    base_proofs: int
+    base_hosts: int
+    completed_op_seqs: tuple
+    pending_op_seqs: tuple
+    completed_sequence: int
+    proofs: tuple
+    cursor: CompletionCursor
+    state_epoch: int
+    digest: bytes
+    host_submit_ns: tuple = ()
+    failed_code: str | None = None
+
+    def __post_init__(self):
+        transaction = self.transaction
+        if type(transaction) is not TransactionId:
+            raise E3ContractError('lean report needs a TransactionId')
+        _int('worker_rank', self.worker_rank, 0)
+        _int('base_completed', self.base_completed, 0)
+        _int('base_proofs', self.base_proofs, 0)
+        _int('base_hosts', self.base_hosts, 0)
+        _ints('completed_op_seqs', self.completed_op_seqs, minimum=0)
+        _ints('pending_op_seqs', self.pending_op_seqs, minimum=0)
+        if self.completed_op_seqs != tuple(sorted(self.completed_op_seqs)):
+            raise E3ContractError('completed_op_seqs must be ordered')
+        if self.pending_op_seqs != tuple(sorted(self.pending_op_seqs)):
+            raise E3ContractError('pending_op_seqs must be ordered')
+        if set(self.completed_op_seqs).intersection(self.pending_op_seqs):
+            raise E3ContractError('an op_seq cannot be both complete and pending')
+        _int('completed_sequence', self.completed_sequence, 0)
+        _tuple('proofs', self.proofs)
+        keys = set()
+        for proof in self.proofs:
+            if type(proof) is not CompletionProof:
+                raise E3ContractError('proofs must be CompletionProof records')
+            if proof.completion_seq > self.completed_sequence:
+                raise E3ContractError('watermark is behind a completion proof')
+            ticket = proof.ticket
+            if ticket.transaction != transaction:
+                raise E3ContractError('proof belongs to another transaction')
+            if ticket.worker_rank != self.worker_rank:
+                raise E3ContractError('proof belongs to another worker')
+            key = (ticket.op_seq, proof.kind)
+            if key in keys:
+                raise E3ContractError('duplicate completion proof')
+            keys.add(key)
+        if type(self.cursor) is not CompletionCursor:
+            raise E3ContractError('report needs a CompletionCursor')
+        _int('state_epoch', self.state_epoch, 1)
+        if type(self.digest) is not bytes or len(self.digest) != LEAN_DIGEST_SIZE:
+            raise E3ContractError('lean report digest must be 32 bytes')
+        _tuple('host_submit_ns', self.host_submit_ns)
+        last = -1
+        for entry in self.host_submit_ns:
+            _tuple('host_submit_ns entry', entry)
+            if len(entry) != 2:
+                raise E3ContractError('host_submit_ns entries are (op_seq, ns)')
+            _int('host op_seq', entry[0], 0)
+            _int('host_submit_ns', entry[1], 0)
+            if entry[0] <= last:
+                raise E3ContractError('host submit times must be ordered')
+            last = entry[0]
+        if self.failed_code is not None:
+            if type(self.failed_code) is not str or self.failed_code not in FAILED_CODES:
+                raise E3ContractError('unknown failed_code')
+
+    def bases(self):
+        return self.base_completed, self.base_proofs, self.base_hosts
+
+    def empty(self):
+        """No new completion, proof or submit time."""
+        return not (self.completed_op_seqs or self.proofs or self.host_submit_ns)
+
+    def __repr__(self):
+        return (f'LeanCompletionReport(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.worker_rank}, '
+                f'base={self.base_completed}/{self.base_proofs}/{self.base_hosts}, '
+                f'completed=+{len(self.completed_op_seqs)}, '
+                f'pending={len(self.pending_op_seqs)}, '
+                f'watermark={self.completed_sequence}, proofs=+{len(self.proofs)}, '
+                f'state_epoch={self.state_epoch}, failed_code={self.failed_code})')
+
+
+def _accumulated(**fields):
+    """A WorkerCompletionReport built from fields LeanStream.extend has checked.
+
+    ``__post_init__`` walks the whole report; the stream instead checked each
+    new item against everything applied before, which keeps the same
+    invariants (the held-g tests run the lean probes with the validating
+    constructor in its place and compare).
+    """
+    report = object.__new__(WorkerCompletionReport)
+    for name in WorkerCompletionReport.__dataclass_fields__:
+        object.__setattr__(report, name, fields[name])
+    return report
+
+
+class LeanStream:
+    """The engine's accumulated view of one rank's lean reports in one transaction.
+
+    :meth:`extend` checks one delta in O(delta) against everything applied
+    before and returns the cumulative :class:`WorkerCompletionReport`, which is
+    what every consumer of a full report keeps reading. A refused delta leaves
+    the stream unchanged.
+    """
+    __slots__ = ('report', 'completed', 'proof_keys', 'hosts', 'digest', 'state_written',
+                 'closed')
+
+    def __init__(self):
+        self.report = None
+        self.completed = set()
+        self.proof_keys = set()
+        self.hosts = 0
+        self.digest = LEAN_DIGEST_START
+        self.state_written = False
+        self.closed = False
+
+    def end(self):
+        """(completed, proof and submit-time counts, chain end): what the release compares."""
+        return len(self.completed), len(self.proof_keys), self.hosts, self.digest
+
+    def extend(self, lean):
+        if type(lean) is not LeanCompletionReport:
+            raise E3ContractError('lean stream needs a LeanCompletionReport')
+        if self.closed:
+            raise E3ContractError('a full report closed this lean stream')
+        # The delta's own invariants again on this side of the wire (O(delta)).
+        lean.__post_init__()
+        prior = self.report
+        if prior is not None and (lean.transaction != prior.transaction
+                                  or lean.worker_rank != prior.worker_rank
+                                  or lean.state_epoch != prior.state_epoch):
+            raise E3ContractError('lean report changes the stream identity')
+        if lean.bases() != (len(self.completed), len(self.proof_keys), self.hosts):
+            raise E3ContractError('lean report does not continue the applied stream')
+        digest = lean_digest(self.digest, lean.bases(), lean.completed_op_seqs, lean.proofs,
+                             lean.host_submit_ns)
+        if digest != lean.digest:
+            raise E3ContractError('lean report chain differs from the applied stream')
+        completed = self.completed
+        new = lean.completed_op_seqs
+        if not completed.isdisjoint(new):
+            raise E3ContractError('lean report repeats a reported completion')
+        if prior is not None and lean.completed_sequence < prior.completed_sequence:
+            raise E3ContractError('completion report regressed')
+        pending = lean.pending_op_seqs
+        new_set = set(new)
+        if not completed.isdisjoint(pending):
+            raise E3ContractError('an op_seq cannot be both complete and pending')
+        if prior is not None:
+            for op in prior.pending_op_seqs:
+                if op not in completed and op not in new_set and op not in pending:
+                    raise E3ContractError('a pending operation left the report')
+        state = self.state_written
+        keys = []
+        for proof in lean.proofs:
+            op = proof.ticket.op_seq
+            if op not in completed and op not in new_set:
+                raise E3ContractError('proof without a completed op_seq')
+            key = (op, proof.kind)
+            if key in self.proof_keys:
+                raise E3ContractError('duplicate completion proof')
+            keys.append(key)
+            if (proof.kind is CompletionKind.STATE_WRITE
+                    and proof.ticket.dependency_role is DependencyRole.COMMIT):
+                state = True
+        hosts = lean.host_submit_ns
+        if hosts:
+            if prior is not None and prior.host_submit_ns and hosts[0][0] <= prior.host_submit_ns[-1][0]:
+                raise E3ContractError('host submit times must be ordered')
+            for op, _ns in hosts:
+                if op not in completed and op not in new_set and op not in pending:
+                    raise E3ContractError('submit time for an unaccepted operation')
+        base = () if prior is None else prior.completed_op_seqs
+        merged = _accumulated(
+            transaction=lean.transaction, worker_rank=lean.worker_rank,
+            completed_op_seqs=tuple(sorted(base + new)) if new else base,
+            pending_op_seqs=pending, completed_sequence=lean.completed_sequence,
+            proofs=(() if prior is None else prior.proofs) + lean.proofs,
+            cursor=lean.cursor, state_epoch=lean.state_epoch,
+            host_submit_ns=(() if prior is None else prior.host_submit_ns) + hosts,
+            failed_code=lean.failed_code)
+        completed.update(new)
+        self.proof_keys.update(keys)
+        self.hosts += len(hosts)
+        self.digest = digest
+        self.state_written = state
+        self.report = merged
+        return merged
 
 
 @dataclass(frozen=True, repr=False)
@@ -706,10 +974,23 @@ class OpenRequest:
     ranks: tuple
     expected_state_epoch: int
     max_outstanding: int
+    # Held-g L4: the reply format of this transaction (REPLIES).
+    replies: str = 'full'
+    # Step A: this transaction runs each dense QSA layer as one bounded command.
+    qsa_fused: bool = False
+    # Step B: this transaction's group size; above 1 only with qsa_fused.
+    layer_group: int = 1
 
     def __post_init__(self):
         if type(self.admission) is not AdmissionRecord:
             raise E3ContractError('open needs an AdmissionRecord')
+        if type(self.replies) is not str or self.replies not in REPLIES:
+            raise E3ContractError('unknown open reply format')
+        if type(self.qsa_fused) is not bool:
+            raise E3ContractError('open qsa_fused must be bool')
+        if self.layer_group != 1 and (type(self.layer_group) is not int or not self.qsa_fused
+                                      or self.layer_group not in LAYER_GROUP_SIZES):
+            raise E3ContractError('open layer_group needs a known size and the fused selection')
         _ints('ranks', self.ranks, minimum=0, allow_empty=False)
         if self.ranks != tuple(sorted(self.ranks)):
             raise E3ContractError('open ranks must be ordered')
@@ -1011,10 +1292,15 @@ class QsaProfileGrant:
     """Engine agreement binding; worker still checks its own live profile."""
     query: QsaProfileQuery
     shape: QsaScheduleShape
+    # Step A: agreed at PREPARE (the query's boundary op) before the stage's
+    # first collective; the layer runs as one command and never pauses.
+    fused: bool = False
 
     def __post_init__(self):
         if type(self.query) is not QsaProfileQuery or type(self.shape) is not QsaScheduleShape:
             raise E3ContractError('QSA profile grant needs its exact query and shape')
+        if type(self.fused) is not bool or (self.fused and self.shape.route != 'dense_dma'):
+            raise E3ContractError('a fused QSA grant needs the dense route')
 
 
 def qsa_profile_agreement(query, replies, ranks):
@@ -1103,7 +1389,7 @@ class SegmentCommand:
                 raise E3ContractError('only a layer carries a typed QSA profile grant')
             query = self.profile.query
             if (query.transaction != self.transaction or query.stage != self.stage
-                    or query.layer != self.descriptor.layer_start
+                    or query.layer != self.descriptor.layer_end - 1
                     or query.ranks != self.ranks or query.boundary_op_seq >= self.op_seq):
                 raise E3ContractError('QSA profile grant differs from the layer command')
 
@@ -1149,10 +1435,29 @@ class SegmentAcceptance:
     report: WorkerCompletionReport | None = field(default=None, repr=False)
     profile_boundary: bool = False
     tail_boundary: bool = False
+    # Step A: a PREPARE's per-layer dense schedule, ((layer, shape), ...).
+    dense_profiles: tuple | None = field(default=None, repr=False)
+    # Step A: this command's collectives on the lane TP communicator: (count, digest
+    # over order, communicator and message shape). Peers must report the same value.
+    collectives: tuple | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
             raise E3ContractError('acceptance needs a TransactionId')
+        if self.dense_profiles is not None:
+            if self.kind is not SegmentKind.PREPARE or not self.accepted:
+                raise E3ContractError('only an accepted PREPARE carries dense profiles')
+            _tuple('dense_profiles', self.dense_profiles)
+            if (any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int
+                    or type(row[1]) is not QsaScheduleShape for row in self.dense_profiles)
+                    or [row[0] for row in self.dense_profiles]
+                    != sorted({row[0] for row in self.dense_profiles})):
+                raise E3ContractError('dense profiles must be ordered (layer, shape) rows')
+        if self.collectives is not None:
+            if (not self.accepted or type(self.collectives) is not tuple
+                    or len(self.collectives) != 2 or type(self.collectives[0]) is not int
+                    or self.collectives[0] < 0 or type(self.collectives[1]) is not str):
+                raise E3ContractError('collective ledger must be an accepted (count, digest)')
         _int('worker_rank', self.worker_rank, 0)
         _kind('kind', self.kind, SegmentKind)
         _int('stage', self.stage, 0)
@@ -1176,7 +1481,7 @@ class SegmentAcceptance:
             raise E3ContractError('cursor must be a CompletionCursor')
         _int('host_submit_ns', self.host_submit_ns, 0)
         if self.report is not None:
-            if type(self.report) is not WorkerCompletionReport:
+            if type(self.report) not in (WorkerCompletionReport, LeanCompletionReport):
                 raise E3ContractError('acceptance report must be a completion report')
             if self.report.transaction != self.transaction:
                 raise E3ContractError('acceptance report belongs to another transaction')
@@ -1220,10 +1525,29 @@ class ReleaseRequest:
     state_epoch: int
     completed_sequences: tuple
     terminal: bool
+    # Held-g L4, a lean transaction only: per rank (rank, completed, proof and
+    # submit-time counts, chain end) of the engine's applied stream. The worker
+    # releases only when it equals what it sent and nothing is left unsent.
+    lean_streams: tuple = ()
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
             raise E3ContractError('release needs a TransactionId')
+        _tuple('lean_streams', self.lean_streams)
+        last = -1
+        for entry in self.lean_streams:
+            _tuple('lean stream entry', entry)
+            if len(entry) != 5:
+                raise E3ContractError('lean stream entry is (rank, completed, proofs, hosts, digest)')
+            _int('rank', entry[0])
+            _int('lean completed count', entry[1])
+            _int('lean proof count', entry[2])
+            _int('lean submit-time count', entry[3])
+            if type(entry[4]) is not bytes or len(entry[4]) != LEAN_DIGEST_SIZE:
+                raise E3ContractError('lean stream digest must be 32 bytes')
+            if entry[0] <= last:
+                raise E3ContractError('lean stream ranks must be unique and ordered')
+            last = entry[0]
         _int('state_epoch', self.state_epoch, 1)
         _tuple('completed_sequences', self.completed_sequences)
         if type(self.terminal) is not bool:
@@ -1241,6 +1565,8 @@ class ReleaseRequest:
             ranks.append(rank)
         if ranks != sorted(set(ranks)):
             raise E3ContractError('release ranks must be unique and ordered')
+        if self.lean_streams and [entry[0] for entry in self.lean_streams] != ranks:
+            raise E3ContractError('lean streams must cover the release ranks')
 
     def __repr__(self):
         return (f'ReleaseRequest(txn_seq={self.transaction.txn_seq}, '
@@ -1472,4 +1798,5 @@ __all__ = [
     'SourceLeaseDescriptor', 'QsaScheduleShape', 'QsaProfileQuery',
     'QsaProfileObservation', 'QsaProfileGrant', 'qsa_profile_agreement',
     'TransitionAck', 'TransitionCommand', 'TransitionPending', 'WIRE_VERSION', 'WorkerCompletionReport',
+    'LEAN_DIGEST_START', 'LeanCompletionReport', 'LeanStream', 'REPLIES', 'lean_digest',
 ]

@@ -20,13 +20,14 @@ generation. No per-step ticket.
 Everything here records bytes it allocated (PP buffers, PLE scratch, measured
 split pool after capture) as an inventory; nothing claims funding.
 """
+import os
 import time
 
 from e3_types import E3ContractError
 from lane_comm import PrefillCommunicators
 from lane_hooks import LaneRuntime
 from lane_private import LanePrivateBindings, admitted_chunk
-from model_hooks import (LaneForward, PlePrivateScratch, PrefillStreamOwners,
+from model_hooks import (LaneForward, PlePrivateScratch, PleWitness, PrefillStreamOwners,
                          local_text_model, ple_embedding)
 from native_resources import compilation_identity, full_graph_identity
 from split_bank import install as install_split_bank
@@ -76,10 +77,19 @@ def _hc_width(model):
     return hc * hidden
 
 
-def _ple_scratch(model, chunk_tokens, torch, device, owners):
+def _ple_witness(model, torch, device, owners):
+    """FLASH_S5_PLE_WITNESS on the real path; the side stream native owns tells the lanes apart. None on a stage with no PLE."""
+    for layer_idx in range(int(model.start_layer), int(model.end_layer)):
+        embedding = ple_embedding(model, layer_idx, private=True)
+        if embedding is not None:
+            return PleWitness(embedding, owners.replacement(embedding, '_prefetch_stream'), torch_module=torch, device=device).install()
+    return None
+
+
+def _ple_scratch(model, chunk_tokens, torch, device, owners, private=False):
     found = []
     for layer_idx in range(int(model.start_layer), int(model.end_layer)):
-        embedding = ple_embedding(model, layer_idx)
+        embedding = ple_embedding(model, layer_idx, chunk_tokens, private)
         if embedding is not None:
             found.append((layer_idx, embedding))
     if not found:
@@ -95,7 +105,7 @@ def _ple_scratch(model, chunk_tokens, torch, device, owners):
         raise NativeStartupError(
             'PLE prefetch stream is not owned by the prefill green context') from exc
     return layer_idx, PlePrivateScratch(embedding, chunk_tokens, torch_module=torch,
-                                        device=device, stream=stream)
+                                        device=device, stream=stream, selectable=private)
 
 
 class WorkerNative:
@@ -184,6 +194,9 @@ class WorkerNative:
         native_builder_inventory = getattr(self, 'native_builder_inventory', None)
         if native_builder_inventory is not None:
             record['native_attention_builder_storage'] = native_builder_inventory()
+        if os.environ.get('FLASH_S5_NATIVE_MM', '0') == '1':
+            from native_mm import inventory
+            record['native_mm'] = inventory(self.runner)
         return record
 
     def graph_builder(self, *, router_class=None, full_context_id, full_pool_id,
@@ -261,6 +274,10 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     except E3ContractError as exc:
         raise NativeStartupError('cannot resolve the local text backbone') from exc
     tp_group, pp_group = _groups(tp_group, pp_group)
+    if (os.environ if env is None else env).get('FLASH_S5_DECODE_OVERLAP_SMS', '0') != '0':
+        # lever 2 (default off): the split bank captures in a wider decode context overlapping the prefill SMs
+        from decode_overlap import install as install_decode_overlap
+        split = install_decode_overlap(split, os.environ if env is None else env)
 
     bank, backend, controller = install_split_bank(
         runner, split, torch_module=torch, set_graph_pool_id=set_graph_pool_id, clock=clock)
@@ -295,8 +312,11 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     # Distinct prefill-green auxiliaries, retained for the worker incarnation.
     # A helper without the prefill extension refuses here (no fallback).
     prefill_streams.prepare()
+    flags = os.environ if env is None else env
+    if flags.get('FLASH_S5_PLE_WITNESS', '0') == '1':
+        _ple_witness(model, torch, runner.device, prefill_streams)
     ple_layer, ple_scratch = _ple_scratch(model, chunk_tokens, torch, runner.device,
-                                          prefill_streams)
+                                          prefill_streams, private=flags.get('FLASH_S5_PLE_PRIVATE', '0') == '1')
     private_bindings = LanePrivateBindings.discover(
         runner, runtime, chunk_tokens=chunk_tokens, torch_module=torch,
         ple_scratch=ple_scratch)

@@ -1201,7 +1201,7 @@ class TestGeneratedSource(unittest.TestCase):
             self.assertEqual(graph_hooks.revert(generated, expected=a_source), a_source)
             with self.assertRaises(ValueError):
                 graph_hooks.revert(generated, expected=self.sources['pinned'])
-            self.assertEqual(generated.count('_flash_e3_graph.'), 5)
+            self.assertEqual(generated.count('_flash_e3_graph.'), 6)       # lane-o3: + handback_uniform
             self.assertEqual(generated.count('_flash_e3_hooks.'), 13)
             self.assertEqual(generated.count('_flash_e3_graph.shutdown_banks(self)'), 1)
         with self.assertRaises(ValueError):
@@ -1242,6 +1242,13 @@ class TestGeneratedSource(unittest.TestCase):
                 continue
             generated = graph_hooks.generate(a_source)
             check = generated.index('_flash_e3_graph.check_route(')
+            # lane-o3: the handback classification sits between stock's gather and stock's dispatch, once
+            gather = generated.index('batch_req_state, uniform_tok_count = self.gather_batch_req_state(')
+            uniform = generated.index('uniform_tok_count = _flash_e3_graph.handback_uniform(')
+            dispatch = generated.index('batch_desc, dp_sync = dispatch_cg_and_sync_dp(')
+            self.assertLess(gather, uniform)
+            self.assertLess(uniform, dispatch)
+            self.assertEqual(generated.count('_flash_e3_graph.handback_uniform('), 1)
             zero = generated.index('        if batch_desc.num_tokens == 0:\n')
             self.assertLess(check, zero)
             self.assertEqual(generated.count(

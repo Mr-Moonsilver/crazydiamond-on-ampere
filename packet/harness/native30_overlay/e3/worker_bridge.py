@@ -67,11 +67,32 @@ from wire_v1 import (
     TransitionCommand,
     TransitionPending,
     WorkerCompletionReport,
+    LEAN_DIGEST_START,
+    LeanCompletionReport,
+    lean_digest,
 )
 
 
 class WorkerBridgeError(E3ContractError):
     pass
+
+
+class _LeanSent:
+    """Held-g L4: what this rank already sent in its lean transaction."""
+    __slots__ = ('completed', 'proof_keys', 'hosts', 'due', 'digest', 'last')
+
+    def __init__(self):
+        self.completed = set()
+        self.proof_keys = set()
+        self.hosts = set()
+        # Sent completions whose STATE_WRITE / PP_CONSUMER proof is still owed.
+        self.due = set()
+        self.digest = LEAN_DIGEST_START
+        # (pending, watermark, cursor, failed_code) of the last sent report.
+        self.last = None
+
+    def end(self):
+        return len(self.completed), len(self.proof_keys), len(self.hosts), self.digest
 
 
 _SEGMENT_ROLE = {
@@ -89,7 +110,11 @@ _MEMORY_FIELDS = (('allocated', 'allocated_bytes.all.current'),
                   ('reserved', 'reserved_bytes.all.current'),
                   ('inactive_split', 'inactive_split_bytes.all.current'),
                   ('alloc_retries', 'num_alloc_retries'),
-                  ('ooms', 'num_ooms'))
+                  ('ooms', 'num_ooms'),
+                  # M3: allocator pressure as a source of device-wide synchronization.
+                  ('sync_all_streams', 'num_sync_all_streams'),
+                  ('device_allocs', 'num_device_alloc'),
+                  ('device_frees', 'num_device_free'))
 
 
 def memory_receipt(point, rank, transaction, cuda=None):
@@ -112,6 +137,43 @@ def memory_receipt(point, rank, transaction, cuda=None):
         row[name] = int(stats.get(key, -1))
     row['free'], row['total'] = int(free), int(total)
     return row
+
+
+PEAK_LINE = 'flash-s5 memory-peak '
+
+
+def peak_reset(cuda=None):
+    """alpha-next: start a chunk's peak window (host-side allocator counter reset; no sync, no CUDA init).
+
+    Returns the allocated bytes at the reset, or ``None`` when CUDA is not initialized here.
+    """
+    if cuda is None:
+        import torch
+        cuda = torch.cuda
+    if not cuda.is_initialized():
+        return None
+    cuda.reset_peak_memory_stats()
+    return int(cuda.memory_allocated())
+
+
+def peak_receipt(rank, transaction, at_open, cuda=None):
+    """alpha-next (REPORT.md option 2): one rank's peak allocated and reserved bytes since the chunk's open.
+
+    Receipt only, never a control-flow input; it reads max_memory_allocated/max_memory_reserved (no memory_stats call,
+    so the inherited `flash-s5 memory` receipt's queries are unchanged). ``stage_timer`` says whether stock QSA_STAGE_TIMING is on: its own
+    periodic peak reset then makes these values a lower bound. ``None`` when CUDA is not initialized.
+    """
+    if cuda is None:
+        import torch
+        cuda = torch.cuda
+    if not cuda.is_initialized():
+        return None
+    return dict(rank=int(rank), txn_seq=int(transaction.txn_seq), chunk_start=int(transaction.chunk_start),
+                chunk_end=int(transaction.chunk_end),
+                peak_allocated=int(cuda.max_memory_allocated()),
+                peak_reserved=int(cuda.max_memory_reserved()),
+                allocated_at_open=-1 if at_open is None else int(at_open),
+                stage_timer=int(os.environ.get('QSA_STAGE_TIMING', '0') == '1'))
 
 
 def _rank(server, dispatcher):
@@ -141,6 +203,10 @@ def admission_to_chunk(record):
     """
     if record is None or not hasattr(record, 'transaction'):
         raise WorkerBridgeError('open needs an AdmissionRecord')
+    if getattr(record, 'mm', None) is not None:
+        from native_mm import enabled
+        if not enabled():
+            raise WorkerBridgeError('MM admission while native MM is off')
     return ChunkAdmission(
         transaction=record.transaction,
         prompt_end=record.prompt_end,
@@ -150,6 +216,8 @@ def admission_to_chunk(record):
         new_block_ids_to_zero=record.new_block_ids_to_zero,
         cow_pairs=record.cow_pairs,
         state_epoch=record.state_epoch,
+        native_end=getattr(record, 'native_end', 0),
+        mm=getattr(record, 'mm', None),
     )
 
 
@@ -177,6 +245,9 @@ class NativeWorkerBridge:
         self.rank = _rank(server, dispatcher) if rank is None else rank
         if type(self.rank) is not int or self.rank < 0:
             raise WorkerBridgeError('native bridge rank must be a non-negative int')
+        if os.environ.get('FLASH_S5_INWAIT', '0') == '1':
+            import lane_chunk
+            lane_chunk.note_worker_rank(self.rank)
         self.clock = clock
         self.source_binder = source_binder
         # The worker-local pinned source binding, kept until the lane's release
@@ -195,6 +266,7 @@ class NativeWorkerBridge:
         self._proofs = {}
         self._completion_seq = -1
         self._reported_seq = -1
+        self._lean = None
         self._released = False
         self._runtime_released = False
         self._request_closed = False
@@ -256,6 +328,7 @@ class NativeWorkerBridge:
         self._proofs = {}
         self._completion_seq = -1
         self._reported_seq = -1
+        self._lean = None
         self._released = False
         self._runtime_released = False
         self._request_closed = False
@@ -286,6 +359,11 @@ class NativeWorkerBridge:
         return state
 
     # -- scheduler source lease -------------------------------------------
+    def _prepare_resuming(self, command):
+        """Build-3: a resend of a PREPARE in slices; its lease was proved and bound on the first send."""
+        resuming = getattr(self.dispatcher, 'prepare_resuming', None)
+        return callable(resuming) and resuming(command) is True
+
     def _bind_prepare_source(self, command):
         """Prove and bind the engine's actual lease before any submission.
 
@@ -332,6 +410,8 @@ class NativeWorkerBridge:
         operation = getattr(self.dispatcher, 'operation', None)
         if operation is not None:
             operation.native_source_holds = binding.holds
+            if getattr(operation, 'prefetch_enabled', False):
+                operation.bind_prefetch_frame(admission)
         return binding
 
     def _close_source_binding(self):
@@ -404,6 +484,7 @@ class NativeWorkerBridge:
         self._retained_cancel_ack = None
         if self._memory_receipts:
             self._memory_receipt('open', record.transaction)
+            self._peak_open()
         chunk_admission = admission_to_chunk(record)
         snapshot = admission_metadata(record)
         ack = self.server.open(OpenPrefill(record.transaction, chunk_admission.num_tokens,
@@ -419,6 +500,10 @@ class NativeWorkerBridge:
         if operation is None:
             raise WorkerBridgeError('worker open produced no native operation')
         self.dispatcher.open(record.transaction, chunk_admission, operation)
+        if request.qsa_fused:
+            self.dispatcher.select_fused()
+        if request.layer_group != 1:
+            self.dispatcher.select_layer_group(request.layer_group)
         stage = self.dispatcher.stage
         if stage not in (0, 1):
             raise WorkerBridgeError('dispatcher stage is outside the two-stage split')
@@ -426,6 +511,7 @@ class NativeWorkerBridge:
         self.lane = lane
         self.state_epoch = record.state_epoch
         self.stage = stage
+        self._lean = _LeanSent() if request.replies == 'lean' else None
         # The open moved the retained row into the active transaction; the row
         # is now released/closed through the normal paths below.
         self._retained = None
@@ -439,21 +525,24 @@ class NativeWorkerBridge:
         if type(command) is not SegmentCommand:
             raise WorkerBridgeError('submit needs a typed SegmentCommand')
         self._require_open(command.transaction)
-        report = self._build_report()
+        report, cursor = self._reply_report()
         if self.rank not in command.ranks:
             return SegmentAcceptance(
                 command.transaction, self.rank, command.kind, command.stage,
-                command.op_seq, skipped=True, cursor=report.cursor, report=report)
-        if command.kind is SegmentKind.PREPARE:
+                command.op_seq, skipped=True, cursor=cursor, report=self._sent(report))
+        if command.kind is SegmentKind.PREPARE and not self._prepare_resuming(command):
             self._bind_prepare_source(command)
         if command.profile is not None:
-            self._profile_boundary_command(command.profile.query)
+            if command.profile.fused:
+                self._fused_prepare_command(command.profile)
+            else:
+                self._profile_boundary_command(command.profile.query)
         try:
             acknowledgement = self.dispatcher.submit(command)
         except E3Pending:
             return SegmentAcceptance(
                 command.transaction, self.rank, command.kind, command.stage,
-                command.op_seq, pending=True, cursor=report.cursor, report=report)
+                command.op_seq, pending=True, cursor=cursor, report=self._sent(report))
         except BaseException as exc:
             if getattr(self.dispatcher, 'quarantined', None) is not None:
                 self._last_error = type(exc).__name__
@@ -464,14 +553,16 @@ class NativeWorkerBridge:
                                          if type(elapsed) in (int, float) and elapsed >= 0
                                          else 0)
         result = acknowledgement.get('result') or {}
-        report = self._build_report()
+        report, cursor = self._reply_report()
         return SegmentAcceptance(
             command.transaction, self.rank, command.kind, command.stage,
-            command.op_seq, accepted=True, cursor=report.cursor,
+            command.op_seq, accepted=True, cursor=cursor,
             host_submit_ns=self._host_ns[command.op_seq],
-            paused=bool(result.get('paused')), report=report,
+            paused=bool(result.get('paused')), report=self._sent(report),
             profile_boundary=bool(result.get('profile_boundary')),
-            tail_boundary=bool(result.get('tail_boundary')))
+            tail_boundary=bool(result.get('tail_boundary')),
+            dense_profiles=result.get('dense_profiles'),
+            collectives=acknowledgement.get('collectives'))
 
     # -- peer binding / receipts ------------------------------------------
     def bind_pp(self, binding):
@@ -523,6 +614,9 @@ class NativeWorkerBridge:
         if type(request) is not PollRequest:
             raise WorkerBridgeError('poll needs a typed PollRequest')
         self._require_open(request.transaction, request.state_epoch)
+        if self._lean is not None:
+            # A poll reply is the report itself: always a typed lean report.
+            return self._sent(self._lean_report(token=False)[0])
         return self._build_report()
 
     def _profile_boundary_command(self, query):
@@ -536,6 +630,19 @@ class NativeWorkerBridge:
         if (command.kind != 'layer' or command.layer_start != query.layer
                 or not (ack.get('result') or {}).get('profile_boundary')):
             raise WorkerBridgeError('QSA profile does not name its accepted layer boundary')
+
+    def _fused_prepare_command(self, grant):
+        """A fused grant names this worker's own accepted PREPARE and its reported plan."""
+        query = grant.query
+        self._require_open(query.transaction, query.state_epoch)
+        if query.stage != self.stage or self.rank not in query.ranks:
+            raise WorkerBridgeError('fused grant belongs to another stage')
+        stored = self.dispatcher.accepted.get(query.boundary_op_seq)
+        if stored is None or stored[0].kind != 'prepare':
+            raise WorkerBridgeError('fused grant has no accepted PREPARE')
+        reported = (stored[1].get('result') or {}).get('dense_profiles')
+        if reported is None or dict(reported).get(query.layer) != grant.shape:
+            raise WorkerBridgeError('fused grant differs from the reported PREPARE plan')
 
     def _proof(self, op_seq, kind):
         key = (op_seq, kind)
@@ -597,6 +704,88 @@ class NativeWorkerBridge:
             failed_code=None if getattr(self.dispatcher, 'quarantined', None) is None
             else 'quarantined')
 
+    def _reply_report(self):
+        """(report, cursor) a reply carries now; a lean report is sent only through _sent."""
+        if self._lean is None:
+            report = self._build_report()
+            return report, report.cursor
+        return self._lean_report()
+
+    def _lean_report(self, token=True):
+        """Held-g L4: the delta since this rank's last sent lean report, not yet sent.
+
+        Proofs come in a full report's order (completed op_seq, then GPU_EVENT,
+        STATE_WRITE, PP_CONSUMER) over the new and the owed completions, so
+        ``_proof`` assigns the same completion_seq a full build would. With
+        ``token`` and nothing changed since the last sent report, the reply
+        carries no report (None).
+        """
+        sent = self._lean
+        query = self.dispatcher.poll()
+        done = sent.completed
+        new = tuple(sorted(op for op in query['completed_op_seqs'] if op not in done))
+        pending = tuple(sorted(query['pending_op_seqs']))
+        keys = sent.proof_keys
+        proofs = []
+        for op_seq in sorted(sent.due.union(new)) if sent.due else new:
+            kind = self._accepted.get(op_seq)
+            if kind is None:
+                # A completion from an earlier transaction is never exported
+                # under this report's identity.
+                continue
+            wanted = [CompletionKind.GPU_EVENT]
+            if kind is SegmentKind.STATE_FINALIZE and query['state_written']:
+                wanted.append(CompletionKind.STATE_WRITE)
+            if kind is SegmentKind.PP_RECEIVE and self.dispatcher.pp_consumer_complete():
+                wanted.append(CompletionKind.PP_CONSUMER)
+            for proof_kind in wanted:
+                proof = self._proof(op_seq, proof_kind)
+                if (op_seq, proof_kind) not in keys:
+                    proofs.append(proof)
+        hosts = tuple(entry for entry in sorted(self._host_ns.items())
+                      if entry[0] not in sent.hosts)
+        watermark = max(0, self._reported_seq, self._completion_seq)
+        cursor = self._cursor()
+        failed = (None if getattr(self.dispatcher, 'quarantined', None) is None
+                  else 'quarantined')
+        proofs = tuple(proofs)
+        if token and not new and not proofs and not hosts and sent.last == (
+                pending, watermark, cursor, failed):
+            return None, cursor
+        bases = (len(done), len(keys), len(sent.hosts))
+        return LeanCompletionReport(
+            self.transaction, self.rank, *bases, new, pending,
+            watermark, proofs, cursor, self.state_epoch,
+            lean_digest(sent.digest, bases, new, proofs, hosts),
+            host_submit_ns=hosts, failed_code=failed), cursor
+
+    def _sent(self, report):
+        """Mark a lean report as sent (the reply carrying it is being returned)."""
+        if type(report) is not LeanCompletionReport:
+            return report
+        sent = self._lean
+        if report.bases() != (len(sent.completed), len(sent.proof_keys), len(sent.hosts)):
+            raise WorkerBridgeError('lean report was built on another sent state')
+        sent.completed.update(report.completed_op_seqs)
+        for proof in report.proofs:
+            sent.proof_keys.add((proof.ticket.op_seq, proof.kind))
+        for op_seq in report.completed_op_seqs:
+            kind = self._accepted.get(op_seq)
+            if kind is SegmentKind.STATE_FINALIZE or kind is SegmentKind.PP_RECEIVE:
+                sent.due.add(op_seq)
+        for op_seq in tuple(sent.due):
+            owed = (CompletionKind.STATE_WRITE
+                    if self._accepted.get(op_seq) is SegmentKind.STATE_FINALIZE
+                    else CompletionKind.PP_CONSUMER)
+            if (op_seq, owed) in sent.proof_keys:
+                sent.due.discard(op_seq)
+        sent.hosts.update(op_seq for op_seq, _ns in report.host_submit_ns)
+        sent.digest = report.digest
+        sent.last = (report.pending_op_seqs, report.completed_sequence, report.cursor,
+                     report.failed_code)
+        self._reported_seq = max(self._reported_seq, report.completed_sequence)
+        return report
+
     # -- closure -----------------------------------------------------------
     def _drain_prefill_streams(self):
         """Retire owned side-stream work before releasing the lane's storage.
@@ -622,14 +811,67 @@ class NativeWorkerBridge:
                 return
             self.memory_rows = (self.memory_rows + [row])[-16:]
             import logging
-            logging.getLogger(__name__).info(
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            from native_measurement import emit_receipt_kv
+            emit_receipt_kv(
                 'flash-s5 memory point=%s rank=%d txn_seq=%d chunk=%d-%d allocated=%d '
-                'reserved=%d inactive_split=%d alloc_retries=%d ooms=%d free=%d total=%d',
-                row['point'], row['rank'], row['txn_seq'], row['chunk_start'],
-                row['chunk_end'], row['allocated'], row['reserved'], row['inactive_split'],
-                row['alloc_retries'], row['ooms'], row['free'], row['total'])
+                'reserved=%d inactive_split=%d alloc_retries=%d ooms=%d free=%d total=%d '
+                'sync_all_streams=%d device_allocs=%d device_frees=%d'
+                % (row['point'], row['rank'], row['txn_seq'], row['chunk_start'],
+                   row['chunk_end'], row['allocated'], row['reserved'], row['inactive_split'],
+                   row['alloc_retries'], row['ooms'], row['free'], row['total'],
+                   row['sync_all_streams'], row['device_allocs'], row['device_frees']),
+                logging.getLogger(__name__))
         except Exception:
             self.memory_receipt_errors += 1
+
+    def _cow_receipt(self, transaction):
+        """inwait build-4: this chunk's zero and CoW times, one line; the lane is drained here. A failure is counted, never raised."""
+        if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+            return
+        import lane_chunk
+        try:
+            row = lane_chunk.take_cow_row()
+            if row is None:
+                return
+            row = lane_chunk.cow_row_pages(lane_chunk.cow_row_times(row), transaction.chunk_start)
+            import logging
+            from native_measurement import emit_receipt_kv
+            written = emit_receipt_kv('flash-s5 cow rank=%d txn_seq=%d chunk=%d-%d %s' % (
+                self.rank, transaction.txn_seq, transaction.chunk_start, transaction.chunk_end,
+                ' '.join('%s=%s' % (key, row[key]) for key in sorted(row))), logging.getLogger(__name__))
+            if written is False:
+                # build-5b: the writer refused it; build-4c lost every line this way, silently.
+                lane_chunk.COW_FAST['row_errors'] += 1
+        except Exception:
+            lane_chunk.COW_FAST['row_errors'] += 1
+
+    def _peak_open(self):
+        """alpha-next: reset the allocator peak at the chunk's open; a failure is counted (peak_receipt_errors), never raised."""
+        try:
+            self._peak_at_open = peak_reset(cuda=self._memory_cuda)
+        except Exception:
+            self._peak_at_open = None
+            self.peak_receipt_errors = getattr(self, 'peak_receipt_errors', 0) + 1
+
+    def _peak_receipt(self, transaction):
+        """alpha-next: the chunk's peak-allocated receipt line; a failure is counted (peak_receipt_errors), never raised."""
+        try:
+            row = peak_receipt(self.rank, transaction, getattr(self, '_peak_at_open', None),
+                               cuda=self._memory_cuda)
+            if row is None:
+                return
+            import logging
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            from native_measurement import emit_receipt_kv
+            emit_receipt_kv(
+                PEAK_LINE + 'rank=%d txn_seq=%d chunk=%d-%d peak_allocated=%d peak_reserved=%d '
+                'allocated_at_open=%d stage_timer=%d' % (
+                    row['rank'], row['txn_seq'], row['chunk_start'], row['chunk_end'], row['peak_allocated'],
+                    row['peak_reserved'], row['allocated_at_open'], row['stage_timer']),
+                logging.getLogger(__name__))
+        except Exception:
+            self.peak_receipt_errors = getattr(self, 'peak_receipt_errors', 0) + 1
 
     def _route_fail(self, reason):
         self._route_failure = reason
@@ -668,6 +910,8 @@ class NativeWorkerBridge:
             self._released = True
             if self._memory_receipts:
                 self._memory_receipt('released', transaction)
+                self._peak_receipt(transaction)
+            self._cow_receipt(transaction)
         if not self._runtime_released:
             runtime = getattr(self.server, 'runtime', None)
             release = getattr(runtime, 'release', None)
@@ -696,8 +940,9 @@ class NativeWorkerBridge:
         self._require_open(request.transaction, request.state_epoch)
         chunk = self.dispatcher.chunk
         if chunk is not None:
-            admitted_terminal = (chunk.admission.prompt_end
-                                 - chunk.admission.chunk_end) == 1
+            # coverage-soak-fix: the chunk ending at the admitted native end (the prompt's last row, or a geometry tail's
+            # block boundary) is the terminal one
+            admitted_terminal = chunk.admission.chunk_end == chunk.admission.native_end
             if request.terminal is not admitted_terminal:
                 raise WorkerBridgeError(
                     'release terminal flag differs from the admitted chunk')
@@ -706,6 +951,17 @@ class NativeWorkerBridge:
             raise WorkerBridgeError('release does not cover this rank')
         if expected[self.rank] != max(0, self._reported_seq):
             raise WorkerBridgeError('release watermark differs from the final report')
+        if self._lean is not None:
+            # Held-g L4: the engine applied exactly the stream this rank sent,
+            # and the drained lane has nothing left to report.
+            streams = {entry[0]: tuple(entry[1:]) for entry in request.lean_streams}
+            if streams.get(self.rank) != self._lean.end():
+                raise WorkerBridgeError('lean release differs from the sent report stream')
+            rest, _cursor = self._lean_report(token=False)
+            if not rest.empty():
+                raise WorkerBridgeError('lean release leaves completions unreported')
+        elif request.lean_streams:
+            raise WorkerBridgeError('lean release streams on a full-reply transaction')
         try:
             closed = self._release_lane(request.transaction, request.terminal)
         except E3Pending:

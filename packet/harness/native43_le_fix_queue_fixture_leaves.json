@@ -1,0 +1,49 @@
+{
+ "leaves": [
+  {
+   "box_evidence": false,
+   "cannot_prove": "The rest of the queue around them (the next candidate's gates chain runs the whole generated text)",
+   "equivalence": "The deltas change only these functions and three call lines (Texts checks that every other line survives in order). The functions read only the named globals and files",
+   "implementation": "The real bash functions step, record, host_crash_detected, capture_logs, engine_watched and qualification_phase are cut byte for byte from the l-e reference draft and from its delta'd text, then run with the queue's own globals (FAILS, INCS, PHASE_VERDICT, ENGINE_CRASHED, STARTED, LOGS_DONE, CONTAINER, Q, H)",
+   "name": "queue-function-cut",
+   "replaces": "The whole generated queue run (q18a_native43_lifecycle.draft.sh before and after the deltas)",
+   "test": "test_native43_le_fix_queue_deltas.Bash"
+  },
+  {
+   "box_evidence": true,
+   "cannot_prove": "Docker log-driver delays",
+   "equivalence": "On the box, engine-stream.log/.err are the host observer's follow of the same container's docker logs streams, so engine-current.log at capture time is the stream content so far. The l-e capture reproduces the recorded \"STEP engine-errors PASS no current-run engine error marker\" before the deltas",
+   "implementation": "A bash script first on PATH. inspect prints a StartedAt or \"true\". logs prints the fixture stream on stdout and stderr, the same bytes the test writes as engine-stream.log/.err",
+   "name": "fake-docker-cli",
+   "replaces": "docker on the box CT: `inspect --format {{.State.StartedAt}}`, `inspect --format {{.State.Running}}`, `logs --timestamps --since <StartedAt>`",
+   "test": "test_native43_le_fix_queue_deltas.Bash"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "As there",
+   "equivalence": "As fake-nvidia-smi in native43_engine_death_fixture_leaves.json; here the queue's own engine_watched argv (no --gpu-cmd) reaches it",
+   "implementation": "A bash script first on PATH printing the l-e per-rank MiB rows",
+   "name": "fake-nvidia-smi-path",
+   "replaces": "nvidia-smi on the box CT, reached by the watch's default --gpu-cmd from engine_watched",
+   "test": "test_native43_le_fix_queue_deltas.Bash"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "The real client's own timeouts (900 s per bounded wait, serial)",
+   "equivalence": "qualification_phase reads only the exit code and qual-row1.json's verdict (PY_PHASE_RC). The l-e client left no output and no record before the hub's SIGTERM",
+   "implementation": "$H/e3_q18a_qualification.py that sleeps 600 s (the l-e hang) or writes {\"verdict\": \"PASS\"} to its --out",
+   "name": "fake-qualification-client",
+   "replaces": "harness/e3_q18a_qualification.py --phase row1 against the engine",
+   "test": "test_native43_le_fix_queue_deltas.Bash"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "As there",
+   "equivalence": "As growing-log-feeder in native43_engine_death_fixture_leaves.json",
+   "implementation": "A python process that appends the verbatim l-e teardown line 1 s after the phase starts",
+   "name": "teardown-feeder",
+   "replaces": "The host observer appending the l-e teardown line (11:03:08.286892993Z) to engine-stream.log while row1 runs",
+   "test": "test_native43_le_fix_queue_deltas.Bash.test_hung_row1_client_on_the_le_teardown"
+  }
+ ]
+}

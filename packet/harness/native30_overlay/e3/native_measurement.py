@@ -58,6 +58,7 @@ entry; no duration is converted or invented.
 """
 
 import json
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -175,8 +176,9 @@ PROGRESS_MODES = ('trace', 'burst')
 PROGRESS_SCHEMA = 's5-native-progress/1'
 PROGRESS_LINE = 'flash-s5 progress '
 PROGRESS_MAX_ROWS = 4096
-# Below docker's 16 KiB json-file entry split, with room for the log prefix.
-PROGRESS_LINE_BYTES = 12000
+# One receipt record (one part) per atomic pipe write: at most this many bytes
+# including the pid/seq/sha identity and the trailing newline (alpha-next PLAN 2).
+PROGRESS_LINE_BYTES = 3968
 PROGRESS_META_KEY = '_flash_s5'
 # Fixed-width wire meta: transport sequence (u64) and the direct-reply bit.  The
 # pickled size never depends on the value, so a size precheck is exact.
@@ -185,6 +187,10 @@ PROGRESS_META_BYTES = 9
 # profile and poll kinds). Checked when the engine builds the envelope and
 # again by the worker before dispatch; any other method refuses a direct bit.
 PROGRESS_DIRECT_METHODS = frozenset(('flash_s5_submit', 'flash_s5_poll'))
+# inwait: stage 1's open and non-terminal release may reply direct too, only where FLASH_S5_INWAIT=1 installed it
+# (stage1-handoff's L2). Kept apart so the set above, and an engine without the flag, are what they were.
+INWAIT_ENV = 'FLASH_S5_INWAIT'
+PROGRESS_DIRECT_INWAIT_METHODS = frozenset(('flash_s5_open', 'flash_s5_release'))
 PROGRESS_ROWS = {
     # engine: one native command, transport sequence through owner apply
     'n': ('seq', 'kind', 'segment', 'op_seq', 'stage', 'layer', 'origin', 't_submit', 't_sent',
@@ -200,6 +206,232 @@ PROGRESS_ROWS = {
 
 # Positions in an 'n' row (the engine fills it across submit, drain and apply).
 PROGRESS_N = {name: index for index, name in enumerate(PROGRESS_ROWS['n'])}
+
+
+# --- receipt writer (alpha-next PLAN 2: producer-side log fix) ------------------
+# Every worker process and the engine share one container stdout pipe. A receipt
+# line that went through ``logging`` -> vLLM's ``decorate_logs`` stdout wrapper
+# -> the buffered ``sys.stdout`` left the process in several ``write(2)`` calls
+# once it was longer than the buffer or ``PIPE_BUF``, and another process's line
+# could land between them (alpha-perf ``engine-stream.log`` line 3832).
+#
+# ``ReceiptWriter`` writes each receipt record (one progress/anatomy/handler
+# part, one ``native-alloc``, ``memory`` or ``stage-local`` line) with exactly
+# one ``os.write`` on a private ``dup(1)``, at most ``RECEIPT_RECORD_BYTES``
+# including the newline. POSIX makes a FIFO write of at most ``PIPE_BUF`` bytes
+# atomic, so no other process's bytes can land inside a record. A short or
+# failed write is counted, never raised and never retried (a retry would be a
+# second, non-atomic write). Each record carries its identity:
+#
+# * ``pid``;
+# * ``seq``: per process, strictly +1 across every record of every kind,
+#   starting at 0 with the process's ``flash-s5 receipts`` path record;
+# * ``sha``: sha256[:16] of the whole record before identity (all its parts,
+#   joined by newlines), on every part.
+#
+# JSON records get ``"pid":..,"seq":..,"sha":"..",`` inserted after the opening
+# brace; ``k=v`` records get `` pid=.. seq=.. sha=..`` appended. The prefixes
+# are unchanged, so existing parsers still read every part.
+#
+# The writer is installed per process by the startup seams (``s5_startup``).
+# A process where it was never installed (CPU tests that drive the emitters
+# directly) keeps the old logger lines byte for byte; they carry no identity,
+# and ``harness/receipt_lines.py`` reports them as ``unsafe_path`` legacy.
+
+RECEIPT_RECORD_BYTES = 3968
+# Room ``ProgressTrace.lines`` leaves for the identity and the newline.
+RECEIPT_IDENTITY_BYTES = 96
+RECEIPT_PATH_LINE = 'flash-s5 receipts '
+# ``flash-s5 stop `` (one JSON object, no parts) and ``flash-s5 memory-peak `` are the
+# receipt kinds claude/alpha-next added after 5990af80; their emit sites route here when composed.
+RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ', 'flash-s5 producer-witness ', 'flash-s5 decode-timeline ')
+# parity-na2: 'flash-s5 ahead-split ' (parity-ahead's receipt; q18a-parity-o3 n1 lost every one here: refused as a fault, nothing written).
+RECEIPT_KV_PREFIXES = (RECEIPT_PATH_LINE, 'flash-s5 native-alloc ', 'flash-s5 memory ',
+                       'flash-s5 stage-local ', 'flash-s5 memory-peak ', 'flash-s5 cow ', 'flash-s5 ahead-split ')
+RECEIPT_PIPE_BUF_MIN = 4096
+
+
+def receipt_sha(texts):
+    """sha256[:16] of one whole record: its pre-identity parts joined by newlines."""
+    import hashlib
+    return hashlib.sha256('\n'.join(texts).encode()).hexdigest()[:16]
+
+
+def receipt_path(fd=1, *, limit=RECEIPT_RECORD_BYTES):
+    """``atomic-fifo pipe_buf=<n>`` or ``unsafe:<reason>``; reads only fstat and PIPE_BUF."""
+    import select
+    import stat
+    try:
+        mode = os.fstat(fd).st_mode
+    except OSError as exc:
+        return 'unsafe:fstat-%s' % (exc.errno,)
+    pipe_buf = getattr(select, 'PIPE_BUF', None)
+    if not stat.S_ISFIFO(mode):
+        return 'unsafe:not-fifo'
+    if type(pipe_buf) is not int or pipe_buf < RECEIPT_PIPE_BUF_MIN:
+        return 'unsafe:pipe-buf-%s' % (pipe_buf,)
+    if limit > pipe_buf:
+        return 'unsafe:record-%d-over-pipe-buf-%d' % (limit, pipe_buf)
+    return 'atomic-fifo pipe_buf=%d' % pipe_buf
+
+
+class ReceiptWriter:
+    """One atomic ``os.write`` per receipt record on a private ``dup(1)``; never raises.
+
+    ``fd`` defaults to a private duplicate of fd 1 made at the first write, so
+    nothing is opened or written while receipts are off. ``write`` is
+    ``os.write`` (a test seam). Records stay in ``seq`` order on the pipe: the
+    lock covers numbering and writing. After a fork the child starts its own
+    numbering (and its own path record) at 0.
+    """
+
+    def __init__(self, fd=None, *, write=os.write, limit=RECEIPT_RECORD_BYTES, getpid=os.getpid):
+        import threading
+        if type(limit) is not int or not 128 <= limit <= RECEIPT_RECORD_BYTES:
+            raise ValueError('receipt record limit must be within the atomic budget')
+        self._fd_given = fd
+        self._write = write
+        self._getpid = getpid
+        self.limit = limit
+        self._lock = threading.Lock()
+        self.pid = None
+        self.fd = None
+        self.path = None
+        self.seq = 0
+        self.records = 0
+        self.short_writes = 0
+        self.write_errors = 0
+        self.oversize = 0
+        self.faults = 0
+
+    def _start(self):
+        """First write in this process: the private fd, the path check, record seq 0."""
+        pid = self._getpid()
+        if self.pid == pid:
+            return
+        self.pid = pid
+        self.seq = 0
+        self.fd = self._fd_given
+        if self.fd is None:
+            try:
+                self.fd = os.dup(1)
+            except OSError:
+                self.fd = None
+                self.write_errors += 1
+        self.path = (receipt_path(self.fd, limit=self.limit) if self.fd is not None
+                     else 'unsafe:no-fd')
+        self._emit_kv(RECEIPT_PATH_LINE + 'receipt_path=' + self.path)
+
+    def _next(self):
+        seq = self.seq
+        self.seq += 1
+        return seq
+
+    def _put(self, data):
+        if len(data) > self.limit:
+            self.oversize += 1
+            return False
+        if self.fd is None:
+            self.write_errors += 1
+            return False
+        try:
+            written = self._write(self.fd, data)
+        except OSError:
+            self.write_errors += 1
+            return False
+        if written != len(data):
+            self.short_writes += 1
+            return False
+        self.records += 1
+        return True
+
+    def _emit_kv(self, text):
+        seq = self._next()
+        data = ('%s pid=%d seq=%d sha=%s\n' % (text, self.pid, seq, receipt_sha([text]))).encode()
+        return self._put(data)
+
+    def write_kv(self, text):
+        """One ``k=v`` record (one line, no newline inside); False when not written whole."""
+        try:
+            with self._lock:
+                self._start()
+                if type(text) is not str or '\n' in text or not text.startswith(RECEIPT_KV_PREFIXES):
+                    self._next()
+                    self.faults += 1
+                    return False
+                return self._emit_kv(text)
+        except Exception:
+            self.faults += 1
+            return False
+
+    def write_lines(self, texts):
+        """One JSON record of one or more parts (``ProgressTrace.lines`` output); one write per part."""
+        try:
+            texts = list(texts)
+            if not texts:
+                return True
+            with self._lock:
+                self._start()
+                prefix = next((p for p in RECEIPT_JSON_PREFIXES if texts[0].startswith(p)), None)
+                if (prefix is None or any(type(t) is not str or not t.startswith(prefix + '{')
+                                          or '\n' in t for t in texts)):
+                    for _ in texts:
+                        self._next()
+                    self.faults += 1
+                    return False
+                sha = receipt_sha(texts)
+                ok = True
+                cut = len(prefix) + 1
+                for text in texts:
+                    seq = self._next()
+                    data = ('%s"pid":%d,"seq":%d,"sha":"%s",%s\n'
+                            % (text[:cut], self.pid, seq, sha, text[cut:])).encode()
+                    ok = self._put(data) and ok
+                return ok
+        except Exception:
+            self.faults += 1
+            return False
+
+    def stats(self):
+        return dict(pid=self.pid, path=self.path, seq=self.seq, records=self.records,
+                    short_writes=self.short_writes, write_errors=self.write_errors,
+                    oversize=self.oversize, faults=self.faults)
+
+
+_RECEIPT_WRITER = None
+
+
+def install_receipt_writer(writer=None):
+    """This process's receipt writer (idempotent). Opens and writes nothing until a receipt."""
+    global _RECEIPT_WRITER
+    if writer is not None:
+        _RECEIPT_WRITER = writer
+    elif _RECEIPT_WRITER is None:
+        _RECEIPT_WRITER = ReceiptWriter()
+    return _RECEIPT_WRITER
+
+
+def installed_receipt_writer():
+    return _RECEIPT_WRITER
+
+
+def emit_receipt_lines(texts, logger):
+    """Every JSON receipt emit site: the installed writer, else the old logger lines."""
+    writer = _RECEIPT_WRITER
+    if writer is not None:
+        return writer.write_lines(texts)
+    for text in texts:
+        logger.info(text)
+    return True
+
+
+def emit_receipt_kv(text, logger):
+    """Every ``k=v`` receipt emit site: the installed writer, else the old logger line."""
+    writer = _RECEIPT_WRITER
+    if writer is not None:
+        return writer.write_kv(text)
+    logger.info(text)
+    return True
 
 
 def progress_mode(env):
@@ -229,11 +461,16 @@ def decode_progress_meta(meta):
 class ProgressTrace:
     """Bounded per-process progress receipts, flushed as one log line per chunk.
 
-    Rows are fixed tuples (``PROGRESS_ROWS``); time fields are absolute
-    ``CLOCK_MONOTONIC`` ns and are written as microsecond offsets from the
-    line's ``base_ns``.  A full buffer drops and counts, never blocks or grows.
-    Workers record from two threads (RPC loop and async output), hence the lock.
+    Rows are fixed tuples (``ROWS``, held-f's ``PROGRESS_ROWS``); time fields
+    are absolute ``CLOCK_MONOTONIC`` ns and are written as microsecond offsets
+    from the line's ``base_ns``.  A full buffer drops and counts, never blocks
+    or grows. Workers record from two threads (RPC loop and async output),
+    hence the lock. A subclass may carry its own row table, schema and line
+    prefix (held-g's ``AnatomyTrace``).
     """
+    ROWS = PROGRESS_ROWS
+    SCHEMA = PROGRESS_SCHEMA
+    LINE = PROGRESS_LINE
 
     def __init__(self, side, rank=None, *, limit=PROGRESS_MAX_ROWS):
         import threading
@@ -249,7 +486,7 @@ class ProgressTrace:
         self.dropped_total = 0
 
     def record(self, tag, *fields):
-        if len(fields) != len(PROGRESS_ROWS[tag]):
+        if len(fields) != len(self.ROWS[tag]):
             raise ValueError('progress row shape differs from its schema')
         with self._lock:
             if len(self.rows) >= self.limit:
@@ -268,27 +505,29 @@ class ProgressTrace:
     def lines(self, **identity):
         """This flush as compact log lines; [] when nothing was recorded or dropped.
 
-        Each line stays below ``PROGRESS_LINE_BYTES`` so the box's log path
-        (``docker logs --timestamps``, which splits entries at 16 KiB) keeps it
-        whole. Parts share ``line``/``base_ns`` and carry ``part``/``parts``;
-        ``fields`` and ``dropped`` ride on part 0 only.
+        Each line leaves ``RECEIPT_IDENTITY_BYTES`` free below
+        ``PROGRESS_LINE_BYTES``, so with the writer's pid/seq/sha and newline a
+        part is one ``ReceiptWriter`` record below ``PIPE_BUF``. Parts share
+        ``line``/``base_ns`` and carry ``part``/``parts``; ``fields`` and
+        ``dropped`` ride on part 0 only.
         """
         rows, dropped = self.take()
         if not rows and not dropped:
             return []
-        times = [value for row in rows for name, value in zip(PROGRESS_ROWS[row[0]], row[1:])
+        times = [value for row in rows for name, value in zip(self.ROWS[row[0]], row[1:])
                  if name.startswith('t_') and type(value) is int]
         base = min(times) if times else 0
         encoded = []
         for row in rows:
             item = [((value - base) // 1000 if type(value) is int else None)
                     if name.startswith('t_') else value
-                    for name, value in zip(PROGRESS_ROWS[row[0]], row[1:])]
+                    for name, value in zip(self.ROWS[row[0]], row[1:])]
             encoded.append((row[0], json.dumps(item, separators=(',', ':'), sort_keys=True)))
-        head = dict(schema=PROGRESS_SCHEMA, side=self.side, rank=self.rank, line=self.lines_out,
+        head = dict(schema=self.SCHEMA, side=self.side, rank=self.rank, line=self.lines_out,
                     base_ns=base, **identity)
-        budget = PROGRESS_LINE_BYTES - len(PROGRESS_LINE) - len(json.dumps(head)) - 256
-        first = len(json.dumps(PROGRESS_ROWS, separators=(',', ':'))) + 32
+        budget = (PROGRESS_LINE_BYTES - RECEIPT_IDENTITY_BYTES - len(self.LINE)
+                  - len(json.dumps(head)) - 256)
+        first = len(json.dumps(self.ROWS, separators=(',', ':'))) + 32
         parts, current, size = [], {}, first
         for tag, text in encoded:
             if current and size + len(text) + 8 > budget:
@@ -301,13 +540,424 @@ class ProgressTrace:
         for index, part in enumerate(parts):
             body = dict(head, part=index, parts=len(parts), rows='@ROWS@')
             if index == 0:
-                body.update(fields=PROGRESS_ROWS, dropped=dropped)
+                body.update(fields=self.ROWS, dropped=dropped)
             text = json.dumps(body, separators=(',', ':'), sort_keys=True)
             rows_text = '{' + ','.join('"%s":[%s]' % (tag, ','.join(items))
                                        for tag, items in sorted(part.items())) + '}'
-            out.append(PROGRESS_LINE + text.replace('"@ROWS@"', rows_text, 1))
+            out.append(self.LINE + text.replace('"@ROWS@"', rows_text, 1))
         self.lines_out += 1
         return out
+
+
+# --- native anatomy receipts (held-g) ------------------------------------------
+# The same FLASH_S5_NATIVE_PROGRESS setting adds one anatomy line per chunk per
+# process, on a schema of its own (the held-f progress lines keep their format):
+#
+# * R1, each worker (DeviceSpans): every accepted lane command gets a start and
+#   an end CUDA timing event on the lane prefill stream, from a pool allocated
+#   at the worker's first transaction. After release's drain, one anchor event
+#   recorded on that drained stream and synchronized maps them onto the host
+#   CLOCK_MONOTONIC. Typed pending refusals are counted per reason, with the
+#   host time they held each command.
+# * R5, the engine (StepAnatomy): the engine step loop of the chunk, from the
+#   existing step seams.
+#
+# Receipts never decide anything: a failed read or log line is counted, never
+# raised into the lane or the engine.
+
+ANATOMY_SCHEMA = 's5-native-anatomy/1'
+ANATOMY_LINE = 'flash-s5 anatomy '
+# Timed commands per chunk per worker (two events each, plus one anchor).
+ANATOMY_POOL = 256
+# One chunk in this many carries per-command (worker) and per-step (engine) rows.
+ANATOMY_DETAIL_EVERY = 16
+# Steps per chunk kept for the medians; later steps still count in the sums.
+ANATOMY_MAX_STEPS = 8192
+ANATOMY_ROWS = {
+    # worker: this rank's chunk on its prefill stream, device times on the host clock
+    'c': ('commands', 'timed', 'untimed', 'refused', 't_first', 't_last', 'busy_us', 'idle_us',
+          'idle_qsa_us', 'read_us', 'cancelled', 'detail', 'errors'),
+    # worker: the chunk's accepted commands of one class; refusals and the host
+    # time they held a command count for the command they preceded
+    'k': ('kind', 'count', 'busy_us', 'max_us', 'idle_before_us', 'refused', 'wait_us'),
+    # worker: one QSA layer, from its pre to its tail
+    'q': ('layer', 'commands', 'credit', 'credit_wait_us', 'grant', 'grant_wait_us',
+          'lag_us', 'lag_max_us', 'busy_us', 'idle_us', 't_start', 't_end'),
+    # worker: the chunk's typed pending refusals by reason
+    'f': ('reason', 'count', 'wait_us'),
+    # worker detail: one accepted command
+    'x': ('op_seq', 'kind', 'layer', 'refused', 't_host', 't_start', 't_end'),
+    # engine: the chunk's steps of one class
+    'e': ('cls', 'steps', 'total_us', 'advance_us', 'schedule_us', 'wait_us', 'rest_us',
+          'sends', 'rpcs', 'waits', 'median_us', 'max_us'),
+    # engine detail: one step
+    'p': ('cls', 't_begin', 'total_us', 'advance_us', 'schedule_us', 'wait_us', 'sends', 'rpcs'),
+}
+# The receipt class of an accepted LAYER command: the QsaLayerDriver phase it
+# ran (its newest ``records`` entry), or 'layer' when no QSA phase ran (GDN).
+ANATOMY_QSA = {'pre': 'qsa-pre', 'schedule_boundary': 'qsa-boundary', 'selection': 'qsa-selection',
+               'copy_wave': 'qsa-copy', 'bucket': 'qsa-bucket', 'attended': 'qsa-attended',
+               'pending': 'qsa-pending', 'tail': 'qsa-tail'}
+# Typed pending refusals by the text the lane raises them with.
+ANATOMY_REASONS = (('lane submission credit pending', 'credit'),
+                   ('QSA schedule awaits active-stage TP agreement', 'grant'),
+                   ('PP receive has not completed', 'pp'))
+
+
+def anatomy_reason(exc):
+    text = str(exc)
+    for prefix, reason in ANATOMY_REASONS:
+        if text.startswith(prefix):
+            return reason
+    return 'other'
+
+
+class AnatomyTrace(ProgressTrace):
+    ROWS = ANATOMY_ROWS
+    SCHEMA = ANATOMY_SCHEMA
+    LINE = ANATOMY_LINE
+
+
+def _us(ns):
+    return int(ns) // 1000
+
+
+class DeviceSpans:
+    """Held-g R1: device spans of one worker's lane commands on its prefill stream.
+
+    The LaneDispatcher calls ``begin`` at open, ``start`` inside the lane scope
+    before a command's handler, ``end`` after the command's completion event,
+    ``refused``/``abandon`` when the command was not accepted, and ``release``
+    after release's drain. ``event`` makes one CUDA timing event. A chunk with
+    more than ``pool`` accepted commands times only its first ``pool``
+    (``untimed`` counts the rest); nothing is ever refused for it.
+    """
+
+    def __init__(self, event, *, rank, emit, clock=time.monotonic_ns, pool=ANATOMY_POOL,
+                 detail_every=ANATOMY_DETAIL_EVERY, emit_lines=None):
+        if not callable(event) or not callable(emit) or not callable(clock):
+            raise ValueError('device spans need event, emit and clock callables')
+        if emit_lines is not None and not callable(emit_lines):
+            raise ValueError('device spans emit_lines must be callable')
+        # Alpha-next PLAN 2: given, one chunk's parts go out together as one
+        # receipt record (``emit_receipt_lines``); else one ``emit`` per part.
+        self.emit_lines = emit_lines
+        if type(pool) is not int or pool < 1 or type(detail_every) is not int or detail_every < 1:
+            raise ValueError('device span pool and detail cadence must be positive')
+        self.event, self.emit, self.clock = event, emit, clock
+        self.rank = rank
+        self.pool_size, self.detail_every = pool, detail_every
+        self.pool = None
+        self.anchor = None
+        self.trace = AnatomyTrace('worker', rank)
+        self.chunks = 0
+        self.errors = 0
+        self.lines_emitted = 0
+        self._clear(None, None)
+
+    def _clear(self, transaction, stage):
+        self.transaction = transaction
+        self.stage = stage
+        self.used = 0
+        self.untimed = 0
+        # (op_seq, kind, layer, slot, host_ns, refusals, {reason: [count, held_ns]})
+        self.commands = []
+        # op_seq -> [last reason, last refusal ns, {reason: [count, held_ns]}]
+        self.waiting = {}
+        # reason -> [count, held_ns], refusals of every command
+        self.reasons = {}
+
+    def begin(self, transaction, stage):
+        if self.pool is None:
+            self.pool = [(self.event(), self.event()) for _ in range(self.pool_size)]
+            self.anchor = self.event()
+        self.chunks += 1
+        self._clear(transaction, stage)
+
+    def start(self, stream, driver):
+        """Before the handler's first launch: host stamp, start event, driver record count."""
+        host = self.clock()
+        records = getattr(driver, 'records', None)
+        count = len(records) if type(records) is list else None
+        slot = None
+        if self.transaction is not None and self.used < self.pool_size:
+            slot = self.used
+            self.pool[slot][0].record(stream)
+            self.used += 1
+        return slot, host, count
+
+    def _hold(self, episode, now):
+        reason, last = episode[0], episode[1]
+        if reason is not None:
+            held = max(0, now - last)
+            episode[2].setdefault(reason, [0, 0])[1] += held
+            self.reasons.setdefault(reason, [0, 0])[1] += held
+
+    def end(self, mark, stream, command, driver):
+        """After the command's completion event: its end event and its row."""
+        slot, host, count = mark
+        if slot is not None:
+            self.pool[slot][1].record(stream)
+        else:
+            self.untimed += 1
+        kind = command.kind
+        if kind == 'layer':
+            records = getattr(driver, 'records', None)
+            if type(records) is list and count is not None and len(records) > count:
+                kind = ANATOMY_QSA.get(records[-1][0], 'qsa-other')
+        episode = self.waiting.pop(command.op_seq, None)
+        refusals, reasons = 0, {}
+        if episode is not None:
+            self._hold(episode, host)
+            reasons = episode[2]
+            refusals = sum(entry[0] for entry in reasons.values())
+        self.commands.append((command.op_seq, kind, command.layer_start, slot, host, refusals, reasons))
+
+    def refused(self, mark, command, exc):
+        """A typed pending refusal: no op_seq consumed; the start slot is reused."""
+        if mark is None:
+            return
+        slot, host, _count = mark
+        if slot is not None and slot == self.used - 1:
+            self.used -= 1
+        reason = anatomy_reason(exc)
+        episode = self.waiting.get(command.op_seq)
+        if episode is None:
+            episode = self.waiting[command.op_seq] = [None, None, {}]
+        self._hold(episode, host)
+        episode[0], episode[1] = reason, host
+        episode[2].setdefault(reason, [0, 0])[0] += 1
+        self.reasons.setdefault(reason, [0, 0])[0] += 1
+
+    def abandon(self, mark):
+        """A command that raised before acceptance gives its start slot back."""
+        if mark is not None and mark[0] is not None and mark[0] == self.used - 1:
+            self.used -= 1
+
+    def release(self, stream, cancelled):
+        """After release's drain: read the chunk's spans, log its line; never raises."""
+        if self.transaction is None:
+            return False
+        try:
+            began = self.clock()
+            times = {}
+            if self.used:
+                anchor = self.anchor
+                anchor.record(stream)
+                anchor.synchronize()
+                base = self.clock()
+                for slot in range(self.used):
+                    first, last = self.pool[slot]
+                    times[slot] = (base - round(first.elapsed_time(anchor) * 1e6),
+                                   base - round(last.elapsed_time(anchor) * 1e6))
+            self._rows(times, self.clock() - began, cancelled)
+            transaction = self.transaction
+            texts = self.trace.lines(txn=transaction.txn_seq,
+                                     request_generation=transaction.request_generation,
+                                     chunk_start=transaction.chunk_start,
+                                     chunk_end=transaction.chunk_end, stage=self.stage)
+            if self.emit_lines is not None:
+                self.emit_lines(texts)
+                self.lines_emitted += len(texts)
+            else:
+                for text in texts:
+                    self.emit(text)
+                    self.lines_emitted += 1
+        except Exception:
+            self.errors += 1
+            self.trace.take()
+            return False
+        finally:
+            self._clear(None, None)
+        return True
+
+    def _rows(self, times, read_ns, cancelled):
+        detail = (self.chunks - 1) % self.detail_every == 0
+        kinds, layers = {}, {}
+        busy = idle = idle_qsa = 0
+        first = last = previous = None
+        for op_seq, kind, layer, slot, host, refusals, reasons in self.commands:
+            entry = kinds.setdefault(kind, [0, 0, 0, 0, 0, 0])
+            entry[0] += 1
+            entry[4] += refusals
+            entry[5] += sum(item[1] for item in reasons.values())
+            qsa = kind.startswith('qsa-')
+            continuation = qsa and kind != 'qsa-pre'
+            span = times.get(slot) if slot is not None else None
+            gap = lag = None
+            if span is not None:
+                cost = max(0, span[1] - span[0])
+                busy += cost
+                entry[1] += cost
+                entry[2] = max(entry[2], cost)
+                if previous is not None:
+                    gap = max(0, span[0] - previous)
+                    lag = host - previous
+                    idle += gap
+                    entry[3] += gap
+                    if continuation:
+                        idle_qsa += gap
+                first = span[0] if first is None else first
+                last = span[1]
+                previous = span[1]
+            if qsa:
+                row = layers.setdefault(layer, dict(commands=0, credit=0, credit_wait=0, grant=0,
+                                                    grant_wait=0, lag=0, lag_max=0, busy=0,
+                                                    idle=0, start=None, end=None))
+                row['commands'] += 1
+                for reason in ('credit', 'grant'):
+                    count, held = reasons.get(reason, (0, 0))
+                    row[reason] += count
+                    row[reason + '_wait'] += held
+                if span is not None:
+                    row['busy'] += max(0, span[1] - span[0])
+                    row['start'] = span[0] if row['start'] is None else row['start']
+                    row['end'] = span[1]
+                if continuation and gap is not None:
+                    row['idle'] += gap
+                    row['lag'] += max(0, lag)
+                    row['lag_max'] = max(row['lag_max'], lag)
+            if detail:
+                self.trace.record('x', op_seq, kind, layer, refusals, host,
+                                  None if span is None else span[0],
+                                  None if span is None else span[1])
+        refused = sum(entry[0] for entry in self.reasons.values())
+        self.trace.record('c', len(self.commands), len(times), self.untimed, refused, first, last,
+                          _us(busy), _us(idle), _us(idle_qsa), _us(read_ns),
+                          int(cancelled is not None), int(detail), self.errors)
+        for kind in sorted(kinds):
+            count, cost, peak, before, refusals, held = kinds[kind]
+            self.trace.record('k', kind, count, _us(cost), _us(peak), _us(before), refusals, _us(held))
+        for layer in sorted(layers):
+            row = layers[layer]
+            self.trace.record('q', layer, row['commands'], row['credit'], _us(row['credit_wait']),
+                              row['grant'], _us(row['grant_wait']), _us(row['lag']),
+                              _us(max(0, row['lag_max'])), _us(row['busy']), _us(row['idle']),
+                              row['start'], row['end'])
+        for reason in sorted(self.reasons):
+            count, held = self.reasons[reason]
+            self.trace.record('f', reason, count, _us(held))
+
+
+class StepAnatomy:
+    """Held-g R5: the engine step loop of one auto-owned native chunk (owner thread).
+
+    A step runs from one ``engine_idle_tick`` entry (the first seam inside
+    ``step_with_batch_queue``) to the next. The chunk's first step starts at
+    its begin (which runs inside an advance); its last ends at its flush.
+    ``advanced`` stamps the before-step hook (``driver.advance``), ``scheduled``
+    the return of ``scheduler.schedule`` (the park seam), ``waited`` one owner
+    wait on an ordinary future. ``rest`` is the step's time outside those
+    three: stock RPC submission, ``update_from_output``, the process loop and
+    the idle tick's sleep. Classes: ``tick`` (the idle tick returned a bypass),
+    ``idle`` (the held-g idle wait bypassed the step), ``advance`` (the driver's
+    advance returned a bypass), ``empty`` (stock scheduled no token),
+    ``stock`` (stock scheduled tokens), ``partial`` (the chunk ended inside the
+    step before it was classified).
+    """
+    CLASSES = ('tick', 'idle', 'advance', 'empty', 'stock', 'partial')
+
+    def __init__(self, counters, *, clock_ns=time.monotonic_ns, detail_every=ANATOMY_DETAIL_EVERY,
+                 max_steps=ANATOMY_MAX_STEPS):
+        self.counters = counters
+        self.clock_ns = clock_ns
+        self.detail_every = detail_every
+        self.max_steps = max_steps
+        self.trace = AnatomyTrace('engine', limit=max_steps + len(self.CLASSES))
+        self.chunks = 0
+        self.step = None
+        self.closed = []
+        self.sums = {}
+
+    def reset(self):
+        self.chunks += 1
+        self.closed = []
+        self.sums = {}
+        self.step = self._open(self.clock_ns())
+
+    def _open(self, now):
+        # [t_begin, cls, advance, t_advanced, schedule, wait, waits, sends0, rpcs0]
+        return [now, None, 0, None, 0, 0, 0, self.counters['commands'], self.counters['stock_rpcs']]
+
+    def _close(self, now):
+        step = self.step
+        if step is None:
+            return
+        cls = step[1] or 'partial'
+        total = max(0, now - step[0])
+        sends = self.counters['commands'] - step[7]
+        rpcs = self.counters['stock_rpcs'] - step[8]
+        entry = self.sums.setdefault(cls, [0, 0, 0, 0, 0, 0, 0, 0, 0, []])
+        entry[0] += 1
+        entry[1] += total
+        entry[2] += step[2]
+        entry[3] += step[4]
+        entry[4] += step[5]
+        entry[5] += max(0, total - step[2] - step[4] - step[5])
+        entry[6] += sends
+        entry[7] += rpcs
+        entry[8] += step[6]
+        if len(entry[9]) < self.max_steps:
+            entry[9].append(total)
+        if (self.chunks - 1) % self.detail_every == 0 and len(self.closed) < self.max_steps:
+            self.closed.append((cls, step[0], total, step[2], step[4], step[5], sends, rpcs))
+        self.step = None
+
+    def begin(self):
+        now = self.clock_ns()
+        self._close(now)
+        self.step = self._open(now)
+
+    def bypass(self, cls):
+        if self.step is not None and self.step[1] is None:
+            self.step[1] = cls
+
+    def advanced(self, started, bypassed):
+        step = self.step
+        if step is None:
+            return
+        now = self.clock_ns()
+        step[2] += max(0, now - max(started, step[0]))
+        step[3] = now
+        if bypassed:
+            self.bypass('advance')
+
+    def scheduled(self, scheduler_output):
+        step = self.step
+        if step is None:
+            return
+        now = self.clock_ns()
+        if step[3] is not None:
+            step[4] += max(0, now - step[3])
+        tokens = getattr(scheduler_output, 'total_num_scheduled_tokens', None)
+        self.bypass('empty' if tokens == 0 else 'stock')
+
+    def waited(self, started, ended):
+        step = self.step
+        if step is not None:
+            step[5] += max(0, ended - max(started, step[0]))
+            step[6] += 1
+
+    def lines(self, **identity):
+        """Close the open step and return the chunk's engine anatomy line(s)."""
+        self._close(self.clock_ns())
+        detail = (self.chunks - 1) % self.detail_every == 0
+        for cls in self.CLASSES:
+            entry = self.sums.get(cls)
+            if entry is None:
+                continue
+            totals = sorted(entry[9])
+            median = totals[len(totals) // 2] if totals else None
+            self.trace.record('e', cls, entry[0], _us(entry[1]), _us(entry[2]), _us(entry[3]),
+                              _us(entry[4]), _us(entry[5]), entry[6], entry[7], entry[8],
+                              None if median is None else _us(median),
+                              _us(totals[-1]) if totals else None)
+        for cls, began, total, advance, schedule, wait, sends, rpcs in self.closed:
+            self.trace.record('p', cls, began, _us(total), _us(advance), _us(schedule), _us(wait),
+                              sends, rpcs)
+        self.closed = []
+        self.sums = {}
+        return self.trace.lines(detail=int(detail), **identity)
 
 
 JOURNAL_VECTOR_SCHEMA = 's5-journal-vector/1'
@@ -770,6 +1420,10 @@ class NativeMeasurementCensus:
         state_epoch = entry.get('state_epoch')
         remaining = entry.get('remaining_tokens')
         terminal = entry.get('terminal')
+        # coverage-soak-fix: the native end (the prompt's last row, or a geometry tail's block boundary); absent is the last row
+        native_end = entry.get('native_end')
+        if native_end is None and _is_int(prompt_end):
+            native_end = prompt_end - 1
         fields_ok = (
             type(request) is str and bool(request)
             and _is_int(generation) and generation >= 1
@@ -781,7 +1435,9 @@ class NativeMeasurementCensus:
             and _is_int(state_epoch) and state_epoch >= 1
             and _is_int(remaining) and remaining >= 1
             and remaining == prompt_end - chunk_end
-            and type(terminal) is bool and terminal == (remaining == 1)
+            and _is_int(native_end) and 1 <= prompt_end - native_end <= 64
+            and chunk_end <= native_end
+            and type(terminal) is bool and terminal == (chunk_end == native_end)
         )
         if not fields_ok:
             self._fault('chunk-open-invalid:transaction=%d' % txn)
@@ -859,6 +1515,7 @@ class NativeMeasurementCensus:
             'state_epoch': state_epoch,
             'remaining_tokens': remaining,
             'terminal': terminal,
+            'native_end': native_end,
             'route': entry.get('route'),
             'route_generation': entry.get('route_generation'),
             'open_ns': observed_ns,
@@ -945,7 +1602,8 @@ class NativeMeasurementCensus:
         layer_end = entry.get('layer_end')
         if segment_kind == 'layer':
             if not _is_int(layer_start) or layer_start < 0 \
-                    or not _is_int(layer_end) or layer_end != layer_start + 1:
+                    or not _is_int(layer_end) \
+                    or not layer_start < layer_end <= layer_start + entry.get('layer_group', 1):
                 self._conflict(chunk['conflicts'], 'segment-layer-shape-invalid')
                 return {'accepted': False,
                         'reason': 'segment-layer-shape-invalid'}
@@ -1080,6 +1738,15 @@ class NativeMeasurementCensus:
         except ValueError:
             self._conflict(chunk['conflicts'], 'report-vector-invalid')
             return {'accepted': False, 'reason': 'report-vector-invalid'}
+        # Held-g L4: a lean entry's completed/proof vectors are the rank's new
+        # items only; its header counts what the rank reported before.
+        lean = entry.get('lean')
+        if lean is not None and not (
+                type(lean) is dict
+                and all(_is_int(lean.get(key)) and lean[key] >= 0
+                        for key in ('base_completed', 'base_proofs', 'completed', 'proofs'))):
+            self._conflict(chunk['conflicts'], 'report-lean-header-invalid')
+            return {'accepted': False, 'reason': 'report-lean-header-invalid'}
         if type(completed) is not list:
             self._conflict(chunk['conflicts'], 'report-completed-not-a-list')
             completed_set = None
@@ -1095,6 +1762,16 @@ class NativeMeasurementCensus:
                 self._conflict(chunk['conflicts'],
                                'report-completed-set-unproved')
                 completed_set = None
+            elif lean is not None:
+                prior = record['completed_ops'] or frozenset()
+                if lean['base_completed'] != len(prior) or lean['base_proofs'] != len(record['proofs']):
+                    self._conflict(chunk['conflicts'], 'report-lean-gap')
+                if not prior.isdisjoint(completed_set):
+                    self._conflict(chunk['conflicts'], 'report-lean-replay')
+                # The rank's cumulative set: what every check below compares.
+                completed_set = prior.union(completed_set)
+                if lean['completed'] != len(completed_set):
+                    self._conflict(chunk['conflicts'], 'report-lean-count-differs')
         pending_set = set()
         if type(pending) is not list:
             self._conflict(chunk['conflicts'], 'report-pending-not-a-list')
@@ -1206,6 +1883,11 @@ class NativeMeasurementCensus:
                         'completion_seq': completion_seq,
                         'observed_ns': observed_ns,
                     }
+        if lean is not None:
+            # A lean entry carries the STATE_WRITE proof once, in its delta.
+            saw_state_proof = record['state_write'] is not None
+            if lean['proofs'] != len(record['proofs']):
+                self._conflict(chunk['conflicts'], 'report-lean-count-differs')
         if state_written and not saw_state_proof:
             # Cumulative reports repeat their proofs; a true state_written
             # report always carries the STATE_WRITE proof in the same list.
@@ -2205,15 +2887,16 @@ class NativeMeasurementCensus:
                 previous_end = chunk['chunk_end']
                 if chunk['terminal']:
                     terminal_seen += 1
-                    if chunk['remaining_tokens'] != 1 \
-                            or chunk['chunk_end'] != chunk['prompt_end'] - 1:
+                    if (chunk['chunk_end'] != chunk.get('native_end', chunk['prompt_end'] - 1)
+                            or chunk['remaining_tokens'] != chunk['prompt_end'] - chunk['chunk_end']
+                            or not 1 <= chunk['remaining_tokens'] <= 64):
                         _reason(reasons, 'request-terminal-coverage-invalid')
             if terminal_seen != 1:
                 _reason(reasons, 'request-terminal-not-covered')
             last = chunk_rows[-1]
             if not last['terminal']:
                 _reason(reasons, 'request-terminal-outside-window')
-            if last['chunk_end'] != last['prompt_end'] - 1:
+            if last['chunk_end'] != last.get('native_end', last['prompt_end'] - 1):
                 _reason(reasons, 'request-final-frontier-incomplete')
             family = group['family']
             if family not in ('fresh', 'append'):
@@ -2379,3 +3062,220 @@ def select_window_evidence(raw, begin, start_ns, end_ns):
         reasons.append(str(exc) if type(exc) is ValueError else 'measurement-envelope-malformed')
     binding['valid'] = binding['complete'] and binding['route_proved'] and not reasons
     return view, binding
+
+
+# A native-only dynamic scope; ordinary indexer calls see no recorder.
+from contextvars import ContextVar
+INDEXER_PHASE_CONTEXT = ContextVar('flash_s5_indexer_phase', default=None)
+
+
+@contextmanager
+def indexer_phase_scope(trace):
+    token = INDEXER_PHASE_CONTEXT.set(trace)
+    try:
+        yield
+    finally:
+        INDEXER_PHASE_CONTEXT.reset(token)
+
+
+class FusedPhaseSpans:
+    """Passive operation-owned events: no waits or elapsed reads until release."""
+    MAX_MARKERS = 512
+    MAX_LAYERS = 24
+    MAX_BUCKET_ROWS = 128
+    PHASES = ('score', 'topk', 'copy_wait', 'copy', 'attention',
+              'wait_current_producer', 'wait_previous_arena_consumer',
+              'compute_wait_for_copy', 'indexer', 'canonical_selection',
+              'kv_producer_update', 'prefetch_wait_for_arena', 'prefetch_copy')
+    PREFIX = 'flash-s5 fused-phase '
+    WITNESS_PREFIX = 'flash-s5 producer-witness '
+
+    def __init__(self, operation):
+        self.operation = operation
+        self.rows, self.pending, self.pairs = {}, {}, []
+        self.buckets, self.consumers, self.details, self.pair_details = {}, {}, {}, {}
+        self.markers = self.dropped = self.errors = self.submit_ns = 0
+        self.group = None
+        self.stage = None
+        self.route_generation = None
+        self.fused_layers = set()
+        self.timeline = getattr(operation.device, 'decode_timeline', None)
+        if self.timeline is not None:
+            try:
+                self.timeline.begin(self)
+            except Exception:
+                self.timeline = None
+
+    def begin(self, phase, stream, *, bucket=None, layer_name=None, group=None):
+        started = time.monotonic_ns()
+        try:
+            if self.markers + 2 > self.MAX_MARKERS:
+                self.dropped += 1
+                return None
+            run = (self.operation._layer(layer_name) if layer_name is not None
+                   else self.operation._current_run())
+            name = run.layer_name
+            if name not in self.rows:
+                if len(self.rows) >= self.MAX_LAYERS:
+                    self.dropped += 1
+                    return None
+                self.rows[name] = dict(layer=name, group=self.group if group is None else group, history=run.valid_tokens,
+                                       fused=name in self.fused_layers,
+                                       phases={})
+            if phase not in self.PHASES:
+                raise ValueError('unknown fused diagnostic phase')
+            self.markers += 2  # Reserve both endpoints even if an event fails.
+            token = (name, phase, stream, self.operation.device.timing_event(stream))
+            if self.timeline is not None:
+                self.timeline.anchor(self, token[-1])
+            self.pending[id(token)] = token
+            self.details[id(token)] = (bucket, started)
+            return token
+        except Exception:
+            self.errors += 1
+            return None
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def end(self, token):
+        if token is None:
+            return
+        started = time.monotonic_ns()
+        try:
+            name, phase, stream, first = self.pending.pop(id(token))
+            bucket, started_ns = self.details.pop(id(token))
+            last = self.operation.device.timing_event(stream)
+            self.pairs.append((name, phase, first, last))
+            self.pair_details[id(first)] = (bucket, time.monotonic_ns() - started_ns)
+        except Exception:
+            self.errors += 1
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def bucket(self, index, consumer, kind):
+        """Record provenance only; never query an event or change its dependency."""
+        started = time.monotonic_ns()
+        try:
+            if len(self.buckets) >= self.MAX_BUCKET_ROWS:
+                self.dropped += 1
+                return
+            run, device = self.operation._current_run(), self.operation.device
+            previous = self.consumers[id(consumer)] if consumer is not None else (None, None, None)
+            self.buckets[(run.layer_name, index)] = dict(layer=run.layer_name,
+                group=self.group, bucket=index, consumer_kind=kind,
+                consumer_layer=previous[0], consumer_bucket=previous[1],
+                producer_stream=device.stream_token(device.compute),
+                copy_stream=device.stream_token(device.copy),
+                consumer_stream=previous[2],
+                phases={})
+        except Exception:
+            self.errors += 1
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def consumer(self, event, layer, index):
+        started = time.monotonic_ns()
+        try:
+            if len(self.consumers) >= self.MAX_BUCKET_ROWS:
+                self.dropped += 1
+                return
+            device = self.operation.device
+            self.consumers[id(event)] = (layer, index, device.stream_token(device.compute))
+        except Exception:
+            self.errors += 1
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def emit(self):
+        """Called only after the existing operation drain; an incomplete read never waits."""
+        op = self.operation
+        started = time.monotonic_ns()
+        incomplete = self.dropped + self.errors + len(self.pending)
+        for name, phase, first, last in self.pairs:
+            try:
+                if not op.device.query(last):
+                    incomplete += 1
+                    continue
+                ms = float(first.elapsed_time(last))
+                row = self.rows[name]['phases'].setdefault(phase, dict(count=0, total_ms=0.0, max_ms=0.0,
+                    host_ns=0, host_max_ns=0,
+                    stream='copy' if phase in ('copy_wait','copy','wait_current_producer',
+                                              'wait_previous_arena_consumer', 'prefetch_wait_for_arena',
+                                              'prefetch_copy') else 'compute'))
+                bucket, host_ns = self.pair_details[id(first)]
+                row['count'] += 1
+                row['total_ms'] += ms
+                row['max_ms'] = max(row['max_ms'], ms)
+                row['host_ns'] += host_ns
+                row['host_max_ns'] = max(row['host_max_ns'], host_ns)
+                if bucket is not None:
+                    self.buckets[(name, bucket)]['phases'][phase] = dict(ms=ms, host_ns=host_ns)
+            except Exception:
+                incomplete += 1
+        incomplete += int(not self.rows)
+        for row in self.rows.values():
+            prefix = None
+            try:
+                run = op._layers[row['layer']]
+                row.update(history=run.valid_tokens, pages=len(run.pages), buckets=len(run.buckets))
+                prefix = getattr(op, '_prefix_rows', {}).get(row['layer'])
+                if prefix is not None and prefix['issued']:
+                    row['fused'] = row['layer'] in self.fused_layers
+                if prefix is not None and prefix['group'] is not None:
+                    row['group'] = prefix['group']
+                incomplete += int(row['history'] < 1 or row['pages'] < 1 or row['buckets'] < 1)
+            except Exception:
+                incomplete += 1
+            counts = {key: value['count'] for key, value in row['phases'].items()}
+            required = set(self.PHASES) - {'wait_previous_arena_consumer', 'prefetch_wait_for_arena', 'prefetch_copy'}
+            issued = bool(prefix and prefix['issued'])
+            buckets = [b for (name, _), b in self.buckets.items() if name == row['layer']]
+            incomplete += int(not row['fused'] or not required <= set(counts) or
+                              counts.get('score') != counts.get('topk') or
+                              counts.get('copy') != counts.get('attention') or
+                              counts.get('copy') != counts.get('copy_wait') or
+                              counts.get('copy') != counts.get('compute_wait_for_copy') or
+                              counts.get('copy') != len(buckets) or
+                              counts.get('wait_current_producer') != 1 or
+                              counts.get('wait_previous_arena_consumer', 0) !=
+                              sum(b['consumer_kind'] != 'none' for b in buckets) or
+                              counts.get('prefetch_copy', 0) != int(issued) or
+                              counts.get('prefetch_wait_for_arena', 0) != int(issued))
+        for bucket in self.buckets.values():
+            required = {'copy_wait', 'copy', 'attention', 'compute_wait_for_copy'}
+            if bucket['bucket'] == 0:
+                required.add('wait_current_producer')
+            if bucket['consumer_kind'] != 'none':
+                required.add('wait_previous_arena_consumer')
+            incomplete += int(set(bucket['phases']) != required)
+        read_ns = time.monotonic_ns() - started
+        tx = op.transaction
+        identity = dict(schema='s5-fused-phase/1', rank=op.lane.worker_rank, stage=self.stage,
+            engine_epoch=tx.engine_epoch, route_generation=self.route_generation, request_generation=tx.request_generation,
+            transaction=tx.txn_seq, chunk_start=tx.chunk_start, chunk_end=tx.chunk_end,
+            storage_epoch=op.lane.storage_epoch,
+            sample_every=op.device.native_fused_phase_every, markers=self.markers,
+            dropped=self.dropped, errors=self.errors, pending=len(self.pending), incomplete=incomplete,
+            cancelled=op._cancelled is not None, complete=incomplete == 0 and op._cancelled is None,
+            cpu_submit_ns=self.submit_ns, cpu_read_ns=read_ns,
+            witness_version=1,
+            basis='stream event spans include launch gaps; streams may overlap; no device value readback')
+        logger = __import__('logging').getLogger(__name__)
+        emit_started = time.monotonic_ns()
+        for row in self.rows.values():
+            if emit_receipt_lines([self.PREFIX + json.dumps(dict(identity, **row), separators=(',', ':'))], logger) is False:
+                raise OSError('fused phase receipt sink refused record')
+        for row in self.buckets.values():
+            data = dict(identity, **row)
+            data['schema'] = 's5-producer-witness/1'
+            if emit_receipt_lines([self.WITNESS_PREFIX + json.dumps(data, separators=(',', ':'))], logger) is False:
+                raise OSError('producer witness sink refused record')
+        summary = dict(identity, kind='summary', layers=len(self.rows),
+                       bucket_rows=len(self.buckets),
+                       counters={key: op.stats.get(key, 0) for key in
+                                 ('buckets','pieces','bytes','waits','copy_events','consumer_events')},
+                       cpu_emit_ns_excludes_summary=time.monotonic_ns() - emit_started)
+        if emit_receipt_lines([self.PREFIX + json.dumps(summary, separators=(',', ':'))], logger) is False:
+            raise OSError('fused phase receipt sink refused summary')
+        if self.timeline is not None:
+            self.timeline.finish(self, source_complete=incomplete == 0 and op._cancelled is None)

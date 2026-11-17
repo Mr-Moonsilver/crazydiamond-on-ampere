@@ -1,0 +1,8 @@
+{
+ "cases": {},
+ "cases_from": "none: attn-meta adds no probe case (c1's cases are parent cases here, held to c1's frozen traces)",
+ "frozen_record_sha256": null,
+ "schema": "attn-meta-negative-pins/1",
+ "status": "AWAITING-OBSERVATION: one --negative --observe over c1 build b's regenerated overlay, then tools/attn_meta_negative_pins_write.py after review",
+ "tests": {}
+}
