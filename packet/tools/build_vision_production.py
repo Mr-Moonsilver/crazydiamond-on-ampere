@@ -7,7 +7,7 @@ from vision_anthropic_overlay import transform
 ROOT=Path(__file__).resolve().parents[1]
 PARENT_SHA='3fa651383cb1dc97c81dbf137cb6477d0084808bc66c9e20b86780ebe6242ee8'
 TAG='vision-prod-w27-20261117a';OVERLAY='overlay-v16s5-'+TAG
-CLIENTS=('vision_public_gateway','vision_g6_capture','vision_g5_probe','vision_prod_a3','vision_w27_read','vision_answer_probe','vision_encoder_service','vision_encoder_backend','vision_speech_guard','packet_client_contract')
+CLIENTS=('vision_service_owner','vision_encoder_job','vision_public_gateway','vision_g6_capture','vision_g5_probe','vision_prod_a3','vision_w27_read','vision_answer_probe','vision_encoder_service','vision_encoder_backend','vision_speech_guard','packet_client_contract')
 TESTS=('test_vision_public_gateway','test_vision_anthropic_overlay','test_vision_w27_protocol','test_vision_production_bundle','test_vision_encoder_protocol')
 
 def dump(p,v):p.write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')

@@ -133,7 +133,9 @@ class Gateway:
             conn.request('POST',u.path+'/v1/encode',json.dumps(dict(image_base64=base64.b64encode(data).decode())).encode(),
                 {'Content-Type':'application/json','Authorization':'Bearer '+self.encoder_key})
             reply=conn.getresponse();raw=reply.read(10*2**20+1)
-            if reply.status!=200:raise GatewayError(503 if reply.status in (429,503,504) else 502,'encoder_unavailable_'+str(reply.status))
+            if reply.status!=200:
+                if reply.status in (400,413):raise GatewayError(reply.status,'encoder_image_refused')
+                raise GatewayError(503 if reply.status in (429,503,504) else 502,'encoder_unavailable_'+str(reply.status))
             if len(raw)>10*2**20:raise GatewayError(502,'encoder_response_too_large')
             return json.loads(raw)
         except GatewayError:self.count('encoder_errors');raise
@@ -176,7 +178,7 @@ def handler(gateway):
                     except (ValueError,UnicodeError):raise GatewayError(400,'invalid_JSON') from None
                     value,image_count=transform(value,gateway.encode,anthropic=self.path.startswith('/v1/messages'))
                     body=json.dumps(value,separators=(',',':'),allow_nan=False).encode()
-                conn=http.client.HTTPConnection(gateway.backend.hostname,gateway.backend.port,timeout=600)
+                conn=http.client.HTTPConnection(gateway.backend.hostname,gateway.backend.port,timeout=3000)
                 headers={'Authorization':'Bearer '+gateway.api_key,'Content-Type':'application/json'}
                 for name in ('anthropic-version','anthropic-beta','x-request-id'):
                     if self.headers.get(name):headers[name]=self.headers[name]
