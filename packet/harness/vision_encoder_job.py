@@ -106,11 +106,16 @@ def main(argv=None):
     p.add_argument('--speech-health', default=HEALTH)
     p.add_argument('--fixture', type=Path, default=Path(FIXTURE))
     p.add_argument('--images', type=Path, nargs='+', required=True)
+    p.add_argument('--ceiling',action='store_true',help='one-shot infra c serial N-image sweep; never GPU batching')
     p.add_argument('--service', action='store_true', help='stay up after probe; owner must stop for handback')
     args = p.parse_args(argv)
     if not re.fullmatch('[a-z0-9-]{1,64}', args.run_id) or args.asr_max_seconds <= 0:
         p.error('bounded run id and positive ASR latency limit required')
     clear = validate_clearance(args.clearance, args.run_id)
+    if args.ceiling:
+        if args.service:raise Refused('ceiling-is-one-shot-not-service')
+        import vision_encoder_ceiling as ceiling
+        ceiling.preflight(clear)
     verify_model(args.model)
     if (args.key_file.is_symlink() or not args.key_file.is_file()
             or args.key_file.stat().st_mode & 0o777 != 0o600):
@@ -142,7 +147,15 @@ def main(argv=None):
         pending = args.run_dir / 'result.next.json'
         pending.write_text(json.dumps(record, indent=2) + '\n')
         pending.replace(args.run_dir / 'result.json')
+    def sample_memory():
+        sample = check_memory(**physical(clear['gpu_uuid'], pid))
+        record['physical_peak_mib'] = max(record['physical_peak_mib'], sample['owned_mib'])
+        record['memory_samples'] += 1
+        with (args.run_dir / 'memory.jsonl').open('a') as log:
+            log.write(json.dumps(dict(monotonic=time.monotonic(), **sample)) + '\n')
+        return sample
     def asr():
+        record['speech']['asr_calls']=record['speech'].get('asr_calls',0)+1
         result=check_asr(args.asr_url, args.fixture, expected, args.asr_max_seconds, args.asr_text_field)
         return dict(result,observed_wall_ns=time.time_ns())
     save()
@@ -151,6 +164,7 @@ def main(argv=None):
         try:
             record['speech']['pre_asr'] = asr()
         except SpeechLatency as exc:
+            if args.ceiling:raise
             record['speech']['pre_asr_first_latency'] = error_info(exc)
             save()
             retry_delay(args.speech_health)
@@ -187,6 +201,7 @@ def main(argv=None):
     def signal_stop(*_):
         nonlocal stop_requested
         stop_requested = True
+        if args.ceiling:ceiling.cancel()
     signal.signal(signal.SIGTERM, signal_stop)
     signal.signal(signal.SIGINT, signal_stop)
     pool = ThreadPoolExecutor(max_workers=2)
@@ -221,6 +236,8 @@ def main(argv=None):
                     retained=sum(p.stat().st_size for p in args.run_dir.rglob('*') if p.is_file())
                     if retained>256*2**20:raise Refused('service-retained-output-budget; stop before1GiB')
                     next_log_budget=time.monotonic()+15
+                if args.ceiling:
+                    ceiling.card(clear,pid,command);record['ceiling']=ceiling.snapshot()
                 if pid:
                     sample = check_memory(**physical(clear['gpu_uuid'], pid))
                     new_peak=sample['owned_mib']>record['physical_peak_mib']
@@ -237,13 +254,15 @@ def main(argv=None):
                         health = None
                     if health and health.get('ready'):
                         record['loaded'] = health['weights']
-                        future = pool.submit(probe, url, key, args.images)
+                        future = (pool.submit(ceiling.sweep,url,key,args.images,record['speech']['pre_asr'],asr,command,measure=sample_memory) if args.ceiling else pool.submit(probe, url, key, args.images))
                         phase = 'probe'
                     elif health and health.get('error'):
                         raise Refused('encoder-startup-error ' + json.dumps(health['error']))
                     elif time.monotonic() >= deadline:
                         raise Refused('encoder startup timeout')
                 elif phase == 'probe' and future.done():
+                    if args.ceiling:
+                        record['ceiling']=future.result();stop_requested=True;continue
                     record['images'] = future.result()
                     record['speech']['post_load_health'] = check_health(args.speech_health)
                     future = pool.submit(asr)
@@ -278,14 +297,19 @@ def main(argv=None):
                     load_future = None; phase = 'post-asr'
                 save()
                 time.sleep(.25)
-            if not record['images'] or not record['speech'].get('post_load_asr') or record['physical_peak_mib'] <= 0:
+            if args.ceiling:
+                record['ceiling']=ceiling.snapshot()
+                if not record['ceiling'].get('complete'):raise Refused('ceiling-skipped-or-incomplete')
+            if (not args.ceiling and (not record['images'] or not record['speech'].get('post_load_asr'))) or record['physical_peak_mib'] <= 0:
                 raise Refused('incomplete real encoder/speech/memory evidence')
-            record.update(verdict='PASS', reason='encoder-only-real-images-and-speech-guard')
+            record.update(verdict='PASS', reason='encoder-ceiling-serial-real-images-and-speech-guard' if args.ceiling else 'encoder-only-real-images-and-speech-guard')
     except Exception as exc:
-        retry_after_stop = isinstance(exc, SpeechLatency)
+        retry_after_stop = not args.ceiling and isinstance(exc, SpeechLatency)
+        if args.ceiling:record['ceiling']=ceiling.snapshot()
         record.update(verdict='FAIL' if isinstance(exc, SpeechMismatch) else 'HOLD', reason=error_info(exc))
         print('PACKET_CLIENT_ERROR ' + json.dumps(record['reason']), file=sys.stderr, flush=True)
     finally:
+        if args.ceiling:ceiling.cancel()
         cleanup_errors = []
         try:
             # Also check during early startup: an unobserved PID is not permission to leave the child running.
@@ -310,6 +334,8 @@ def main(argv=None):
             cleanup_errors.append(error_info(exc))
         try:
             record['speech']['after_stop_health'] = check_health(args.speech_health)
+            if args.ceiling and record['owned_gpu_released']:
+                record['speech']['after_stop_asr']=ceiling.post_stop(asr,record['speech']['pre_asr'])
         except Exception as exc:
             cleanup_errors.append(error_info(exc))
         record['cleanup_errors'] = cleanup_errors

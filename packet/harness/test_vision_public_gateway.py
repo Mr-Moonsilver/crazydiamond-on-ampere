@@ -54,6 +54,13 @@ class Protocol(unittest.TestCase):
         self.assertEqual(code,200);self.assertIn(b'message_start',raw);self.assertEqual(self.seen[-1][1],anth)
         self.assertEqual(self.seen[-1][2]['Authorization'],'Bearer '+'a'*64)
         self.assertEqual(self.seen[-1][2]['anthropic-version'],'2023-06-01')
+    def test_four_images_preserve_order_and_reject_fifth_before_encoder(self):
+        body=self.body();body['messages'][0]['content']=[dict(type='image_url',image_url=dict(url=self.image)) for _ in range(4)]
+        self.assertEqual(self.call(body=body)[0],200);self.assertEqual(len(self.encodes),4)
+        self.assertEqual([p['type'] for p in self.seen[-1][1]['messages'][0]['content']],['image_embeds']*4)
+        body['messages'][0]['content'].append(copy.deepcopy(body['messages'][0]['content'][0]))
+        self.assertEqual(self.call(body=body)[0],400);self.assertEqual(len(self.encodes),4)
+
     def test_anthropic_image_and_tool_result_embedding_scope(self):
         image=dict(type='image',source=dict(type='base64',media_type='image/png',data=base64.b64encode(b'\x89PNG\r\n\x1a\nCPU_SCHEMA_LEAF').decode()))
         for part in (image,dict(type='tool_result',tool_use_id='one',content=[image])):
@@ -63,7 +70,7 @@ class Protocol(unittest.TestCase):
             if result['type']=='tool_result':result=result['content'][0]
             self.assertEqual(result['source']['type'],'flash_next_embeds')
     def test_video_multiple_untrusted_embeddings_and_downstream_unavailability(self):
-        bad=self.body();bad['messages'][0]['content'].append(copy.deepcopy(bad['messages'][0]['content'][0]))
+        bad=self.body();bad['messages'][0]['content']=[copy.deepcopy(bad['messages'][0]['content'][0]) for _ in range(5)]
         self.assertEqual(self.call(body=bad)[0],400)
         for kind in ('image_embeds','video_url','input_audio'):
             body=self.body();body['messages'][0]['content'][0]=dict(type=kind)
@@ -90,13 +97,14 @@ class Protocol(unittest.TestCase):
             self.assertEqual(g.raw_image('https://example.com/image.png'),b'\x89PNG\r\n\x1a\nCPU_SCHEMA_LEAF');fetch.assert_called_once()
     def test_gates_revert_mutants(self):
         import inspect
-        code=inspect.getsource(g.transform).replace("if len(images)>1:","if False:")
+        code=inspect.getsource(g.transform).replace("if len(images)>max_images:","if False:")
         namespace=dict(g.__dict__);exec(code,namespace)
-        bad=self.body();bad['messages'][0]['content'].append(copy.deepcopy(bad['messages'][0]['content'][0]))
+        bad=self.body();bad['messages'][0]['content']=[copy.deepcopy(bad['messages'][0]['content'][0]) for _ in range(5)]
         with self.assertRaises(g.GatewayError):g.transform(bad,self.gateway.encode)
         # Removing the cardinality guard would forward a second raw image to the private engine.
+        namespace['MAX_REQUEST_IMAGE_ROWS']=8192
         forwarded,count=namespace['transform'](bad,self.gateway.encode)
-        self.assertEqual(count,1);self.assertEqual(forwarded['messages'][0]['content'][2]['type'],'image_url')
+        self.assertEqual(count,5);self.assertTrue(all(p['type']=='image_embeds' for p in forwarded['messages'][0]['content']))
 
 
 class Process(unittest.TestCase):

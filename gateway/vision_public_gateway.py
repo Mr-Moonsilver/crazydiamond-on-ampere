@@ -13,6 +13,8 @@ from packet_client_contract import report_exception
 
 MAX_BODY=16*2**20
 MAX_IMAGE=8*2**20
+MAX_IMAGES=8
+MAX_REQUEST_IMAGE_ROWS=8192
 GET_PATHS={'/v1/models','/metrics','/version','/health'}
 POST_PATHS={'/v1/chat/completions','/v1/completions','/v1/messages','/v1/messages/count_tokens','/tokenize','/detokenize'}
 FORBIDDEN={'image_embeds','prompt_embeds','multi_modal_data','video','video_url','input_video','input_audio','audio','audio_url'}
@@ -70,7 +72,8 @@ def fetch_image(url):
     finally:conn.close()
 
 
-def transform(body,encode,anthropic=False):
+def transform(body,encode,anthropic=False,max_images=4):
+    if type(max_images)is not int or not 1<=max_images<=MAX_IMAGES:raise ValueError('image limit outside code bound')
     if type(body) is not dict:raise GatewayError(400,'JSON_object_required')
     if FORBIDDEN.intersection(body):raise GatewayError(400,'untrusted_embeddings_audio_or_video_refused')
     messages=body.get('messages',[])
@@ -102,30 +105,38 @@ def transform(body,encode,anthropic=False):
     for message in changed.get('messages',[]):
         if type(message) is not dict:raise GatewayError(400,'invalid_message')
         parts(message.get('content'))
-    if len(images)>1:raise GatewayError(400,'one_image_per_request_limit')
+    if len(images)>max_images:raise GatewayError(400,'configured_image_count_limit')
     if not images:return body,0
-    target,url=images[0]
-    result=encode(raw_image(url))
-    try:
-        validate_embedding(result)
-        encoded=result['content']['image_embeds']['image_embeds']
-        if not isinstance(encoded,str) or len(encoded)>9*2**20:raise ValueError()
-        part=embedding_content(result)
-    except (KeyError,TypeError,ValueError):raise GatewayError(502,'encoder_identity_or_shape_invalid') from None
-    target.clear()
-    target.update(dict(type='image',source=dict(type='flash_next_embeds',content=part)) if anthropic else part)
-    return changed,1
+    total_bytes=total_rows=0
+    for target,url in images:
+        raw=raw_image(url);total_bytes+=len(raw)
+        if total_bytes>MAX_IMAGE:raise GatewayError(413,'aggregate_images_exceed_8MiB')
+        result=encode(raw)
+        try:
+            validate_embedding(result)
+            encoded=result['content']['image_embeds']['image_embeds']
+            if not isinstance(encoded,str) or len(encoded)>9*2**20:raise ValueError()
+            total_rows+=result['shape'][0]
+            if total_rows>MAX_REQUEST_IMAGE_ROWS:raise ValueError()
+            part=embedding_content(result)
+        except (KeyError,TypeError,ValueError):raise GatewayError(502,'encoder_identity_or_shape_invalid') from None
+        target.clear()
+        target.update(dict(type='image',source=dict(type='flash_next_embeds',content=part)) if anthropic else part)
+    return changed,len(images)
+
 
 
 class Gateway:
-    def __init__(self,backend,encoder,api_key,encoder_key):
+    def __init__(self,backend,encoder,api_key,encoder_key,max_images=4):
         u=urlsplit(backend)
         if u.scheme!='http' or u.hostname!='127.0.0.1' or u.path not in ('','/') or not u.port:
             raise ValueError('backend must be a declared loopback HTTP port')
         self.backend=u;self.encoder=encoder.rstrip('/');self.api_key=api_key;self.encoder_key=encoder_key
-        self.slots=threading.BoundedSemaphore(16);self.lock=threading.Lock()
+        self.slots=threading.BoundedSemaphore(8);self.lock=threading.Lock()
         self.counts=dict(requests=0,images=0,encoder_errors=0,client_disconnects=0)
         self.ready_file=None;self.packet_sha=None
+        if type(max_images)is not int or not 1<=max_images<=MAX_IMAGES:raise ValueError('configured image limit exceeds code bound')
+        self.max_images=max_images
     def count(self,name,n=1):
         with self.lock:self.counts[name]+=n
     def encode(self,data):
@@ -183,8 +194,8 @@ def handler(gateway):
                     if len(raw)!=size:raise GatewayError(400,'incomplete_request_body')
                     try:value=json.loads(raw)
                     except (ValueError,UnicodeError):raise GatewayError(400,'invalid_JSON') from None
-                    value,image_count=transform(value,gateway.encode,anthropic=self.path.startswith('/v1/messages'))
-                    body=json.dumps(value,separators=(',',':'),allow_nan=False).encode()
+                    value,image_count=transform(value,gateway.encode,anthropic=self.path.startswith('/v1/messages'),max_images=gateway.max_images)
+                    body=json.dumps(value,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()
                 conn=http.client.HTTPConnection(gateway.backend.hostname,gateway.backend.port,timeout=3000)
                 headers={'Authorization':'Bearer '+gateway.api_key,'Content-Type':'application/json'}
                 for name in ('anthropic-version','anthropic-beta','x-request-id'):
@@ -219,11 +230,12 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bind',default='0.0.0.0');p.add_argument('--port',type=int,default=8000)
     p.add_argument('--backend',default='http://127.0.0.1:8001');p.add_argument('--encoder',default='http://<encoder-host>:9041')
+    p.add_argument('--max-images',type=int,choices=range(1,MAX_IMAGES+1),default=4)
     p.add_argument('--ready-file',type=Path);p.add_argument('--packet-sha256')
     p.add_argument('--key-file',type=Path,required=True);p.add_argument('--encoder-key-file',type=Path,required=True)
     args=p.parse_args(argv)
     if args.encoder!='http://<encoder-host>:9041':raise ValueError('encoder endpoint differs from cleared VM<vm-id> binding')
-    gateway=Gateway(args.backend,args.encoder,read_key(args.key_file,'VLLM_API_KEY'),read_key(args.encoder_key_file,'VISION_ENCODER_API_KEY'))
+    gateway=Gateway(args.backend,args.encoder,read_key(args.key_file,'VLLM_API_KEY'),read_key(args.encoder_key_file,'VISION_ENCODER_API_KEY'),max_images=args.max_images)
     if (args.ready_file is None)!=(args.packet_sha256 is None):raise ValueError('readiness path and packet SHA required together')
     gateway.ready_file=args.ready_file;gateway.packet_sha=args.packet_sha256
     server=ThreadingHTTPServer((args.bind,args.port),handler(gateway));server.daemon_threads=True
@@ -232,7 +244,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
         print('VISION_GATEWAY_READY '+json.dumps(dict(bind=args.bind,port=args.port,backend=args.backend,encoder=args.encoder,
-            default_thinking='unchanged; no request defaults injected',images_per_request=1,encoder_manifest=MODEL_MANIFEST_SHA)),flush=True)
+            default_thinking='unchanged; no request defaults injected',images_per_request=args.max_images,encoder_manifest=MODEL_MANIFEST_SHA)),flush=True)
         server.serve_forever(poll_interval=.2)
     finally:
         server.server_close()
