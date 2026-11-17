@@ -69,6 +69,26 @@ class Protocol(unittest.TestCase):
         body['messages'][0]['content'].append(copy.deepcopy(body['messages'][0]['content'][0]))
         self.assertEqual(self.call(body=body)[0],400);self.assertEqual(len(self.encodes),8)
 
+    def test_count_only_request_receipt_and_refusal_keep_no_body_or_keys(self):
+        lines=[]
+        body=self.body();body['request_id']='<caller-b>-probe-42';body['messages'][0]['content']*=2
+        body['messages'][0]['content'].append(dict(type='text',text='PRIVATE_BODY_SENTINEL'))
+        with patch('builtins.print',side_effect=lambda *args,**kwargs:lines.append(' '.join(map(str,args)))):
+            self.assertEqual(self.call(body=body)[0],200)
+            bad=copy.deepcopy(body);bad['messages'][0]['content']=bad['messages'][0]['content'][:1]*5
+            self.assertEqual(self.call(body=bad)[0],400)
+            deadline=time.monotonic()+2
+            while len(lines)<2 and time.monotonic()<deadline:time.sleep(.01)
+        rows=[json.loads(x.split('flash-s5 gateway-request ',1)[1]) for x in lines if x.startswith('flash-s5 gateway-request ')]
+        self.assertEqual(len(rows),2)
+        first=next(r for r in rows if r['http_status']==200);second=next(r for r in rows if r['http_status']==400)
+        self.assertEqual((first['caller_alias'],first['image_count'],first['total_image_rows'],first['status']),('qwen38-w8a8-tp4',2,4,'transport-complete'))
+        self.assertEqual(second['image_count'],5);self.assertEqual(second['total_image_rows'],0)
+        self.assertEqual(second['status'],'refused')
+        self.assertTrue(all(r['request_id'].startswith('gw-') and r['caller_alias']=='qwen38-w8a8-tp4' for r in rows));self.assertEqual(len({r['request_id'] for r in rows}),2)
+        raw=''.join(lines)
+        for secret in ('PRIVATE_BODY_SENTINEL','CPU_STUB','data:image','a'*64,'b'*64):self.assertNotIn(secret,raw)
+
     def test_anthropic_image_and_tool_result_embedding_scope(self):
         image=dict(type='image',source=dict(type='base64',media_type='image/png',data=base64.b64encode(b'\x89PNG\r\n\x1a\nCPU_SCHEMA_LEAF').decode()))
         for part in (image,dict(type='tool_result',tool_use_id='one',content=[image])):

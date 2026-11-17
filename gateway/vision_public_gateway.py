@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Keyed OpenAI chat proxy: one bounded still image -> trusted encoder -> loopback engine."""
-import argparse,base64,copy,hmac,http.client,ipaddress,json,re,socket,ssl,sys,threading,time
+"""Keyed OpenAI chat proxy: bounded still images -> trusted encoder -> loopback engine."""
+import argparse,base64,copy,uuid,hmac,http.client,ipaddress,json,re,socket,ssl,sys,threading,time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -72,7 +72,7 @@ def fetch_image(url):
     finally:conn.close()
 
 
-def transform(body,encode,anthropic=False,max_images=4):
+def transform(body,encode,anthropic=False,max_images=4,receipt=None):
     if type(max_images)is not int or not 1<=max_images<=MAX_IMAGES:raise ValueError('image limit outside code bound')
     if type(body) is not dict:raise GatewayError(400,'JSON_object_required')
     if FORBIDDEN.intersection(body):raise GatewayError(400,'untrusted_embeddings_audio_or_video_refused')
@@ -105,6 +105,7 @@ def transform(body,encode,anthropic=False,max_images=4):
     for message in changed.get('messages',[]):
         if type(message) is not dict:raise GatewayError(400,'invalid_message')
         parts(message.get('content'))
+    if receipt is not None:receipt['image_count']=len(images)
     if len(images)>max_images:raise GatewayError(400,'configured_image_count_limit')
     if not images:return body,0
     total_bytes=total_rows=0
@@ -120,6 +121,7 @@ def transform(body,encode,anthropic=False,max_images=4):
             if total_rows>MAX_REQUEST_IMAGE_ROWS:raise ValueError()
             part=embedding_content(result)
         except (KeyError,TypeError,ValueError):raise GatewayError(502,'encoder_identity_or_shape_invalid') from None
+        if receipt is not None:receipt['total_image_rows']=total_rows
         target.clear()
         target.update(dict(type='image',source=dict(type='flash_next_embeds',content=part)) if anthropic else part)
     return changed,len(images)
@@ -134,6 +136,7 @@ class Gateway:
         self.backend=u;self.encoder=encoder.rstrip('/');self.api_key=api_key;self.encoder_key=encoder_key
         self.slots=threading.BoundedSemaphore(8);self.lock=threading.Lock()
         self.counts=dict(requests=0,images=0,encoder_errors=0,client_disconnects=0)
+        self.receipt_lock=threading.Lock()
         self.ready_file=None;self.packet_sha=None
         if type(max_images)is not int or not 1<=max_images<=MAX_IMAGES:raise ValueError('configured image limit exceeds code bound')
         self.max_images=max_images
@@ -162,6 +165,7 @@ def handler(gateway):
         def log_message(self,*_):pass
         def setup(self):super().setup();self.connection.settimeout(60)
         def error(self,status,code):
+            self.receipt.update(status='refused',http_status=status)
             raw=json.dumps(dict(error=dict(message=code,type='vision_gateway_error',code=code))).encode()
             self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
         def authenticated(self):
@@ -172,6 +176,14 @@ def handler(gateway):
         def do_GET(self):self.proxy(False)
         def do_POST(self):self.proxy(True)
         def proxy(self,post):
+            self.receipt=dict(schema='vision-gateway-count/1',request_id='gw-'+uuid.uuid4().hex,
+                caller_alias='unknown',image_count=None,total_image_rows=0,status='incomplete',http_status=None,started_wall_ns=time.time_ns())
+            try:return self.forward(post)
+            finally:
+                if post:
+                    self.receipt['finished_wall_ns']=time.time_ns()
+                    with gateway.receipt_lock:print('flash-s5 gateway-request '+json.dumps(self.receipt,sort_keys=True,separators=(',',':')),flush=True)
+        def forward(self,post):
             if (post or self.path not in ('/health','/metrics','/v1/models')) and not self.authenticated():return self.error(401,'Unauthorized')
             if self.path not in (POST_PATHS if post else GET_PATHS):return self.error(404,'unsupported_endpoint')
             if gateway.ready_file is not None and (post or self.path=='/health'):
@@ -194,7 +206,10 @@ def handler(gateway):
                     if len(raw)!=size:raise GatewayError(400,'incomplete_request_body')
                     try:value=json.loads(raw)
                     except (ValueError,UnicodeError):raise GatewayError(400,'invalid_JSON') from None
-                    value,image_count=transform(value,gateway.encode,anthropic=self.path.startswith('/v1/messages'),max_images=gateway.max_images)
+                    alias=value.get('model') if type(value)is dict else None
+                    allowed={'qwen38-w8a8-tp4','cyankiwi/Qwen3.8-27B-AWQ-INT4','cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit','Qwen3.8-Flash-Next','default','qwen3.8-27b'}
+                    self.receipt['caller_alias']=alias if isinstance(alias,str) and alias in allowed else 'other'
+                    value,image_count=transform(value,gateway.encode,anthropic=self.path.startswith('/v1/messages'),max_images=gateway.max_images,receipt=self.receipt)
                     body=json.dumps(value,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()
                 conn=http.client.HTTPConnection(gateway.backend.hostname,gateway.backend.port,timeout=3000)
                 headers={'Authorization':'Bearer '+gateway.api_key,'Content-Type':'application/json'}
@@ -202,21 +217,25 @@ def handler(gateway):
                     if self.headers.get(name):headers[name]=self.headers[name]
                 conn.request('POST' if post else 'GET',self.path,body,headers)
                 reply=conn.getresponse()
+                self.receipt['http_status']=reply.status
                 if image_count and reply.status>=400:
                     reply.read(65536);raise GatewayError(reply.status,'image_engine_http_'+str(reply.status))
                 gateway.count('requests');gateway.count('images',image_count)
                 self.send_response(reply.status)
                 for name in ('Content-Type','Content-Length','x-request-id'):
                     if reply.getheader(name):self.send_header(name,reply.getheader(name))
-                self.send_header('Connection','close');self.end_headers();started=True
+                self.send_header('x-flashnext-request-id',self.receipt['request_id']);self.send_header('Connection','close');self.end_headers();started=True
                 while True:
                     chunk=reply.read1(65536)
                     if not chunk:break
                     self.wfile.write(chunk);self.wfile.flush()
+                self.receipt['status']='transport-complete'
             except GatewayError as exc:
                 if not started:self.error(exc.status,exc.code)
-            except (BrokenPipeError,ConnectionResetError):gateway.count('client_disconnects')
+            except (BrokenPipeError,ConnectionResetError):
+                self.receipt['status']='client-disconnected';gateway.count('client_disconnects')
             except (OSError,http.client.HTTPException):
+                self.receipt['status']='backend-interrupted'
                 if not started:self.error(502,'engine_unavailable')
             except (ValueError,TypeError):
                 if not started:self.error(400,'invalid_request')

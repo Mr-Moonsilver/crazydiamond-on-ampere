@@ -116,6 +116,7 @@ def main(argv=None):
         if args.service:raise Refused('ceiling-is-one-shot-not-service')
         import vision_encoder_ceiling as ceiling
         ceiling.preflight(clear)
+    if args.service and os.path.lexists('/opt/<gpu-tenant>/local/gpu-wanted'):raise Refused('<gpu-tenant>-gate-exists; metadata only')
     verify_model(args.model)
     if (args.key_file.is_symlink() or not args.key_file.is_file()
             or args.key_file.stat().st_mode & 0o777 != 0o600):
@@ -217,6 +218,7 @@ def main(argv=None):
             next_asr = None
             next_log_budget = 0
             while not stop_requested:
+                if (args.service or args.ceiling) and os.path.lexists('/opt/<gpu-tenant>/local/gpu-wanted'):raise Refused('<gpu-tenant>-gate-exists; owned stop')
                 record['speech']['last_health']=dict(check_health(args.speech_health),observed_wall_ns=time.time_ns())
                 if proc.poll() is not None:
                     raise Refused('encoder exited before owned stop')

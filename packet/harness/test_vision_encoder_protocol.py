@@ -154,6 +154,16 @@ class Protocol(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('VISION_ENCODER_READ PASS', result.stdout)
 
+    def test_service_<gpu-tenant>_gate_before_GPU_and_after_start_uses_owned_stop(self):
+        self.argv.append('--service')
+        with patch.object(job.os.path,'lexists',return_value=True):
+            with self.assertRaisesRegex(guard.Refused,'<gpu-tenant>-gate-exists'):self.drive()
+        self.assertFalse(self.state['started'])
+        with patch.object(job.os.path,'lexists',side_effect=lambda path:self.state['started']):
+            code,value=self.drive()
+        self.assertEqual(code,2);self.assertTrue(self.state['stopped']);self.assertTrue(value['owned_gpu_released'])
+        self.assertIn('<gpu-tenant>-gate-exists',value['reason']['message'])
+
     def test_memory_breach_stops_only_owned_child(self):
         self.state['memory_bad'] = True
         code, value = self.drive()

@@ -4,6 +4,8 @@ import argparse,json,os,re,shutil,subprocess,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 CASES=(
+ ('gateway-receipt-count','vision_public_gateway.py',"receipt['image_count']=len(images)","receipt['image_count']=0",'test_vision_public_gateway.Protocol.test_count_only_request_receipt_and_refusal_keep_no_body_or_keys'),
+ ('gateway-receipt-rows','vision_public_gateway.py',"receipt['total_image_rows']=total_rows","receipt['total_image_rows']=0",'test_vision_public_gateway.Protocol.test_count_only_request_receipt_and_refusal_keep_no_body_or_keys'),
  ('gateway-auth','vision_public_gateway.py',"if (post or self.path not in ('/health','/metrics','/v1/models')) and not self.authenticated():", "if False and not self.authenticated():",'test_vision_public_gateway.Protocol.test_full_text_image_tool_messages_sse_and_keyless_metadata'),
  ('g5-all-four','vision_g5_probe.py','for case in cases:','for case in cases[:-1]:','test_vision_w27_protocol.WholeProtocol.test_g5_actual_argv_all_seven_cases_final_reader_and_reference_mutant'),
  ('a3-all100','vision_prod_a3.py','todo=[items[i] for i in selected]','todo=[items[i] for i in selected[:-1]]','test_vision_w27_protocol.WholeProtocol.test_a3_frozen_runner_actual100_requests_and_scorer_leaf_to_final_verdict'),
