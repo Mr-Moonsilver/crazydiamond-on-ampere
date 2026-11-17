@@ -125,6 +125,7 @@ class Gateway:
         self.backend=u;self.encoder=encoder.rstrip('/');self.api_key=api_key;self.encoder_key=encoder_key
         self.slots=threading.BoundedSemaphore(16);self.lock=threading.Lock()
         self.counts=dict(requests=0,images=0,encoder_errors=0,client_disconnects=0)
+        self.ready_file=None;self.packet_sha=None
     def count(self,name,n=1):
         with self.lock:self.counts[name]+=n
     def encode(self,data):
@@ -162,6 +163,12 @@ def handler(gateway):
         def proxy(self,post):
             if (post or self.path not in ('/health','/metrics','/v1/models')) and not self.authenticated():return self.error(401,'Unauthorized')
             if self.path not in (POST_PATHS if post else GET_PATHS):return self.error(404,'unsupported_endpoint')
+            if gateway.ready_file is not None and (post or self.path=='/health'):
+                try:
+                    ready=json.loads(gateway.ready_file.read_text())
+                    okay=ready.get('ready') is True and ready.get('packet_sha256')==gateway.packet_sha
+                except (OSError,ValueError):okay=False
+                if not okay:return self.error(503,'native_lane_not_ready')
             if not gateway.slots.acquire(blocking=False):return self.error(429,'gateway_queue_full')
             conn=None;started=False
             try:
@@ -212,10 +219,13 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bind',default='0.0.0.0');p.add_argument('--port',type=int,default=8000)
     p.add_argument('--backend',default='http://127.0.0.1:8001');p.add_argument('--encoder',default='http://<encoder-host>:9041')
+    p.add_argument('--ready-file',type=Path);p.add_argument('--packet-sha256')
     p.add_argument('--key-file',type=Path,required=True);p.add_argument('--encoder-key-file',type=Path,required=True)
     args=p.parse_args(argv)
     if args.encoder!='http://<encoder-host>:9041':raise ValueError('encoder endpoint differs from cleared VM<vm-id> binding')
     gateway=Gateway(args.backend,args.encoder,read_key(args.key_file,'VLLM_API_KEY'),read_key(args.encoder_key_file,'VISION_ENCODER_API_KEY'))
+    if (args.ready_file is None)!=(args.packet_sha256 is None):raise ValueError('readiness path and packet SHA required together')
+    gateway.ready_file=args.ready_file;gateway.packet_sha=args.packet_sha256
     server=ThreadingHTTPServer((args.bind,args.port),handler(gateway));server.daemon_threads=True
     import signal
     def stop(*_):threading.Thread(target=server.shutdown,daemon=True).start()

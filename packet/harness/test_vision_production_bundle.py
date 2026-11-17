@@ -4,7 +4,7 @@ ROOT=Path(__file__).resolve().parents[1]
 UNITS=ROOT/'deploy/vision-production' if (ROOT/'deploy/vision-production').is_dir() else ROOT/'units'
 class Templates(unittest.TestCase):
  def test_clients_actual_isolated_argv_parse(self):
-  for name in ('vision_prod_a3','vision_g6_capture','vision_g5_probe','vision_w27_read','vision_public_gateway','vision_service_owner'):
+  for name in ('vision_production_ready','vision_prod_a3','vision_g6_capture','vision_g5_probe','vision_w27_read','vision_public_gateway','vision_service_owner'):
    result=subprocess.run([sys.executable,'-I','-B',str(ROOT/'harness'/(name+'.py')),'--help'],capture_output=True,text=True)
    self.assertEqual(result.returncode,0,(name,result.stderr));self.assertIn('usage:',result.stdout)
  def test_service_alert_logging_manual_and_private_key_contract(self):

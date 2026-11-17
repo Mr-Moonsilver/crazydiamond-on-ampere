@@ -71,6 +71,16 @@ class Protocol(unittest.TestCase):
         self.assertEqual(self.seen,[])
         self.encoder_down=True;code,raw=self.call(body=self.body());self.assertEqual(code,503);self.assertIn(b'encoder_unavailable',raw)
         self.assertEqual(self.seen,[])
+    def test_native_readiness_refuses_stale_or_missing_epoch_receipt(self):
+        self.gateway.ready_file=Path(tempfile.mkdtemp(prefix='gateway-ready-'))/'readiness.json';self.gateway.packet_sha='c'*64
+        self.assertEqual(self.call(body=self.body())[0],503);self.assertEqual(self.seen,[])
+        self.gateway.ready_file.write_text(json.dumps(dict(ready=True,packet_sha256='d'*64)))
+        self.assertEqual(self.call(body=self.body())[0],503)
+        self.gateway.ready_file.write_text(json.dumps(dict(ready=True,packet_sha256='c'*64)))
+        self.assertEqual(self.call(body=self.body())[0],200)
+        self.gateway.ready_file.write_text(json.dumps(dict(ready=False,packet_sha256='c'*64)))
+        self.assertEqual(self.call('/health',key=None)[0],503)
+
     def test_public_url_pins_dns_and_refuses_private_or_redirect(self):
         for url in ('file:///etc/passwd','http://127.0.0.1/a','http://***@example.com/a'):
             with self.assertRaises(g.GatewayError):g.raw_image(url)

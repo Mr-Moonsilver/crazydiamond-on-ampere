@@ -10,6 +10,7 @@ CASES=(
  ('g6-duplicate-owner','vision_g6_capture.py',"if name not in CALLERS or name in result['calls']:","if name not in CALLERS:",'test_vision_w27_protocol.WholeProtocol.test_g6_complete_actual_reader_argv_missing_caller_and_probe_only_negative'),
  ('reader-real-caller','vision_w27_read.py'," or c.get('application_path') is not True",'','test_vision_w27_protocol.WholeProtocol.test_g6_complete_actual_reader_argv_missing_caller_and_probe_only_negative'),
  ('service-clearance','vision_service_owner.py',"if clear.get('service_cleared') is not True:",'if False:','test_vision_w27_protocol.WholeProtocol.test_service_owner_exact_argv_owned_stop_and_admission_refusals'),
+ ('restart-unreleased','vision_production_ready.py',"and auto.get('manual_owned') is False",'', 'test_vision_production_ready.Readiness.test_missing_or_zero_selection_never_becomes_ready'),
  ('encoder-memory','vision_encoder_job.py',"sample = check_memory(**physical(clear['gpu_uuid'], pid))","sample = physical(clear['gpu_uuid'], pid)",'test_vision_encoder_protocol.Protocol.test_memory_breach_stops_only_owned_child'),
 )
 def main():
@@ -18,7 +19,7 @@ def main():
  for name,module,before,after,test in CASES:
   folder=a.out/name;h=folder/'harness';h.mkdir(parents=True)
   for f in (ROOT/'harness').glob('vision_*.py'):shutil.copy2(f,h/f.name)
-  for n in ('packet_client_contract.py','test_vision_public_gateway.py','test_vision_w27_protocol.py','test_vision_encoder_protocol.py'):shutil.copy2(ROOT/'harness'/n,h/n)
+  for n in ('packet_client_contract.py','test_vision_public_gateway.py','test_vision_w27_protocol.py','test_vision_encoder_protocol.py','test_vision_production_ready.py'):shutil.copy2(ROOT/'harness'/n,h/n)
   env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(h)+':'+str(ROOT/'tools'))
   argv=[sys.executable,'-B','-m','unittest',test]
   baseline=subprocess.run(argv,env=env,cwd=folder,capture_output=True,text=True,timeout=120)

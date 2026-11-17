@@ -7,8 +7,8 @@ from vision_anthropic_overlay import transform
 ROOT=Path(__file__).resolve().parents[1]
 PARENT_SHA='3fa651383cb1dc97c81dbf137cb6477d0084808bc66c9e20b86780ebe6242ee8'
 TAG='vision-prod-w27-20261117a';OVERLAY='overlay-v16s5-'+TAG
-CLIENTS=('vision_service_owner','vision_encoder_job','vision_public_gateway','vision_g6_capture','vision_g5_probe','vision_prod_a3','vision_w27_read','vision_answer_probe','vision_encoder_service','vision_encoder_backend','vision_speech_guard','packet_client_contract')
-TESTS=('test_vision_public_gateway','test_vision_anthropic_overlay','test_vision_w27_protocol','test_vision_production_bundle','test_vision_encoder_protocol')
+CLIENTS=('vision_gateway_launch_selfrun','vision_production_ready','vision_service_owner','vision_encoder_job','vision_public_gateway','vision_g6_capture','vision_g5_probe','vision_prod_a3','vision_w27_read','vision_answer_probe','vision_encoder_service','vision_encoder_backend','vision_speech_guard','packet_client_contract')
+TESTS=('test_vision_production_pins','test_vision_production_ready','test_vision_public_gateway','test_vision_anthropic_overlay','test_vision_w27_protocol','test_vision_production_bundle','test_vision_encoder_protocol')
 
 def dump(p,v):p.write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')
 def build(base,source,out):
@@ -42,10 +42,13 @@ def build(base,source,out):
     p=out/'serve_readback.py';text=p.read_text().replace("got['host'] == '0.0.0.0'","got['host'] == '127.0.0.1'").replace("argv('--host') != '0.0.0.0'","argv('--host') != '127.0.0.1' or argv('--port') != '8001'")
     p.write_text(text)
     unit=out/'units';unit.mkdir()
-    for name in ('flashnext-vision-gateway.service','flashnext-vision-encoder.service','journald-vision.conf'):
+    for name in ('flashnext-vision-gateway.service','flashnext-vision-encoder.service','journald-vision.conf','native-ready.conf'):
         shutil.copy2(ROOT/'deploy/vision-production'/name,unit/name)
-    for name in ('gateway-start.sh','gateway-stop.sh','production-pin.sh'):shutil.copy2(ROOT/'deploy/vision-production'/name,out/name)
-    shutil.copy2(ROOT/'tools/build_vision_production.py',out/'tools/build_vision_production.py')
+    for name in ('gateway-start.sh','gateway-stop.sh','production-pin.sh','production-rollback.sh','flashnext-boot-guard-w27.sh'):shutil.copy2(ROOT/'deploy/vision-production'/name,out/name)
+    for name in ('build_vision_production.py','vision_production_pin_guard.py'):
+        shutil.copy2(ROOT/'tools'/name,out/'tools'/name)
+    (out/'rollback').mkdir();shutil.copy2('<hub-dir>/agents/flash-next/tmp/decode-phase/handback-qwen38/box-prodback-qwen38-20261110.sh',out/'rollback/box-prodback-qwen38-20261110.sh')
+    shutil.copy2('<hub-dir>/agents/infra/q3090/w27-readonly/flashnext-boot-guard.sh',out/'rollback/flashnext-boot-guard-original.sh')
     selection=Path('<hub-dir>/agents/flash-next/tmp/final-engine/A3-main100-selection-20261117.json');shutil.copy2(selection,out/selection.name)
     contract=Path('<hub-dir>/agents/flash-next/tmp/final-engine/G6-RECEIPT-CONTRACT-w27-20261117.md')
     if sha(contract)!='eb9749fc979c3167480ef221c884e435824c256f43fd3a0e199ba90b15eb27e3':raise ValueError('<review-group> frozen G6 contract differs')
@@ -67,7 +70,7 @@ def build(base,source,out):
     dump(out/'production-delta.json',dict(schema='vision-production-w27/1',parent_packet_sha256=PARENT_SHA,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),backend='127.0.0.1:8001',public='0.0.0.0:8000',encoder='<encoder-host>:9041',thinking_defaults='ON/xhigh, unchanged; no default kwargs injected',native_generated_modules_unchanged=True,stock_reference_unchanged=True,no_device_qualification_claim=True,g6_contract_sha256='eb9749fc979c3167480ef221c884e435824c256f43fd3a0e199ba90b15eb27e3'))
     for p in out.rglob('*.sh'):subprocess.run(['bash','-n',str(p)],check=True)
     names=sorted(p.relative_to(out).as_posix() for p in out.iterdir() if p.is_file() and p.name!='PACKET-SHA256SUMS')
-    names+=['harness/SHA256SUMS']+[p.relative_to(out).as_posix() for d in ('tools','vision-assets','vision-fit-assets','units') for p in (out/d).rglob('*') if p.is_file()]
+    names+=['harness/SHA256SUMS']+[p.relative_to(out).as_posix() for d in ('tools','vision-assets','vision-fit-assets','units','rollback') for p in (out/d).rglob('*') if p.is_file()]
     (out/'PACKET-SHA256SUMS').write_text(''.join(sha(out/n)+'  '+n+'\n' for n in sorted(names)))
     print('VISION_PRODUCTION_PACKET '+str(out)+' '+sha(out/'PACKET-SHA256SUMS'))
 if __name__=='__main__':

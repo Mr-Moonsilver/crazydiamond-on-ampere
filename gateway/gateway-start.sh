@@ -19,8 +19,8 @@ exec docker run --pull never --runtime runc --name flashnext-vision-gateway-w27 
   --label flashnext.vision.gateway=vision-prod-w27-20261117a --label "flashnext.vision.packet=$PIN" --network host --read-only \
   --cap-drop ALL --security-opt no-new-privileges --pids-limit 128 --cpus 2 --memory 2g --memory-swap 2g \
   --log-driver local --log-opt max-size=16m --log-opt max-file=2 --tmpfs /tmp:rw,nosuid,nodev,size=64m \
-  -v "$PK:/packet:ro" -v "$AUTH:/key/vllm-api.env:ro" -v "$ENC:/key/vision-encoder.env:ro" \
+  -v /data/flash-next-control/vision-prod-w27:/readiness:ro -v "$PK:/packet:ro" -v "$AUTH:/key/vllm-api.env:ro" -v "$ENC:/key/vision-encoder.env:ro" \
   -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 \
   sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b \
   -B /packet/harness/vision_public_gateway.py --bind 0.0.0.0 --port 8000 --backend http://127.0.0.1:8001 \
-  --encoder http://<encoder-host>:9041 --key-file /key/vllm-api.env --encoder-key-file /key/vision-encoder.env
+  --encoder http://<encoder-host>:9041 --ready-file /readiness/readiness.json --packet-sha256 "$PIN" --key-file /key/vllm-api.env --encoder-key-file /key/vision-encoder.env

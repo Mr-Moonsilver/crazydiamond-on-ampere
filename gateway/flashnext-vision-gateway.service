@@ -10,12 +10,14 @@ Conflicts=vllm-qwen38.service
 Type=simple
 WorkingDirectory=/data/flash-next-packets/serve-vision-prod-w27-20261117a
 ExecStartPre=/usr/bin/sha256sum --strict --quiet -c PACKET-SHA256SUMS
+ExecStartPre=/usr/bin/python3 -B /data/flash-next-packets/serve-vision-prod-w27-20261117a/harness/vision_production_ready.py --packet /data/flash-next-packets/serve-vision-prod-w27-20261117a --state-file /data/flash-next-control/vision-prod-w27/readiness.json
 EnvironmentFile=/root/.flashnext-serve-vision-prod-w27-20261117a/vllm-api.env
 ExecStart=/bin/bash /data/flash-next-packets/serve-vision-prod-w27-20261117a/gateway-start.sh
 ExecStop=/bin/bash /data/flash-next-packets/serve-vision-prod-w27-20261117a/gateway-stop.sh
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=45
+TimeoutStartSec=1800
 UMask=0077
 
 [Install]
