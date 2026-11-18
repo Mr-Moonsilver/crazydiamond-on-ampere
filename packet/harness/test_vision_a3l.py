@@ -57,14 +57,23 @@ class Protocol(unittest.TestCase):
   self.assertEqual({hashlib.sha256(json.dumps(b,sort_keys=True).encode()).hexdigest() for b in self.seen if sum(len(str(m.get('content',''))) for m in b['messages'])<100000},set(self.bodyshas.values()))
   meta=json.loads((out/'a3l-collection.json').read_text());self.assertEqual(meta['warm']['streams_warm'],5)
   original=(out/'scores/main.jsonl').read_text();rows=[json.loads(x) for x in original.splitlines()];rows[0]['score']=0
-  for row in rows[:6]:row['score']=0
+  for row in rows[:5]:row['score']=0
+  (out/'scores/main.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in rows));self.assertEqual(load.read(out,self.solo,Q,P/'A3-main100-selection-20261117.json')['verdict'],'PASS')
+  rows[5]['score']=0
   (out/'scores/main.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in rows));self.assertEqual(load.read(out,self.solo,Q,P/'A3-main100-selection-20261117.json')['verdict'],'FAIL')
   (out/'scores/main.jsonl').write_text(original);meta['request_body_shas'][self.ids[0]]='0'*64;(out/'a3l-collection.json').write_text(json.dumps(meta));self.assertEqual(load.read(out,self.solo,Q,P/'A3-main100-selection-20261117.json')['verdict'],'HOLD')
+  meta['request_body_shas']=self.bodyshas;(out/'a3l-collection.json').write_text(json.dumps(meta))
+  (out/'attempt-errors.jsonl').write_text(json.dumps(dict(error='http_500'))+'\n');self.assertEqual(load.read(out,self.solo,Q,P/'A3-main100-selection-20261117.json')['verdict'],'FAIL')
   print('A3L_FULL_PROTOCOL_PASS '+str(self.root))
  def test_actual_concurrency_mutant_is_not_PASS(self):
   packet=self.root/'mut-packet';shutil.copytree(P,packet)
   source=packet/'harness/vision_prod_a3l.py';text=source.read_text();self.assertIn("'main',todo,3,deadline",text);source.write_text(text.replace("'main',todo,3,deadline","'main',todo,8,deadline"))
   r=self.invoke(self.root/'wrong-conc',packet);self.assertEqual(r.returncode,2,r.stdout+r.stderr);self.assertIn('actual-probe-concurrency-not-three',r.stdout)
+
+ def test_actual_missing_background_mutant_is_not_PASS(self):
+  packet=self.root/'mut-background';shutil.copytree(P,packet)
+  source=packet/'harness/vision_prod_a3l.py';source.write_text(source.read_text().replace("driver.BG_N['n']=5","driver.BG_N['n']=4"))
+  r=self.invoke(self.root/'wrong-bg',packet);self.assertEqual(r.returncode,2,r.stdout+r.stderr);self.assertIn('W28_A3L HOLD',r.stdout)
 
 class Readers(unittest.TestCase):
  def calls(self):return {n:dict(status='PASS',application_path=True,wall_s=1,output_tokens=5,fixture_sha256='c'*64,receipt_path='/private/owner.json',caller_timeout_contract='owner timeout',timed_out=False) for n in g6.REQUIRED_CALLERS}
@@ -76,6 +85,7 @@ class Readers(unittest.TestCase):
   post['calls']['<caller-d>']['timed_out']=True;(root/'post.json').write_text(json.dumps(post));r=subprocess.run(args,capture_output=True,text=True);self.assertEqual(r.returncode,1);self.assertIn('W28_G6 FAIL',r.stdout)
   post['calls']['<caller-d>']['timed_out']=False;del pre['calls']['<caller-b>.dev1'];self.assertEqual(g6.read(pre,post)['verdict'],'HOLD')
   pre['calls']['<caller-b>.dev1']=self.calls()['<caller-b>.dev1'];post['calls']['<caller-a>.text']['application_path']=False;self.assertEqual(g6.read(pre,post)['verdict'],'HOLD')
+  (root/'post.json').write_text('{broken');r=subprocess.run(args,capture_output=True,text=True);self.assertEqual(r.returncode,2);self.assertIn('PACKET_CLIENT_ERROR',r.stderr);self.assertIn('W28_G6 HOLD',r.stdout)
  def test_g5r_exact_copy_and_wrong_reference_report_only(self):
   original=Path('<hub-dir>/cargo-target/flash-next/vision-production-w27-20261117/g5-reader-ruling-20261117/vision_w27_read_g5r.py')
   self.assertEqual(hashlib.sha256((P/'harness/vision_w27_read_g5r.py').read_bytes()).hexdigest(),'a612d40af065f90a755a3afe44013022789e9a8be97be87f5400e279ab7a167c');self.assertEqual((P/'harness/vision_w27_read_g5r.py').read_bytes(),original.read_bytes())

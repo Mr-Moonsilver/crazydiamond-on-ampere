@@ -14,7 +14,7 @@ def read(pre,post):
  for name in REQUIRED_CALLERS:
   a=(pre or {}).get('calls',{}).get(name);b=post.get('calls',{}).get(name)
   if b is None or (a is None and name not in UNPAIRED):return result('HOLD','missing-real-caller:'+name)
-  if a is None and b.get('timed_out') is not False:return result('HOLD','caller-timeout-not-proven:'+name)
+  if a is None and type(b.get('timed_out')) is not bool:return result('HOLD','caller-timeout-not-proven:'+name)
   for c in ([a,b] if a is not None else [b]):
    if c.get('status')=='FAIL' or c.get('timed_out') is True:return result('FAIL','real-caller-failed:'+name)
    if (c.get('status')!='PASS' or c.get('application_path') is not True or type(c.get('output_tokens')) is not int or c['output_tokens']<0
