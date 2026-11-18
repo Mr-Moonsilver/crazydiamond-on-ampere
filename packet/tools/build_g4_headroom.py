@@ -78,7 +78,9 @@ fi'''))
     ready['receipt_sha256']=nr.digest({k:v for k,v in ready.items() if k!='receipt_sha256'})
     dump(o/'S5-OVERLAP-GENERATION.json',gen);dump(o/'e3/native-overlap-readiness.json',ready)
     nr.verify_finalized_package(o,tuple(generated))
-    delta=json.loads((out/'vision-delta.json').read_text());delta['overlay_name']=OVERLAY;dump(out/'vision-delta.json',delta)
+    delta=json.loads((out/'vision-delta.json').read_text());delta.update(overlay_name=OVERLAY,
+        generated_module_shas=generated,fit_plan_sha256=sha(out/'fit-plan.json'),
+        headroom_flag='FLASH_S5_G4_HEADROOM',scope=plan['scope']);dump(out/'vision-delta.json',delta)
     sums(o);sums(h)
     repin_params(out/'serve-params.env',dict(SERVE_TAG=TAG,BUNDLE_SUMS_SHA=sha(h/'SHA256SUMS'),OVERLAY_SUMS_SHA=sha(o/'SHA256SUMS')))
     dump(out/'g4-headroom-binding.json',dict(parent_packet_sha256=PARENT_SHA,source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),

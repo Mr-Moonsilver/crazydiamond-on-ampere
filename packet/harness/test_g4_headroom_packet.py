@@ -56,6 +56,12 @@ class CompleteProtocol(unittest.TestCase):
         print('G4_FULL_PROTOCOL_COMPLETE '+str(run))
 
     def test_readers_complete_and_missing_peer_mutant(self):
+        delta=json.loads((PACKET/'vision-delta.json').read_text())
+        self.assertEqual(delta['fit_plan_sha256'],hashlib.sha256((PACKET/'fit-plan.json').read_bytes()).hexdigest())
+        binding=json.loads((PACKET/'g4-headroom-binding.json').read_text())
+        for name in binding['changed_modules']:
+            source=PACKET/'harness/native30_overlay/e3'/(name+'.py')
+            self.assertEqual(delta['generated_module_shas'][name],hashlib.sha256(source.read_bytes()).hexdigest())
         raw=dict(scope='headroom-discriminator-only-not-full-G4')
         workload=dict(verdict='FIT',minimum_mib={str(r):300 for r in range(4)},raw=raw)
         complete=self.root/'synthetic-complete.json';complete.write_text(json.dumps(workload))
