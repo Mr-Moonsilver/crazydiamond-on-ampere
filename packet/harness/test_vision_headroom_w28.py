@@ -7,7 +7,7 @@ sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'harness/e3_builder')]
 import test_vision_fit_8x200k as fixture
 import test_vision_fit_owner_protocol as owner_fixture
 import build_vision_headroom_w28 as build
-PAIR=Path(os.environ.get('W28_PAIR','<hub-dir>/cargo-target/flash-next/vision-headroom-w28-20261118/build-1'))
+PAIR=Path(os.environ.get('W28_PAIR','<hub-dir>/cargo-target/flash-next/vision-headroom-w28-20261118/build-6'))
 PROD=PAIR/'production';FIT=PAIR/'g4-full'
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()

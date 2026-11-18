@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tools'))
 import vision_prod_a3l as load,vision_w28_g6_read as g6
-P=Path(os.environ.get('W28_PAIR','<hub-dir>/cargo-target/flash-next/vision-headroom-w28-20261118/build-4'))/'production'
+P=Path(os.environ.get('W28_PAIR','<hub-dir>/cargo-target/flash-next/vision-headroom-w28-20261118/build-6'))/'production'
 Q=Path('<hub-dir>/cargo-target/flash-next/quality-bench-20261116')
 BG=Path('<hub-dir>/cargo-target/flash-next/quality-bench-20261117')
 
