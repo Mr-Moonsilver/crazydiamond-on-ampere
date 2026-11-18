@@ -22,11 +22,12 @@ split pool after capture) as an inventory; nothing claims funding.
 """
 import os
 import time
+from contextlib import nullcontext
 
 from e3_types import E3ContractError
 from lane_comm import PrefillCommunicators
 from lane_hooks import LaneRuntime
-from lane_private import LanePrivateBindings, admitted_chunk
+from lane_private import LanePrivateBindings, admitted_chunk, headroom_enabled
 from model_hooks import (LaneForward, PlePrivateScratch, PleWitness, PrefillStreamOwners,
                          local_text_model, ple_embedding)
 from native_resources import compilation_identity, full_graph_identity
@@ -304,11 +305,22 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     except Exception as exc:
         raise NativeStartupError(
             'prefill side-stream discovery failed: ' + type(exc).__name__) from exc
-    comms = PrefillCommunicators.build(
-        tp_group, pp_group, runner.device, split.prefill_stream, max_tokens=chunk_tokens,
-        hidden_width=_hc_width(model), dtype=_model_dtype(runner, model),
-        pynccl_class=pynccl_class, torch_module=torch)
-    comms.warm(split.prefill_stream)
+    on = headroom_enabled(env)
+    if on:
+        from startup_vram_budget import startup_phase, wrap_headroom_capture
+        setup = startup_phase(runner, 'native-tp-pp-setup', torch_module=torch, enabled=True)
+        warmup = startup_phase(runner, 'native-tp-pp-warmup', torch_module=torch, enabled=True)
+    else:
+        setup, warmup = nullcontext(), nullcontext()
+    with setup:
+        comms = PrefillCommunicators.build(
+            tp_group, pp_group, runner.device, split.prefill_stream, max_tokens=chunk_tokens,
+            hidden_width=_hc_width(model), dtype=_model_dtype(runner, model),
+            pynccl_class=pynccl_class, torch_module=torch)
+    with warmup:
+        comms.warm(split.prefill_stream)
+    if on:
+        wrap_headroom_capture(runner, tp_group, torch)
     # Distinct prefill-green auxiliaries, retained for the worker incarnation.
     # A helper without the prefill extension refuses here (no fallback).
     prefill_streams.prepare()
@@ -320,6 +332,7 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     private_bindings = LanePrivateBindings.discover(
         runner, runtime, chunk_tokens=chunk_tokens, torch_module=torch,
         ple_scratch=ple_scratch)
+    private_bindings.headroom = on
     native = WorkerNative(runner, split, bank, backend, controller, comms, ple_layer, ple_scratch,
                           chunk_tokens, tp_group, torch, state=state,
                           compilation=compilation, full_identity=full_identity,

@@ -266,11 +266,11 @@ def _assert_distinct(decode, prefill):
         raise NativeResourcesError('prefill UID buffer aliases decode storage')
 
 
-def _allocate_scratch(device, chunk_tokens):
+def _allocate_scratch(device, chunk_tokens, *, compact=False):
     bindings = []
     inventory = []
     buffers = []
-    for spec in prefill_scratch_specs(chunk_tokens):
+    for spec in prefill_scratch_specs(chunk_tokens, compact=compact):
         buffer = device.allocate(spec.nbytes, name=spec.name)
         buffers.append(buffer)
         bindings.append((spec, buffer.address))
@@ -827,7 +827,9 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
 
     uid_buffer = device.allocate_i32(max_reqs, name='flash_s5_prefill_uid')
     _assert_distinct(getattr(forward_context, 'QSA_REQ_UID', None), uid_buffer.tensor)
-    bindings, scratch_inventory, scratch_buffers = _allocate_scratch(device, config.chunk_tokens)
+    from lane_private import headroom_enabled
+    bindings, scratch_inventory, scratch_buffers = _allocate_scratch(
+        device, config.chunk_tokens, compact=headroom_enabled(env))
     _ensure_workspace_lanes(workspace, device, WORKSPACE_LANE)
 
     model, weights_address, weights_bytes = _weights(runner)

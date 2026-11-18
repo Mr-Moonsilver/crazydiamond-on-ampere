@@ -1119,10 +1119,12 @@ def topk_bytes(chunk_tokens):
     return max(TOPK_BYTES, chunk_tokens * 2052 * 4)
 
 
-def prefill_scratch_specs(chunk_tokens=1024):
+def prefill_scratch_specs(chunk_tokens=1024, *, compact=False):
     """Private prefill CPU/GPU metadata buffers, sized for one bounded chunk."""
     _int('chunk_tokens', chunk_tokens, 1)
-    return (
+    if type(compact) is not bool:
+        raise E3ContractError('compact scratch flag must be bool')
+    specs = (
         ScratchSpec('prefill_input_ids', 'prefill', 'metadata', chunk_tokens * 4,
                     'estimate', reuse_condition='private chunk only; recopied at admission'),
         ScratchSpec('prefill_positions', 'prefill', 'metadata', chunk_tokens * 8,
@@ -1148,6 +1150,11 @@ def prefill_scratch_specs(chunk_tokens=1024):
         ScratchSpec('prefill_pp_handoff', 'prefill', 'pp_handoff', PP_HIDDEN_BYTES, 'estimate',
                     reuse_condition='send storage released after receiver consumption'),
     )
+
+    # These were contract-only allocations; real HC/attention/PP tensors have separate owners.
+    unused = {'prefill_hc_hidden', 'prefill_hc_block_output', 'prefill_hc_injection',
+              'prefill_qsa_accum', 'prefill_pp_handoff'}
+    return tuple(spec for spec in specs if not compact or spec.name not in unused)
 
 
 def estimated_e3_inventory(*, chunk_tokens=1024, graph_split_bytes=GRAPH_POOL_MEASURED_BYTES,
