@@ -22,6 +22,8 @@ def build(out):
     if review.get('g4_headroom_20261118',{}).get('reviewed_by')!='Codex':raise ValueError('headroom-review-missing')
     for name in (*CHANGED,'make_s5_overlap'):
         if review['source_shas'].get(name+'.py')!=sha(ROOT/'patches/s5_engine'/(name+'.py')):raise ValueError('headroom-source-not-reviewed:'+name)
+    for name in ('test_g4_headroom.py','test_g4_headroom_packet.py','test_n3_indexer_lifetime.py'):
+        if review['harness_source_shas'].get(name)!=sha(ROOT/'harness'/name):raise ValueError('headroom-proof-not-reviewed:'+name)
     shutil.copytree(PARENT,out)
     for p in (out,*out.rglob('*')):
         if p.is_symlink():raise ValueError('packet-symlink')

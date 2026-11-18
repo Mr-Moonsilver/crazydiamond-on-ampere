@@ -3208,7 +3208,7 @@
     "test_fit_memory.py": "6f86de03226e2f1802889500dfe28f5aa755a5842811d4fced215b41c97bb8ee",
     "test_fixed_work_packet.py": "eeb82e825c2dd800db8c27680e7adfa1e21b1abcacaf28539c1284d438e3a577",
     "test_g4_headroom.py": "d8402b6dc1273ed1c3c494ec718cd9ed74f312db9886d442f10b1059504e09de",
-    "test_g4_headroom_packet.py": "64f2bc32b45574e3f5af4b8a7759344d0ab39904f8d7be5486c93b2a5c015302",
+    "test_g4_headroom_packet.py": "c84f8e512f53eae9c66daf254e2c6a0fb51017ef6ba4c8e7670e333b9140cd4a",
     "test_geometry_tail.py": "3b37753eaf8dcd8f04eddf7b45f259c1471dc43fa437a3fd2dcbca38436c19ac",
     "test_host_cow_rss.py": "1bc3b4223db8a14d916ac6d5c191e1a2a3190be17f6f179c605a1aea05669049",
     "test_hub_slot.py": "56fe24f7866860fd84b3af085dc4a0d3a4b10056649cc1deff571529d75b8707",
