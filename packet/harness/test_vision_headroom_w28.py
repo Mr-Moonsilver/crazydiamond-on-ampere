@@ -70,7 +70,7 @@ class FullProtocol(unittest.TestCase):
         self.assertIn('VISION_FIT_OWNER FIT',result.stdout);record=json.loads((run/'fit-collect.json').read_text())
         self.assertEqual([s['prompt_tokens'] for s in record['stages']],[60000,120000,160000,190320])
         self.assertTrue(record['tail']['complete']);self.assertTrue(record['cold']['complete'])
-        self.assertEqual(record['cold']['decoders_live_at_first'],7)
+        self.assertEqual(record['cold']['live_at_arrival'],7)
         self.assertTrue(record['reuse']['same_image_cached']>0);self.assertTrue((run/'host-stop-intent.json').exists())
         self.assertEqual(json.loads((run/'arm-result.json').read_text())['verdict'],'FIT')
         print('W28_FULL_G4_COMPLETE '+str(run))

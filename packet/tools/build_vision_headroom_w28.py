@@ -70,8 +70,10 @@ def build(out):
     env=json.loads((prod/'vision-container-env.json').read_text());env['FLASH_S5_G4_HEADROOM']='1';dump(prod/'vision-container-env.json',env)
     # The public credential tag is deliberately retained; no LiteLLM/<llm-gateway> key rotation is needed.
     repin_params(prod/'serve-params.env',dict(OVERLAY_SUMS_SHA=OVERLAY_SHA,BUNDLE_SUMS_SHA='pending'))
-    for rel in ('harness/test_vision_headroom_w28.py','tools/build_vision_headroom_w28.py'):
+    for rel in ('harness/test_vision_headroom_w28.py','tools/build_vision_headroom_w28.py','tools/build_vision_serve.py'):
         dest=prod/rel;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/rel,dest)
+    for name in ('vision_fit_identity.py','vision_fit_finish.py'):
+        shutil.copy2(FIT/'tools'/name,prod/'tools'/name)
     sums(prod/'harness')
     repin_params(prod/'serve-params.env',dict(BUNDLE_SUMS_SHA=sha(prod/'harness/SHA256SUMS')))
     delta=json.loads((prod/'vision-delta.json').read_text());head=json.loads((HEADROOM/'vision-delta.json').read_text())
@@ -94,6 +96,8 @@ def build(out):
     # Each wrapper runs the same frozen harness/overlay. No second native source rendering.
     for path in (prod/'harness').rglob('*'):
         if path.is_file():shutil.copy2(path,fit/'harness'/path.relative_to(prod/'harness'))
+    for name in ('build_vision_headroom_w28.py','build_vision_serve.py'):
+        shutil.copy2(prod/'tools'/name,fit/'tools'/name)
     for name in ('serve-launch.sh','serve_readback.py','serve-params.env'):
         shutil.copy2(prod/name,fit/name)
     p=fit/'serve-launch.sh';p.write_text(once(p.read_text(),'"$kv FLASH_S5_NATIVE_MM=1 FLASH_S5_G4_HEADROOM=1"','"$kv FLASH_S5_NATIVE_MM=1 FLASH_S5_G4_HEADROOM=1 FLASH_S5_FIT_MEMORY=e6"'))
