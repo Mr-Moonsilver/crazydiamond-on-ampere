@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Keyed OpenAI chat proxy: bounded still images -> trusted encoder -> loopback engine."""
-import argparse,base64,copy,uuid,hmac,http.client,ipaddress,json,re,socket,ssl,sys,threading,time
+import argparse,base64,copy,uuid,hmac,http.client,ipaddress,json,math,re,socket,ssl,sys,threading,time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,7 +13,8 @@ from packet_client_contract import report_exception
 
 MAX_BODY=16*2**20
 MAX_IMAGE=8*2**20
-MAX_IMAGES=8
+MAX_IMAGES=32
+ENGINE_MAX_IMAGES=8
 MAX_REQUEST_IMAGE_ROWS=8192
 GET_PATHS={'/v1/models','/metrics','/version','/health'}
 POST_PATHS={'/v1/chat/completions','/v1/completions','/v1/messages','/v1/messages/count_tokens','/tokenize','/detokenize'}
@@ -107,6 +108,7 @@ def transform(body,encode,anthropic=False,max_images=4,receipt=None):
         parts(message.get('content'))
     if receipt is not None:receipt['image_count']=len(images)
     if len(images)>max_images:raise GatewayError(400,'configured_image_count_limit')
+    if len(images)>ENGINE_MAX_IMAGES:raise GatewayError(400,'frozen_engine_image_count_limit_8')
     if not images:return body,0
     total_bytes=total_rows=0
     for target,url in images:
@@ -129,17 +131,28 @@ def transform(body,encode,anthropic=False,max_images=4,receipt=None):
 
 
 class Gateway:
-    def __init__(self,backend,encoder,api_key,encoder_key,max_images=4):
+    def __init__(self,backend,encoder,api_key,encoder_key,max_images=4,max_inflight=32,queue_timeout_s=3000):
         u=urlsplit(backend)
         if u.scheme!='http' or u.hostname!='127.0.0.1' or u.path not in ('','/') or not u.port:
             raise ValueError('backend must be a declared loopback HTTP port')
         self.backend=u;self.encoder=encoder.rstrip('/');self.api_key=api_key;self.encoder_key=encoder_key
-        self.slots=threading.BoundedSemaphore(8);self.lock=threading.Lock()
-        self.counts=dict(requests=0,images=0,encoder_errors=0,client_disconnects=0)
+        if type(max_inflight)is not int or not 1<=max_inflight<=32:raise ValueError('inflight limit must be 1..32')
+        if type(queue_timeout_s)not in (int,float) or not math.isfinite(queue_timeout_s) or not 0<queue_timeout_s<=3000:raise ValueError('queue timeout must be finite and >0, <=3000 seconds')
+        self.max_inflight=max_inflight;self.queue_timeout_s=queue_timeout_s
+        self.slots=threading.BoundedSemaphore(max_inflight)
+        # Retain the original body/encoder concurrency bound; release it before the model stream waits.
+        self.prepare_slots=threading.BoundedSemaphore(min(8,max_inflight));self.lock=threading.Lock()
+        self.counts=dict(requests=0,images=0,encoder_errors=0,client_disconnects=0,admission_timeouts=0,prepare_timeouts=0)
         self.receipt_lock=threading.Lock()
         self.ready_file=None;self.packet_sha=None
         if type(max_images)is not int or not 1<=max_images<=MAX_IMAGES:raise ValueError('configured image limit exceeds code bound')
         self.max_images=max_images
+    def ready(self):
+        if self.ready_file is None:return True
+        try:
+            value=json.loads(self.ready_file.read_text())
+            return value.get('ready') is True and value.get('packet_sha256')==self.packet_sha
+        except (OSError,ValueError):return False
     def count(self,name,n=1):
         with self.lock:self.counts[name]+=n
     def encode(self,data):
@@ -186,17 +199,23 @@ def handler(gateway):
         def forward(self,post):
             if (post or self.path not in ('/health','/metrics','/v1/models')) and not self.authenticated():return self.error(401,'Unauthorized')
             if self.path not in (POST_PATHS if post else GET_PATHS):return self.error(404,'unsupported_endpoint')
-            if gateway.ready_file is not None and (post or self.path=='/health'):
-                try:
-                    ready=json.loads(gateway.ready_file.read_text())
-                    okay=ready.get('ready') is True and ready.get('packet_sha256')==gateway.packet_sha
-                except (OSError,ValueError):okay=False
-                if not okay:return self.error(503,'native_lane_not_ready')
-            if not gateway.slots.acquire(blocking=False):return self.error(429,'gateway_queue_full')
-            conn=None;started=False
+            if (post or self.path=='/health') and not gateway.ready():return self.error(503,'native_lane_not_ready')
+            conn=None;started=False;admitted=False;preparing=False
+            deadline=time.monotonic()+gateway.queue_timeout_s
             try:
+                if post or self.path not in ('/health','/metrics','/v1/models'):
+                    queued=time.monotonic_ns()
+                    admitted=gateway.slots.acquire(timeout=max(0,deadline-time.monotonic()))
+                    self.receipt['admission_wait_ns']=time.monotonic_ns()-queued
+                    if not admitted:
+                        gateway.count('admission_timeouts');raise GatewayError(504,'gateway_queue_timeout')
                 body=None;image_count=0
                 if post:
+                    preparing=gateway.prepare_slots.acquire(timeout=max(0,deadline-time.monotonic()))
+                    if not preparing:
+                        gateway.count('prepare_timeouts');raise GatewayError(504,'gateway_prepare_timeout')
+                    # A queued request must not cross an engine/readiness invalidation.
+                    if not gateway.ready():raise GatewayError(503,'native_lane_not_ready')
                     if self.headers.get('Transfer-Encoding'):raise GatewayError(400,'chunked_request_body_refused')
                     try:size=int(self.headers.get('Content-Length','-1'))
                     except ValueError:raise GatewayError(400,'invalid_content_length') from None
@@ -209,13 +228,22 @@ def handler(gateway):
                     alias=value.get('model') if type(value)is dict else None
                     allowed={'qwen38-w8a8-tp4','cyankiwi/Qwen3.8-27B-AWQ-INT4','cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit','Qwen3.8-Flash-Next','default','qwen3.8-27b'}
                     self.receipt['caller_alias']=alias if isinstance(alias,str) and alias in allowed else 'other'
-                    value,image_count=transform(value,gateway.encode,anthropic=self.path.startswith('/v1/messages'),max_images=gateway.max_images,receipt=self.receipt)
+                    encoder_metrics=dict(wall_ms=0,peak_allocated_bytes=0,peak_reserved_bytes=0)
+                    def encode(data):
+                        result=gateway.encode(data);metrics=result.get('metrics',{})
+                        encoder_metrics['wall_ms']+=metrics.get('wall_ms',0)
+                        for field in ('peak_allocated_bytes','peak_reserved_bytes'):encoder_metrics[field]=max(encoder_metrics[field],metrics.get(field,0))
+                        return result
+                    value,image_count=transform(value,encode,anthropic=self.path.startswith('/v1/messages'),max_images=gateway.max_images,receipt=self.receipt)
                     body=json.dumps(value,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()
+                    del value,raw
                 conn=http.client.HTTPConnection(gateway.backend.hostname,gateway.backend.port,timeout=3000)
                 headers={'Authorization':'Bearer '+gateway.api_key,'Content-Type':'application/json'}
                 for name in ('anthropic-version','anthropic-beta','x-request-id'):
                     if self.headers.get(name):headers[name]=self.headers[name]
                 conn.request('POST' if post else 'GET',self.path,body,headers)
+                body=None
+                if preparing:gateway.prepare_slots.release();preparing=False
                 reply=conn.getresponse()
                 self.receipt['http_status']=reply.status
                 if image_count and reply.status>=400:
@@ -224,6 +252,9 @@ def handler(gateway):
                 self.send_response(reply.status)
                 for name in ('Content-Type','Content-Length','x-request-id'):
                     if reply.getheader(name):self.send_header(name,reply.getheader(name))
+                if image_count:
+                    self.receipt['encoder_metrics']=encoder_metrics
+                    for name,value in encoder_metrics.items():self.send_header('x-flashnext-encoder-'+name.replace('_','-'),str(value))
                 self.send_header('x-flashnext-request-id',self.receipt['request_id']);self.send_header('Connection','close');self.end_headers();started=True
                 while True:
                     chunk=reply.read1(65536)
@@ -241,8 +272,15 @@ def handler(gateway):
                 if not started:self.error(400,'invalid_request')
             finally:
                 if conn is not None:conn.close()
-                gateway.slots.release();self.close_connection=True
+                if preparing:gateway.prepare_slots.release()
+                if admitted:gateway.slots.release()
+                self.close_connection=True
     return Handler
+
+
+class GatewayServer(ThreadingHTTPServer):
+    request_queue_size=128
+    daemon_threads=True
 
 
 def main(argv=None):
@@ -250,20 +288,21 @@ def main(argv=None):
     p.add_argument('--bind',default='0.0.0.0');p.add_argument('--port',type=int,default=8000)
     p.add_argument('--backend',default='http://127.0.0.1:8001');p.add_argument('--encoder',default='http://<encoder-host>:9041')
     p.add_argument('--max-images',type=int,choices=range(1,MAX_IMAGES+1),default=4)
+    p.add_argument('--max-inflight',type=int,default=32);p.add_argument('--queue-timeout-s',type=float,default=3000)
     p.add_argument('--ready-file',type=Path);p.add_argument('--packet-sha256')
     p.add_argument('--key-file',type=Path,required=True);p.add_argument('--encoder-key-file',type=Path,required=True)
     args=p.parse_args(argv)
     if args.encoder!='http://<encoder-host>:9041':raise ValueError('encoder endpoint differs from cleared VM<vm-id> binding')
-    gateway=Gateway(args.backend,args.encoder,read_key(args.key_file,'VLLM_API_KEY'),read_key(args.encoder_key_file,'VISION_ENCODER_API_KEY'),max_images=args.max_images)
+    gateway=Gateway(args.backend,args.encoder,read_key(args.key_file,'VLLM_API_KEY'),read_key(args.encoder_key_file,'VISION_ENCODER_API_KEY'),max_images=args.max_images,max_inflight=args.max_inflight,queue_timeout_s=args.queue_timeout_s)
     if (args.ready_file is None)!=(args.packet_sha256 is None):raise ValueError('readiness path and packet SHA required together')
     gateway.ready_file=args.ready_file;gateway.packet_sha=args.packet_sha256
-    server=ThreadingHTTPServer((args.bind,args.port),handler(gateway));server.daemon_threads=True
+    server=GatewayServer((args.bind,args.port),handler(gateway))
     import signal
     def stop(*_):threading.Thread(target=server.shutdown,daemon=True).start()
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
         print('VISION_GATEWAY_READY '+json.dumps(dict(bind=args.bind,port=args.port,backend=args.backend,encoder=args.encoder,
-            default_thinking='unchanged; no request defaults injected',images_per_request=args.max_images,encoder_manifest=MODEL_MANIFEST_SHA)),flush=True)
+            default_thinking='unchanged; no request defaults injected',images_per_request=args.max_images,max_inflight=args.max_inflight,queue_timeout_s=args.queue_timeout_s,encoder_manifest=MODEL_MANIFEST_SHA)),flush=True)
         server.serve_forever(poll_interval=.2)
     finally:
         server.server_close()
