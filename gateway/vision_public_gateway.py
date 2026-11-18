@@ -197,13 +197,14 @@ def handler(gateway):
                     self.receipt['finished_wall_ns']=time.time_ns()
                     with gateway.receipt_lock:print('flash-s5 gateway-request '+json.dumps(self.receipt,sort_keys=True,separators=(',',':')),flush=True)
         def forward(self,post):
-            if (post or self.path not in ('/health','/metrics','/v1/models')) and not self.authenticated():return self.error(401,'Unauthorized')
-            if self.path not in (POST_PATHS if post else GET_PATHS):return self.error(404,'unsupported_endpoint')
-            if (post or self.path=='/health') and not gateway.ready():return self.error(503,'native_lane_not_ready')
+            route=urlsplit(self.path).path
+            if (post or route not in ('/health','/metrics','/v1/models')) and not self.authenticated():return self.error(401,'Unauthorized')
+            if route not in (POST_PATHS if post else GET_PATHS):return self.error(404,'unsupported_endpoint')
+            if (post or route=='/health') and not gateway.ready():return self.error(503,'native_lane_not_ready')
             conn=None;started=False;admitted=False;preparing=False
             deadline=time.monotonic()+gateway.queue_timeout_s
             try:
-                if post or self.path not in ('/health','/metrics','/v1/models'):
+                if post or route not in ('/health','/metrics','/v1/models'):
                     queued=time.monotonic_ns()
                     admitted=gateway.slots.acquire(timeout=max(0,deadline-time.monotonic()))
                     self.receipt['admission_wait_ns']=time.monotonic_ns()-queued
@@ -234,7 +235,7 @@ def handler(gateway):
                         encoder_metrics['wall_ms']+=metrics.get('wall_ms',0)
                         for field in ('peak_allocated_bytes','peak_reserved_bytes'):encoder_metrics[field]=max(encoder_metrics[field],metrics.get(field,0))
                         return result
-                    value,image_count=transform(value,encode,anthropic=self.path.startswith('/v1/messages'),max_images=gateway.max_images,receipt=self.receipt)
+                    value,image_count=transform(value,encode,anthropic=route.startswith('/v1/messages'),max_images=gateway.max_images,receipt=self.receipt)
                     body=json.dumps(value,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()
                     del value,raw
                 conn=http.client.HTTPConnection(gateway.backend.hostname,gateway.backend.port,timeout=3000)
