@@ -62,7 +62,7 @@ def build(out):
     # Only wrapper/readiness/pin namespaces move. Existing public+encoder credentials stay at their approved paths.
     wrappers=('gateway-start.sh','gateway-stop.sh','production-pin.sh','production-rollback.sh','flashnext-boot-guard-w27.sh',
               'units/flashnext-vision-gateway.service','units/native-ready.conf','tools/vision_production_pin_guard.py',
-              'harness/vision_production_ready.py','harness/vision_gateway_launch_selfrun.py')
+              'harness/vision_production_ready.py','harness/vision_gateway_launch_selfrun.py','harness/test_vision_production_pins.py')
     for name in wrappers:
         path=prod/name;path.write_text(rebind(path.read_text()))
     p=prod/'serve-launch.sh';p.write_text(once(rebind(p.read_text()),'"$kv FLASH_S5_NATIVE_MM=1"','"$kv FLASH_S5_NATIVE_MM=1 FLASH_S5_G4_HEADROOM=1"'))
