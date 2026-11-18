@@ -258,6 +258,15 @@ def compose_indexer(source):
     text = _replace(text, '        # Top-k is the last reader;',
                     '        if _phase is not None:\n            _phase.end(_top)\n'
                     '        # Top-k is the last reader;')
+    text = _replace(text, 'import torch\n',
+                    'import torch\nfrom vllm.v1.flash_e3.lane_private import private_score_tensor\n')
+    text = _replace(text,
+        '    logits = torch.empty(\n        (num_queries, logits_width), dtype=torch.float32, device=q.device\n    )',
+        '    logits = private_score_tensor(q, num_queries, logits_width)\n'
+        '    if logits is None:\n'
+        '        logits = torch.empty(\n'
+        '            (num_queries, logits_width), dtype=torch.float32, device=q.device\n'
+        '        )')
     return text
 
 

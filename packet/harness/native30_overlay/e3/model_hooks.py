@@ -666,6 +666,8 @@ class LaneForward:
     # -- scopes -------------------------------------------------------------
     @contextmanager
     def _scopes(self, layer_idx=None):
+        from lane_private import score_model_boundary
+        score_model_boundary()
         torch = self.torch
         with ExitStack() as stack:
             if torch is not None:

@@ -28,7 +28,9 @@ mutable owners this scope does *not* isolate (request-row runner storage, the
 bypassed row cache, shared per-request KV history, the indexer's call-local
 workspace) instead of presenting partial binding as complete isolation.
 """
-from contextlib import contextmanager
+import os
+from contextvars import ContextVar
+from contextlib import contextmanager, nullcontext
 
 from e3_types import E3ContractError
 from lane_hooks import _ATTR_MISSING, _aliases, LaneRuntime
@@ -42,6 +44,9 @@ TOPK_ATTR = 'topk_indices_buffer'
 VIEW_ALIGNMENT = 16
 MAX_MARLIN_LOCK_BYTES = 1024 * 1024
 MAX_MARLIN_LOCK_OWNERS = 4096
+SCORE_BYTES = 64 * 1024 * 1024
+_SCORE_OWNER = ContextVar('native_score_owner', default=None)
+_SCORE_LEASE = ContextVar('native_score_lease', default=None)
 
 # Pinned mutable owners that are read/written by the lane path.  ``Topk`` is
 # bound privately; the others are named in the audit with their real basis.
@@ -51,6 +56,112 @@ _INDEXER_HISTORY_ATTRS = ('raw_key_cache', 'compressed_key_cache')
 
 class LanePrivateError(E3ContractError):
     pass
+
+
+def headroom_enabled(env=None):
+    value = (os.environ if env is None else env).get('FLASH_S5_G4_HEADROOM', '0')
+    if value not in ('0', '1'):
+        raise LanePrivateError('FLASH_S5_G4_HEADROOM must be 0 or 1')
+    return value == '1'
+
+
+class NativeScoreWorkspace:
+    """Same-stream score lease over the end of the retained native MoE workspace."""
+    def __init__(self, bindings):
+        self.bindings = bindings
+        self.generation = 0
+        self.active = False
+        self.failed = False
+        self.uses = 0
+        self.peak_bytes = 0
+        raw = bindings._workspace_buffer
+        if (bindings._workspace_bytes != 200 * 1024 * 1024
+                or raw.dtype != bindings.torch.uint8 or not raw.is_contiguous()):
+            raise LanePrivateError('native score requires the unchanged 200 MiB byte workspace')
+        self.raw = raw
+        self.storage = raw[-SCORE_BYTES:].view(bindings.torch.float32)
+        if _pointer(self.storage, 'score') != _pointer(raw, 'workspace') + bindings._workspace_bytes - SCORE_BYTES:
+            raise LanePrivateError('native score view is not the retained workspace tail')
+
+    def check(self):
+        b = self.bindings
+        b._require_workspace()
+        if self.failed or not b._active or b._failed or b._workspace_buffer is not self.raw:
+            raise LanePrivateError('native score owner is stale or outside its private scope')
+        manager = b._workspace_manager
+        if manager._locked is not True:
+            raise LanePrivateError('native score requires the locked workspace')
+        # A one-byte lookup cannot grow a locked manager; its address proves the current lane.
+        if manager._ensure_workspace_size(1) is not self.raw:
+            raise LanePrivateError('native score is on the wrong workspace lane')
+        native = getattr(b.runner, '_flash_s5_native', None)
+        stream = getattr(getattr(native, 'split', None), 'prefill_stream', None)
+        token = getattr(stream, 'cuda_stream', None)
+        current = b.torch.cuda.current_stream(b.runner.device)
+        if type(token) is not int or token != getattr(current, 'cuda_stream', None):
+            raise LanePrivateError('native score is on the wrong compute stream')
+        if b.torch.cuda.is_current_stream_capturing():
+            raise LanePrivateError('native score must not enter a decode capture')
+
+    @contextmanager
+    def lease(self):
+        self.check()
+        if self.active or _SCORE_LEASE.get() is not None:
+            raise LanePrivateError('native score overlaps another score consumer')
+        self.generation += 1
+        self.active = True
+        token = _SCORE_LEASE.set((self, self.generation))
+        try:
+            yield self
+        except BaseException:
+            self.failed = True  # Keep storage retained; a partial enqueue is never retried.
+            raise
+        finally:
+            _SCORE_LEASE.reset(token)
+            self.active = False
+
+    def view(self, q, rows, width, generation):
+        self.check()
+        if not self.active or generation != self.generation or _SCORE_LEASE.get() != (self, generation):
+            raise LanePrivateError('native score lease is stale')
+        if (type(rows) is not int or type(width) is not int or rows < 1 or width < 1
+                or rows * width * 4 > SCORE_BYTES or q.device != self.raw.device):
+            raise LanePrivateError('native score geometry exceeds its fixed view')
+        if _aliases(q, self.raw):
+            raise LanePrivateError('native score input aliases its workspace')
+        self.uses += 1
+        self.peak_bytes = max(self.peak_bytes, rows * width * 4)
+        if self.uses == 1:
+            from startup_vram_budget import emit
+            parallel = getattr(getattr(self.bindings.runner, 'vllm_config', None), 'parallel_config', None)
+            rank = getattr(parallel, 'rank', getattr(self.bindings.runner, 'worker_rank', None))
+            if type(rank) is not int or rank not in range(4):
+                raise LanePrivateError('native score first-use needs exact global rank')
+            emit(dict(schema='g4-score-view/1', rank=rank, workspace_lane=self.bindings.workspace_lane,
+                      workspace_bytes=self.bindings._workspace_bytes, score_capacity_bytes=SCORE_BYTES,
+                      offset_bytes=self.bindings._workspace_bytes-SCORE_BYTES, extra_resident_bytes=0,
+                      rows=rows, width=width, generation=generation))
+        return self.storage[:rows * width].view(rows, width)
+
+
+def native_score_scope():
+    owner = _SCORE_OWNER.get()
+    return nullcontext() if owner is None else owner.lease()
+
+
+def private_score_tensor(q, rows, width):
+    lease = _SCORE_LEASE.get()
+    if lease is None:
+        if _SCORE_OWNER.get() is not None:
+            raise LanePrivateError('native score allocation escaped its indexer scope')
+        return None  # FULL, stock tails and captured decode keep their original allocation.
+    owner, generation = lease
+    return owner.view(q, rows, width, generation)
+
+
+def score_model_boundary():
+    if _SCORE_LEASE.get() is not None:
+        raise LanePrivateError('model/MoE body reordered before score consumer release')
 
 
 def _int(name, value, minimum=0):
@@ -263,6 +374,8 @@ class LanePrivateBindings:
         self._workspace_ready = False
         self._workspace_buffer = None
         self._workspace_bytes = 0
+        self.headroom = False
+        self.score_workspace = None
         self.marlin_locks = []
         self._lock_initialized = set()
         self._ledger = None
@@ -457,6 +570,9 @@ class LanePrivateBindings:
         return dict(self.audit_record, failed=self._failed,
                     workspace_prepared=self._workspace_ready,
                     workspace_bytes=self._workspace_bytes,
+                    native_score_workspace=(None if self.score_workspace is None else dict(
+                        capacity_bytes=SCORE_BYTES, extra_resident_bytes=0, uses=self.score_workspace.uses,
+                        peak_bytes=self.score_workspace.peak_bytes, failed=self.score_workspace.failed)),
                     marlin_lock_owners=len(self.marlin_locks),
                     marlin_lock_bytes=sum(_numel(t) * _element_size(t)
                         for t in {id(row[4]): row[4] for row in self.marlin_locks}.values()))
@@ -510,7 +626,22 @@ class LanePrivateBindings:
         self._workspace_buffer = private
         self._workspace_bytes = _numel(private) * _element_size(private)
         self._workspace_ready = True
+        if self.headroom:
+            self.score_workspace = NativeScoreWorkspace(self)
         return self._workspace_bytes
+
+    @contextmanager
+    def score_owner_scope(self):
+        if not self.headroom:
+            yield
+            return
+        if self.score_workspace is None or _SCORE_OWNER.get() is not None:
+            raise LanePrivateError('native score workspace is missing or nested')
+        token = _SCORE_OWNER.set(self.score_workspace)
+        try:
+            yield
+        finally:
+            _SCORE_OWNER.reset(token)
 
     def _require_workspace(self):
         manager = self.runtime.dispatcher.workspace.module.current_workspace_manager()
@@ -625,7 +756,8 @@ class LanePrivateChunk:
                             bindings._initialize_lock_once(private)
                         setattr(module, 'workspace', private)
                         saved.append((module, 'workspace', original))
-                    yield self
+                    with bindings.score_owner_scope():
+                        yield self
                 finally:
                     restore_error = None
                     for owner, name, previous in reversed(saved):

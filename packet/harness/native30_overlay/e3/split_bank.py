@@ -189,8 +189,10 @@ class SplitDecodeBank:
         try:
             from capture_streams import for_runner
             self.capture_streams = for_runner(self.runner, self.split)
-            with self.capture_streams.capture():
-                self.manager.capture(**self.capture_kwargs())
+            from startup_vram_budget import startup_phase
+            with startup_phase(self.runner, 'split-capture', torch_module=torch):
+                with self.capture_streams.capture():
+                    self.manager.capture(**self.capture_kwargs())
         except BaseException:
             self.capture_failed = True
             self.captured = False

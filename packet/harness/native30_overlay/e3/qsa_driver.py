@@ -408,7 +408,8 @@ class QsaLayerDriver:
         from native_measurement import indexer_phase_scope
         phases = getattr(operation, 'phase_trace', None)
         indexing = phases.begin('indexer', operation.device.compute) if phases is not None else None
-        with indexer_phase_scope(phases):
+        from lane_private import native_score_scope
+        with native_score_scope(), indexer_phase_scope(phases):
             selected = score_under_cap(lambda: attn.indexer(state['projected_qk'], inputs['positions'],
                                                             attn.topk_indices_buffer[:num_tokens]))
         if phases is not None:
@@ -518,6 +519,8 @@ class QsaLayerDriver:
         return None
 
     def _tail(self, lane, phase):
+        from lane_private import score_model_boundary
+        score_model_boundary()
         layer = lane.model.layers[phase.layer_idx]
         attn = layer.self_attn
         self.operation.boundary_evidence(phase.attn_state['attn_output'])
