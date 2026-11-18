@@ -37,6 +37,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(len(bindings), len(buffers))
         self.assertEqual(sum(row[1] for row in inventory), sum(s.nbytes for s in full)-59875328)
 
+    def test_package_qualifies_optional_startup_helper(self):
+        import make_s5_overlap
+        for name in ('native_startup','lane_private','split_bank'):
+            text=make_s5_overlap.package((ROOT/'patches/s5_engine'/(name+'.py')).read_text())
+            imports=[n for n in ast.walk(ast.parse(text)) if isinstance(n,ast.ImportFrom) and n.module=='startup_vram_budget']
+            self.assertTrue(imports,name)
+            self.assertTrue(all(n.level==1 for n in imports),name)
+
     def test_flag_off_retains_identical_contract(self):
         self.assertFalse(private.headroom_enabled({}))
         self.assertEqual(prefill_scratch_specs(2048), prefill_scratch_specs(2048, compact=False))

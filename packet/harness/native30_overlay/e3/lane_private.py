@@ -567,15 +567,17 @@ class LanePrivateBindings:
         return LanePrivateChunk(self, chunk)
 
     def audit(self):
-        return dict(self.audit_record, failed=self._failed,
-                    workspace_prepared=self._workspace_ready,
-                    workspace_bytes=self._workspace_bytes,
-                    native_score_workspace=(None if self.score_workspace is None else dict(
-                        capacity_bytes=SCORE_BYTES, extra_resident_bytes=0, uses=self.score_workspace.uses,
-                        peak_bytes=self.score_workspace.peak_bytes, failed=self.score_workspace.failed)),
-                    marlin_lock_owners=len(self.marlin_locks),
-                    marlin_lock_bytes=sum(_numel(t) * _element_size(t)
-                        for t in {id(row[4]): row[4] for row in self.marlin_locks}.values()))
+        record = dict(self.audit_record, failed=self._failed,
+                      workspace_prepared=self._workspace_ready,
+                      workspace_bytes=self._workspace_bytes,
+                      marlin_lock_owners=len(self.marlin_locks),
+                      marlin_lock_bytes=sum(_numel(t) * _element_size(t)
+                          for t in {id(row[4]): row[4] for row in self.marlin_locks}.values()))
+        if self.score_workspace is not None:
+            record['native_score_workspace'] = dict(capacity_bytes=SCORE_BYTES, extra_resident_bytes=0,
+                uses=self.score_workspace.uses, peak_bytes=self.score_workspace.peak_bytes,
+                failed=self.score_workspace.failed)
+        return record
 
     def prepare_workspace(self):
         """Fund the reserved lane after stock warmup, before capture's lock.

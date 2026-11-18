@@ -22,6 +22,7 @@ split pool after capture) as an inventory; nothing claims funding.
 """
 import os
 import time
+from contextlib import nullcontext
 
 from e3_types import E3ContractError
 from lane_comm import PrefillCommunicators
@@ -304,14 +305,19 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     except Exception as exc:
         raise NativeStartupError(
             'prefill side-stream discovery failed: ' + type(exc).__name__) from exc
-    from startup_vram_budget import startup_phase, wrap_headroom_capture
     on = headroom_enabled(env)
-    with startup_phase(runner, 'native-tp-pp-setup', torch_module=torch, enabled=on):
+    if on:
+        from startup_vram_budget import startup_phase, wrap_headroom_capture
+        setup = startup_phase(runner, 'native-tp-pp-setup', torch_module=torch, enabled=True)
+        warmup = startup_phase(runner, 'native-tp-pp-warmup', torch_module=torch, enabled=True)
+    else:
+        setup, warmup = nullcontext(), nullcontext()
+    with setup:
         comms = PrefillCommunicators.build(
             tp_group, pp_group, runner.device, split.prefill_stream, max_tokens=chunk_tokens,
             hidden_width=_hc_width(model), dtype=_model_dtype(runner, model),
             pynccl_class=pynccl_class, torch_module=torch)
-    with startup_phase(runner, 'native-tp-pp-warmup', torch_module=torch, enabled=on):
+    with warmup:
         comms.warm(split.prefill_stream)
     if on:
         wrap_headroom_capture(runner, tp_group, torch)

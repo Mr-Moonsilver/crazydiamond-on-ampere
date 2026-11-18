@@ -6,8 +6,10 @@ import vision_serve_selfrun as old
 ROOT=Path(__file__).resolve().parents[1]
 TAG='vision-prod-w27-20261117a'
 def main(argv=None):
+ global TAG
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--packet',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
- p.add_argument('--g0',type=Path,required=True);p.add_argument('--fetch-b1',type=Path,required=True);p.add_argument('--port',type=int,default=18871);a=p.parse_args(argv)
+ p.add_argument('--g0',type=Path,required=True);p.add_argument('--fetch-b1',type=Path,required=True);p.add_argument('--port',type=int,default=18871);p.add_argument('--tag',default=TAG);a=p.parse_args(argv)
+ TAG=a.tag
  a.bundle=a.packet/'harness';out=a.out.resolve();out.mkdir(parents=True,exist_ok=False)
  old.TAG=TAG;old.OVERLAY_NAME=json.loads((a.packet/'vision-delta.json').read_text())['overlay_name']
  # Retained, explicit IO leaves. No systemctl, Docker, GPU, SSH or VM call can escape these shims.
@@ -31,7 +33,7 @@ def main(argv=None):
    for v in value:mm(v)
  mm(recorded);fixture=SR/'recorded-mm.json';fixture.write_text(json.dumps(recorded));env['STUB_RECORDED']=str(fixture)
  run=old.Run(out,env,SR);eng=R/('data/serve-'+TAG+'-engine')
- run.step('frozen-packet',['bash','-c','cd "$1" && sha256sum --strict -c PACKET-SHA256SUMS','verify',str(PK)],r'production-delta.json: OK',timeout=90)
+ run.step('frozen-packet',['bash','-c','cd "$1" && sha256sum --strict -c PACKET-SHA256SUMS','verify',str(PK)],r'vision-delta.json: OK',timeout=90)
  run.step('mint-test-key',['bash',str(PK/'serve-mint-key.sh')],r'^SERVE_KEY_MINTED len=64 ')
  (SR/'systemd/vllm-qwen38.active').write_text('active\n')
  run.step('production-up-refusal',['bash',str(PK/'serve-launch.sh'),'engine'],r'^SERVE_LAUNCH FAILED at units$',rc_ok=(1,),extra_env=dict(OUT=str(R/'data/refused-production-up')))

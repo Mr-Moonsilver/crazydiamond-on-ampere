@@ -4,6 +4,7 @@ import argparse,json,os,subprocess,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 CASES=(
+ ('package-import','make_s5_overlap',"node.module in (*E3_MODULES, 'startup_vram_budget')",'node.module in E3_MODULES','ContractTests.test_package_qualifies_optional_startup_helper'),
  ('compact-revert','native_resources','for spec in prefill_scratch_specs(chunk_tokens, compact=compact):','for spec in prefill_scratch_specs(chunk_tokens, compact=False):','ContractTests.test_poison_removed_owners_never_allocated'),
  ('wrong-lane','lane_private','if manager._ensure_workspace_size(1) is not self.raw:','if False:','ScorePathTests.test_wrong_workspace_lane_refuses'),
  ('wrong-stream','lane_private',"if type(token) is not int or token != getattr(current, 'cuda_stream', None):",'if False:','ScorePathTests.test_wrong_compute_stream_refuses'),

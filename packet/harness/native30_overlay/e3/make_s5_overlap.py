@@ -173,7 +173,7 @@ def package(source):
     """Bind E3 peers and E2-owned dependencies to their mounted packages."""
     e2_peers = set(make_e2_arena.RUNTIME) - set(E3_MODULES)
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in E3_MODULES:
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in (*E3_MODULES, 'startup_vram_budget'):
             source = source.replace('from ' + node.module + ' import ',
                                     'from .' + node.module + ' import ')
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in e2_peers:
