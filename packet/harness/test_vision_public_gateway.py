@@ -54,6 +54,20 @@ class Protocol(unittest.TestCase):
         self.assertEqual(code,200);self.assertIn(b'message_start',raw);self.assertEqual(self.seen[-1][1],anth)
         self.assertEqual(self.seen[-1][2]['Authorization'],'Bearer '+'a'*64)
         self.assertEqual(self.seen[-1][2]['anthropic-version'],'2023-06-01')
+    def test_query_routes_keep_backend_target_and_metadata_bypass(self):
+        body=dict(model='qwen38-w8a8-tp4',max_tokens=128,messages=[dict(role='user',content='hello')])
+        for path in ('/v1/messages?beta=true','/v1/messages/count_tokens?beta=true'):
+            self.assertEqual(self.call(path,body,key=None,headers={'x-api-key':'a'*64})[0],200)
+            self.assertEqual(self.seen[-1][0],path)
+        self.assertEqual(self.call('/unknown?x',body)[0],404)
+        self.assertEqual(self.call('/health?x',key=None)[0],200)
+        self.assertEqual(self.call('/metrics?x',key=None)[0],200)
+        self.assertEqual(self.call('/v1/models?x',key=None)[0],200)
+        # Query strings must not move metadata back through admission.
+        for _ in range(self.gateway.max_inflight):self.assertTrue(self.gateway.slots.acquire(False))
+        self.gateway.queue_timeout_s=.1
+        for path in ('/health?x','/metrics?x','/v1/models?x'):self.assertEqual(self.call(path,key=None)[0],200)
+        for _ in range(self.gateway.max_inflight):self.gateway.slots.release()
     def test_four_images_preserve_order_and_reject_fifth_before_encoder(self):
         body=self.body();body['messages'][0]['content']=[dict(type='image_url',image_url=dict(url=self.image)) for _ in range(4)]
         self.assertEqual(self.call(body=body)[0],200);self.assertEqual(len(self.encodes),4)
