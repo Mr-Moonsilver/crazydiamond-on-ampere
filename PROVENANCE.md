@@ -30,9 +30,9 @@ Scrub rule names: `ip-encoder` → `<encoder-host>`, `ip-pve` → `<pve-host>`, 
 | `LICENSE` | `vLLM repository, commit dc36fcce902a63eab06c1b93a5c4a5ee178a0c56, file LICENSE` | `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4` | no | Apache-2.0 full text, copied unchanged |
 | `NOTICE` | `new` | `-` | new | written for publication |
 | `README.md` | `new` | `-` | new | written for publication |
-| `docs/img/approach-dark.svg` | `<hub-dir>/agents/flash-next/tmp/final-engine/publish-assets/approach-dark.svg` | `b2e66f7df65420ff62312a44ebe47e3be384cf39e35b3e896ca044258f2ef6a8` | no | drawn for publication, copied unchanged |
-| `docs/img/approach-light.svg` | `<hub-dir>/agents/flash-next/tmp/final-engine/publish-assets/approach-light.svg` | `0019fe03917be753fcf2ecf1328aee0eee012ecaf8fe36ffcbead8625a23087d` | no | drawn for publication, copied unchanged |
-| `docs/img/make_approach.py` | `<hub-dir>/agents/flash-next/tmp/final-engine/publish-assets/make_approach.py` | `f1d35cb6e6df830ced25f18b5cbd5500dd0b15c63267b3b5766cdc91312549a5` | no | drawn for publication, copied unchanged |
+| `docs/img/approach-dark.svg` | `<hub-dir>/agents/flash-next/tmp/final-engine/publish-assets/approach-dark.svg` | `58c264ef9f4d1a95fa1beb281f1dc075ecb77cb17ad7d5aae5c5d89408adc162` | no | drawn for publication, copied unchanged |
+| `docs/img/approach-light.svg` | `<hub-dir>/agents/flash-next/tmp/final-engine/publish-assets/approach-light.svg` | `46c4b143ef50ab22bc0f034cc5b3c6f02ddbf8de3b40bc253ea489f9a582a31c` | no | drawn for publication, copied unchanged |
+| `docs/img/make_approach.py` | `<hub-dir>/agents/flash-next/tmp/final-engine/publish-assets/make_approach.py` | `a1845e40e1c7d8892dbebf828aaaf81099fba2f36c2ca349f269281fdc01f03a` | no | drawn for publication, copied unchanged |
 | `examples/flashnext-vision-gateway.defaults.example` | `<hub-dir>/cargo-target/flash-next/gateway-query-w28b-20261119/build-7b/gateway-defaults.env` | `c79d54b6e923d6df008caca607c19a2d030135185143003aaa876e8b49fde96c` | no | copy of gateway/gateway-defaults.env (no secrets in it), renamed to .example |
 | `examples/vision-encoder.env.example` | `new` | `-` | new | written for publication from the serve packet settings; placeholders only |
 | `examples/vllm-api.env.example` | `new` | `-` | new | written for publication from the serve packet settings; placeholders only |

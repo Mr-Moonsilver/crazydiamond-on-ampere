@@ -2,6 +2,8 @@
 
 This repository holds the working version of our inference engine for **Qwen3.8-Flash-Next**, a large mixture-of-experts language model, running on **four NVIDIA RTX 3090 cards** (Ampere generation, 24 GB each) split as **TP2 × PP2**: two pipeline stages of 24 layers each, and each stage a tensor-parallel pair of GPUs. A **fifth RTX 3090** runs the vision encoder for images. The engine is an **overlay on vLLM**: it keeps the stock vLLM container image and mounts its own Python modules and two small CUDA helpers over it. It serves up to **8 agent sessions at once, each with up to 200,000 tokens of context**. The release published here is **build-6**, our current stable release.
 
+**The idea: the KV cache lives in host RAM.** The model's weights only just fit on the four 24 GB cards, which leaves almost no GPU memory for the KV cache, the per-conversation attention history that grows with every token of context. Instead of shrinking the context or buying bigger GPUs, the engine keeps each conversation's attention history in pinned host RAM and, at every step, fetches only the rows that sparse attention selects over PCIe. A small row cache on each GPU holds the hot rows. That is how 8 sessions × 200,000 tokens of context run on cards whose memory is already filled by the weights.
+
 **Performance**, from our own records against stock vLLM on the same box (details and caveats under [Results](#results)):
 
 - **1.11× the agent turns per hour of stock vLLM** in closed-loop replay of 8 live coding-agent sessions (interval 1.10–1.12; 1.22× on cold starts), with every prefill on our native path. Measured on build-6's direct predecessor with the same engine settings, at 262k context and 10 sequences.
@@ -12,12 +14,12 @@ This repository holds the working version of our inference engine for **Qwen3.8-
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/approach-dark.svg">
-  <img alt="Three rows with the same model weights and the same KV cache, where only the GPU memory limit moves: offloading engines (the limit falls inside the weights), this engine (the weights just fit and most of the KV cache lives in host RAM) and stock engines (everything fits)." src="docs/img/approach-light.svg">
+  <img alt="Three rows with the same model weights and the same KV cache. Weight-offloading engines keep most weights in CPU RAM and the KV cache on the GPU; this engine keeps all weights on the GPUs and moves the KV cache to host RAM; stock engines need GPUs big enough for both." src="docs/img/approach-light.svg">
 </picture>
 
 A model on GPUs needs memory for two things: its **weights** and its **KV cache**, the working memory that holds each request's context.
 
-- **Offloading engines** (e.g. Strata) run models that are *bigger* than your GPUs by keeping part of the weights in CPU RAM or on disk. It works, but every token waits for those transfers.
+- **Weight-offloading engines** run models that are *bigger* than your GPUs by keeping part of the weights in CPU RAM or on disk, while the KV cache stays on the GPU. It works, but every token waits for the weight transfers.
 - **Stock engines** (e.g. vLLM) are at their best when there's *room to spare* for weights and a large KV cache. That usually means more or bigger GPUs.
 - **This engine** covers the case in between: the model *just fits* on four 24 GB RTX 3090s, leaving almost nothing for context. The layer weights stay on the GPUs; what moves is the *context*. The attention history and the large n-gram embedding tables live in host RAM. Decode fetches only the rows each step needs over PCIe; prefill streams the history over in bounded pieces. That lets the sliver serve up to 8 concurrent agents × 200k tokens.
 
