@@ -1,14 +1,22 @@
 # crazydiamond-on-ampere
 
+**Qwen3.8-Flash-Next on four RTX 3090s: 8 agent sessions × 200,000 tokens of context, with the KV cache in host RAM.**
+
+## Performance
+
+Measured on our box against stock vLLM (same image, model and GPUs). Details and caveats are under [Results](#results).
+
+| Metric | This engine | Conditions |
+|---|---|---|
+| **Agent turns per hour** | **1.11× stock vLLM** (interval 1.10–1.12; cold starts 1.22×) | closed-loop replay of 8 live coding-agent sessions; build-6's direct predecessor, same engine settings, 262k context × 10 sequences |
+| **Turns per stream-hour** | **1.12× stock vLLM** (90 % interval 1.04–1.21; recorded as inconclusive) | 8 real coding tasks × 2 repetitions, A/B |
+| **Concurrency** | **8 sessions × 200,000 tokens** | memory-fit run with a fresh 190k prefill: 0 out-of-memory errors, 0 preemptions, min free VRAM 233–349 MiB per GPU |
+
+## What this is
+
 This repository holds the working version of our inference engine for **Qwen3.8-Flash-Next**, a large mixture-of-experts language model, running on **four NVIDIA RTX 3090 cards** (Ampere generation, 24 GB each) split as **TP2 × PP2**: two pipeline stages of 24 layers each, and each stage a tensor-parallel pair of GPUs. A **fifth RTX 3090** runs the vision encoder for images. The engine is an **overlay on vLLM**: it keeps the stock vLLM container image and mounts its own Python modules and two small CUDA helpers over it. It serves up to **8 agent sessions at once, each with up to 200,000 tokens of context**. The release published here is **build-6**, our current stable release.
 
 **The idea: the KV cache lives in host RAM.** The model's weights only just fit on the four 24 GB cards, which leaves almost no GPU memory for the KV cache, the per-conversation attention history that grows with every token of context. Instead of shrinking the context or buying bigger GPUs, the engine keeps each conversation's attention history in pinned host RAM and, at every step, fetches only the rows that sparse attention selects over PCIe. A small row cache on each GPU holds the hot rows. That is how 8 sessions × 200,000 tokens of context run on cards whose memory is already filled by the weights.
-
-**Performance**, from our own records against stock vLLM on the same box (details and caveats under [Results](#results)):
-
-- **1.11× the agent turns per hour of stock vLLM** in closed-loop replay of 8 live coding-agent sessions (interval 1.10–1.12; 1.22× on cold starts), with every prefill on our native path. Measured on build-6's direct predecessor with the same engine settings, at 262k context and 10 sequences.
-- **1.12× turns per stream-hour** on 8 real coding tasks in an A/B run (90 % interval 1.04–1.21; recorded as inconclusive).
-- **8 conversations × 200k tokens fit** on the four cards, with 0 out-of-memory errors and 0 preemptions.
 
 ## Our approach in one picture
 
