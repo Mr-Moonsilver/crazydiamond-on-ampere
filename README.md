@@ -1,6 +1,6 @@
 # crazydiamond-on-ampere
 
-**Qwen3.8-Flash-Next on four RTX 3090s: 8 agent sessions × 200,000 tokens of context, with the KV cache in host RAM.**
+**Qwen3.8-Flash-Next (INT4 weights, Intel AutoRound W4A16) on four RTX 3090s: 8 agent sessions × 200,000 tokens of context, with the KV cache in host RAM.**
 
 ## Performance
 
@@ -26,6 +26,8 @@ Records: live decode from the engine's Prometheus metrics on the serving port (`
 ## What this is
 
 This repository holds the working version of our inference engine for **Qwen3.8-Flash-Next**, a large mixture-of-experts language model, running on **four NVIDIA RTX 3090 cards** (Ampere generation, 24 GB each) split as **TP2 × PP2**: two pipeline stages of 24 layers each, and each stage a tensor-parallel pair of GPUs. A **fifth RTX 3090** runs the vision encoder for images. The engine is an **overlay on vLLM**: it keeps the stock vLLM container image and mounts its own Python modules and two small CUDA helpers over it. It serves up to **8 agent sessions at once, each with up to 200,000 tokens of context**. The release published here is **build-6**, our current stable release.
+
+**Quantization.** The checkpoint is `Intel/Qwen3.8-Flash-Next-W4A16-AutoRound`: 4-bit integer weights made with AutoRound 0.15.0 (group size 128, symmetric, GPTQ packing), with the embeddings and a set of sensitive projections (2,340 per-layer overrides, e.g. the hyper-connections and the linear-attention `in_proj_a`/`in_proj_b`) kept in 16-bit. Activations run in BF16 (`--dtype bfloat16`) and the KV cache is BF16 (`--kv-cache-dtype auto`). The expert layers run on vLLM's Marlin INT4 kernels.
 
 **The idea: the KV cache lives in host RAM.** The model's weights only just fit on the four 24 GB cards, which leaves almost no GPU memory for the KV cache, the per-conversation attention history that grows with every token of context. Instead of shrinking the context or buying bigger GPUs, the engine keeps each conversation's attention history in pinned host RAM and, at every step, fetches only the rows that sparse attention selects over PCIe. A small row cache on each GPU holds the hot rows. That is how 8 sessions × 200,000 tokens of context run on cards whose memory is already filled by the weights.
 
