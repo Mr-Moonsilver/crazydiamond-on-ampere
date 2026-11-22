@@ -1,0 +1,19 @@
+{
+  "armable": true,
+  "full_native_overlap": true,
+  "hardware_qualified": false,
+  "launcher_sha256": "3733ee91ea8cfa994c1a9fbeb2911faad3ad6470307e98975e2a49de464d043e",
+  "native_ready": true,
+  "package_identity_basis": "runtime payload excluding generation/readiness/manifest",
+  "package_sha256": "00a28ab03918e8ca199e864dcd34a741cd2a730e628a17d5b57da0dc593daa88",
+  "path": "e3/native-overlap-readiness.json",
+  "receipt_sha256": "60971bbed1198b8db47a299d5d474cec7446768578d65c760f751dd7f0c25ef3",
+  "release_qualified": false,
+  "require_native_ready": true,
+  "review_sha256": "7b67b50d6094c6d61407de7ee33be01237e3e4f93d5a68d6bb554f3cc41e4d3d",
+  "reviewed": true,
+  "reviewed_by": "Codex",
+  "schema": "e3-native-candidate-readiness/1",
+  "scope": "reviewed implementation/build closure for owner test only; same-queue hardware gates pending",
+  "sparse_dma_lease": true
+}

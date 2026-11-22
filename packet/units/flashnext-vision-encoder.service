@@ -1,0 +1,29 @@
+[Unit]
+Description=Flash-Next vision encoder with speech priority (infra-cleared, <=3 GiB)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=<service-user>
+Group=<service-user>
+EnvironmentFile=/etc/default/flashnext-vision-owner
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -B /opt/flashnext/vision-service-w27/harness/vision_service_owner.py --packet /opt/flashnext/vision-service-w27 --run-id ${VISION_RUN_ID} --clearance ${VISION_CLEARANCE_FILE}
+ExecStop=/usr/bin/python3 -B /opt/flashnext/vision-service-w27/tools/vision_encoder_stop.py --run-dir /opt/flashnext/runs/vision-${VISION_RUN_ID}
+ExecStopPost=+/usr/local/sbin/flashnext-encoder-alert "encoder stop run=${VISION_RUN_ID} result=${SERVICE_RESULT} code=${EXIT_CODE} status=${EXIT_STATUS}"
+LogNamespace=flashnext-vision
+KillMode=mixed
+TimeoutStopSec=90
+Restart=no
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=60
+
+[Install]
+WantedBy=multi-user.target

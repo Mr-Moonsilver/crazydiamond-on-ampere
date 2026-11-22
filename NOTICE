@@ -1,0 +1,56 @@
+crazydiamond-on-ampere
+Copyright 2026 the crazydiamond-on-ampere contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository contains the Flash-Next engine overlay ("build-6"), an overlay on
+vLLM, the open-source LLM inference and serving engine.
+
+  vLLM
+  https://github.com/vllm-project/vllm
+  Copyright contributors to the vLLM project
+  Licensed under the Apache License, Version 2.0
+
+Base version the overlay applies to:
+  vLLM commit   dc36fcce902a63eab06c1b93a5c4a5ee178a0c56
+  vLLM version  0.29.1rc1.dev47+gdc36fcce9
+  Docker image  vllm/vllm-openai:nightly-dc36fcce902a63eab06c1b93a5c4a5ee178a0c56
+                (image id sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b)
+
+The files below are copies of vLLM source files from that commit, modified by
+us. Each one carries a "[crazydiamond-on-ampere] MODIFIED vLLM FILE" header
+under its original SPDX lines. At run time the launcher mounts these files over
+the upstream paths inside the unmodified vLLM image (vision/model.py is mounted
+only in configurations without the e3/ directory, so build-6 does not use it).
+
+  Published path (under packet/harness/native30_overlay/)   Upstream path
+  core/block_pool.py                                         vllm/v1/core/block_pool.py
+  core/single_type_kv_cache_manager.py                       vllm/v1/core/single_type_kv_cache_manager.py
+  core/scheduler.py                                          vllm/v1/core/sched/scheduler.py
+  model_runner_v2.py                                         vllm/v1/worker/gpu/model_runner.py
+  e2_sources/scheduler_output.py                             vllm/v1/core/sched/output.py
+  e2_sources/block_table.py                                  vllm/v1/worker/gpu/block_table.py
+  e3_sources/executor.py                                     vllm/v1/executor/multiproc_executor.py
+  e3_sources/core.py                                         vllm/v1/engine/core.py
+  e3_sources/worker.py                                       vllm/v1/worker/gpu_worker.py
+  e3_sources/cudagraph_utils.py                              vllm/v1/worker/gpu/cudagraph_utils.py
+  e3_sources/sampler.py                                      vllm/v1/worker/gpu/sample/sampler.py
+  e3_sources/async_utils.py                                  vllm/v1/worker/gpu/async_utils.py
+  e3_sources/api_routers.py                                  vllm/entrypoints/launchers/api_server/routers.py
+  e3_sources/model.py                                        vllm/models/qwen4_exp/nvidia/model.py
+  ops_qsa_indexer.py                                         vllm/models/qwen4_exp/nvidia/ops/qsa_indexer.py
+  e3_sources/mm_budget.py                                    vllm/multimodal/encoder_budget.py
+  e3_sources/mm_encoder.py                                   vllm/v1/worker/gpu/mm/encoder_runner.py
+  e3_sources/anthropic_serving.py                            vllm/entrypoints/anthropic/serving.py
+  qsa.py                                                     vllm/models/qwen4_exp/nvidia/qsa.py
+  ops_qsa.py                                                 vllm/models/qwen4_exp/nvidia/ops/qsa.py
+  vision/model.py                                            vllm/models/qwen4_exp/nvidia/model.py
+
+All other source files are original work of the crazydiamond-on-ampere
+contributors, licensed under the Apache License, Version 2.0. Some of them call
+vLLM, PyTorch, Hugging Face transformers and NVIDIA CUDA/CUPTI APIs that ship
+inside the vLLM image; none of that code is copied into this repository.
+
+Not included: the vLLM image, model weights, and compiled binaries. The model
+used is Intel/Qwen3.8-Flash-Next-W4A16-AutoRound; it is referenced by name only
+and is subject to its own license.

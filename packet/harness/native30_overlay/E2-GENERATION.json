@@ -1,0 +1,56 @@
+{
+  "base_files": {
+    "core/block_pool.py": "7f781378710e616624f87d95ccc7b245e1e741c85f3751268e672c2a262038e8",
+    "core/scheduler.py": "4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87",
+    "core/single_type_kv_cache_manager.py": "c6b8ed3235f5db9110c44f5de0991d796a97a9aafa6cb2706df134fca18d7f18",
+    "model_runner_v2.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+    "ops_qsa.py": "5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b",
+    "qsa.py": "4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69",
+    "vision/model.py": "67a33b190c7466be079dd87a0517004959d2aec0dc8cdbdc191faccbf22ed067"
+  },
+  "base_manifest_sha256": "eb5c797fffcb29ac1f1069573a9e2f4eb87534687a41304c5d540f791df7f0d8",
+  "changed_source_pins": {
+    "core/block_pool.py": "7f781378710e616624f87d95ccc7b245e1e741c85f3751268e672c2a262038e8",
+    "core/scheduler.py": "4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87",
+    "model_runner_v2.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+    "ops_qsa.py": "5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b",
+    "qsa.py": "4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69"
+  },
+  "core_manifest_sha256": "fea444758f487c78f38e82a426d4cf2fd52125bb4a32faf90192b03256414de5",
+  "default_feature": "FLASH_E2_ARENA=0",
+  "experiment": "serial dense arena DMA; sparse arithmetic unchanged; no S5 overlap",
+  "generated_files": [
+    "core/block_pool.py",
+    "core/scheduler.py",
+    "e2/__init__.py",
+    "e2/arena_contract.py",
+    "e2/arena_dma.py",
+    "e2/block_mirror.py",
+    "e2/exactness.py",
+    "e2/retention_contract.py",
+    "e2/runner_lifecycle.py",
+    "e2/serial_dma.py",
+    "e2/startup.py",
+    "e2_sources/block_table.py",
+    "e2_sources/scheduler_output.py",
+    "model_runner_v2.py",
+    "ops_qsa.py",
+    "qsa.py",
+    "run-flash-e2-test.sh"
+  ],
+  "incremental_kv_bytes": 0,
+  "preserved_submanifests": {
+    "vision/SHA256SUMS": "03b69d278b4a54a1efb75db3ffae8998be725fb25f5427a5702f6198639a47d8"
+  },
+  "reference_source_pins": {
+    "config/__init__.py": "56fb0cb1598d297e4f95a97e5d86dc624145d1532f5faa432b7d2834d7155bd5",
+    "config/compilation.py": "c9cec5c7200e8e559810ec8c30113ad61dab6780f9f7fb3c116bd0d9b5a43065",
+    "config/model.py": "f4168b67cc93ce72ff2a6d4c66974223e32fd0f1fab4c05e44bd68a275e18d69",
+    "v1/core/sched/output.py": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c",
+    "v1/worker/gpu/block_table.py": "61c004315d5af7e7eae4e2a9e6be92ea82c520327690a7f55a73bb9ce95f520a"
+  },
+  "schema": 1,
+  "status": "offline-generated; owner gates required",
+  "telemetry_generator_sha256": "2c22709970bcff8123f43ee7724441cf430c17f1da02963d88d48168e80b9086",
+  "vision_manifest_sha256": "03b69d278b4a54a1efb75db3ffae8998be725fb25f5427a5702f6198639a47d8"
+}

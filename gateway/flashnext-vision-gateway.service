@@ -1,0 +1,26 @@
+[Unit]
+Description=Flash-Next keyed image gateway; queued admission build-7 (CPU only)
+After=network-online.target docker.service vllm-flash.service
+Wants=network-online.target
+Requires=docker.service vllm-flash.service
+PartOf=vllm-flash.service
+Conflicts=vllm-qwen38.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/flashnext-vision-gateway
+WorkingDirectory=/data/flash-next-packets/serve-vision-prod-w28-20261118b
+ExecStartPre=/usr/bin/sha256sum --strict --quiet -c PACKET-SHA256SUMS
+ExecStartPre=/bin/sh -ec 'cd /data/flash-next-packets/gateway-query-w28b-20261119-build-7b; exec sha256sum --strict --quiet -c GATEWAY-SHA256SUMS'
+ExecStartPre=/usr/bin/python3 -B /data/flash-next-packets/serve-vision-prod-w28-20261118b/harness/vision_production_ready.py --packet /data/flash-next-packets/serve-vision-prod-w28-20261118b --state-file /data/flash-next-control/vision-prod-w28/readiness.json
+ExecStartPre=/usr/bin/python3 -c 'import subprocess,time; n="flashnext-vision-gateway-w28-queue7b"; r=subprocess.run(["docker","inspect","-f",'"'"'{{index .Config.Labels "flashnext.vision.gateway-source"}} {{.State.Running}} {{.Image}}'"'"',n],capture_output=True,text=True); assert r.returncode or r.stdout.strip()=="f69ea023088fe1c921a25caf5e1616697dcae1251d3508aaf97981369b86610b false sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b","foreign/running gateway container"; r.returncode==0 and subprocess.run(["docker","rename",n,n+"-retained-"+str(time.time_ns())],check=True)'
+ExecStart=/usr/bin/docker run --pull never --runtime runc --name flashnext-vision-gateway-w28-queue7b --label flashnext.vision.gateway-source=f69ea023088fe1c921a25caf5e1616697dcae1251d3508aaf97981369b86610b --label flashnext.vision.packet=984cbdf952dfef12e005d55d623a3647a3d185fc76bf06433da5b9b214e5788b --network host --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --cpus 2 --memory 2g --memory-swap 2g --log-driver local --log-opt max-size=16m --log-opt max-file=2 --tmpfs /tmp:rw,nosuid,nodev,size=64m -v /data/flash-next-packets/serve-vision-prod-w28-20261118b:/packet:ro -v /data/flash-next-packets/gateway-query-w28b-20261119-build-7b/vision_public_gateway.py:/packet/harness/vision_public_gateway.py:ro -v /data/flash-next-control/vision-prod-w28:/readiness:ro -v /root/.flashnext-serve-vision-prod-w27-20261117a/vllm-api.env:/key/vllm-api.env:ro -v /root/.flashnext-serve-vision-prod-w27-20261117a/vision-encoder.env:/key/vision-encoder.env:ro -e NVIDIA_VISIBLE_DEVICES=void -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b -B /packet/harness/vision_public_gateway.py --bind 0.0.0.0 --port 8000 --backend http://127.0.0.1:8001 --encoder http://<encoder-host>:9041 --max-images ${VISION_MAX_IMAGES} --max-inflight ${VISION_GATEWAY_MAX_INFLIGHT} --queue-timeout-s ${VISION_GATEWAY_QUEUE_TIMEOUT_S} --ready-file /readiness/readiness.json --packet-sha256 984cbdf952dfef12e005d55d623a3647a3d185fc76bf06433da5b9b214e5788b --key-file /key/vllm-api.env --encoder-key-file /key/vision-encoder.env
+ExecStop=/usr/bin/python3 -c 'import subprocess; n="flashnext-vision-gateway-w28-queue7b"; r=subprocess.run(["docker","inspect","-f",'"'"'{{index .Config.Labels "flashnext.vision.gateway-source"}} {{.State.Running}} {{.Image}}'"'"',n],capture_output=True,text=True); assert r.returncode or r.stdout.strip() in ("f69ea023088fe1c921a25caf5e1616697dcae1251d3508aaf97981369b86610b true sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b","f69ea023088fe1c921a25caf5e1616697dcae1251d3508aaf97981369b86610b false sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b"),"foreign gateway container"; r.returncode==0 and subprocess.run(["docker","stop","--time","30",n],check=True)'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+TimeoutStartSec=1800
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

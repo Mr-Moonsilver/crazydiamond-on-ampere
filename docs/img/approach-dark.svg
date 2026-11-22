@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" font-family="-apple-system, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+<title id="t">Where the GPU memory goes</title>
+<desc id="d">Three bars comparing GPU memory use: a model too big for the GPUs (offloading engines), a model that just fits, with its attention history kept in host RAM (this engine), and a model with room for a large KV cache (stock engines).</desc>
+<defs><pattern id="spill" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#0d1117"/><rect width="3.5" height="8" fill="#6f93c8"/></pattern><pattern id="spillkv" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#0d1117"/><rect width="3.5" height="8" fill="#f0b443"/></pattern></defs>
+<rect width="1000" height="560" rx="14" fill="#0d1117"/>
+<text x="32" y="46" font-size="22" font-weight="700" fill="#e6edf3">Where the GPU memory goes</text>
+<text x="32" y="72" font-size="14" fill="#9aa7b8">GPU memory holds the model weights plus the KV cache, the working memory each request needs for its context.</text>
+<text x="330" y="108" font-size="12" font-weight="600" letter-spacing="0.6" fill="#9aa7b8">GPU MEMORY</text>
+<text x="802" y="108" font-size="12" font-weight="600" letter-spacing="0.6" fill="#9aa7b8">BEYOND THE GPUs</text>
+<text x="32" y="148" font-size="16" font-weight="700" fill="#e6edf3">Model bigger than the GPUs</text>
+<rect x="32" y="158" width="225" height="22" rx="11" fill="#21262d"/>
+<text x="41" y="173" font-size="12" font-weight="600" fill="#c9d1d9">Offloading engines, e.g. Strata</text>
+<rect x="330" y="132" width="460" height="40" rx="4" fill="#161b22" stroke="#30363d"/>
+<rect x="330.0" y="132" width="46.0" height="40" fill="#f0b443"/>
+<rect x="376.0" y="132" width="414.0" height="40" fill="#6f93c8"/>
+<text x="583.0" y="157" font-size="13" font-weight="600" text-anchor="middle" fill="#ffffff">model weights</text>
+<text x="353.0" y="126" font-size="11" font-weight="600" text-anchor="middle" fill="#9aa7b8">KV</text>
+<rect x="790" y="132" width="156.4" height="40" fill="url(#spill)" stroke="#6f93c8"/>
+<text x="800" y="194" font-size="12" fill="#9aa7b8">held in CPU RAM / disk,</text>
+<text x="800" y="212" font-size="12" fill="#9aa7b8">streamed in over PCIe</text>
+<text x="330" y="194" font-size="13" fill="#e6edf3">Part of the weights live outside the GPUs and are fetched as needed.</text>
+<text x="330" y="212" font-size="13" fill="#9aa7b8">Runs models that do not fit, but every token waits on the transfer.</text>
+<rect x="18" y="248" width="964" height="122" rx="10" fill="#1f1a10" stroke="#f0b443" stroke-width="1.5"/>
+<text x="32" y="280" font-size="16" font-weight="700" fill="#e6edf3">Model just fits</text>
+<rect x="32" y="290" width="244" height="22" rx="11" fill="#21262d"/>
+<text x="41" y="305" font-size="12" font-weight="600" fill="#c9d1d9">crazydiamond-on-ampere (this repo)</text>
+<text x="34" y="334" font-size="12" fill="#9aa7b8">up to 8 agents × 200k tokens</text>
+<rect x="330" y="264" width="460" height="40" rx="4" fill="#161b22" stroke="#30363d"/>
+<rect x="330.0" y="264" width="41.4" height="40" fill="#f0b443"/>
+<rect x="371.4" y="264" width="404.8" height="40" fill="#6f93c8"/>
+<text x="573.8" y="289" font-size="13" font-weight="600" text-anchor="middle" fill="#ffffff">model weights</text>
+<text x="350.7" y="258" font-size="11" font-weight="600" text-anchor="middle" fill="#9aa7b8">KV</text>
+<rect x="790" y="264" width="119.6" height="40" fill="url(#spillkv)" stroke="#f0b443"/>
+<text x="800" y="326" font-size="12" fill="#9aa7b8">attention history in host RAM,</text>
+<text x="800" y="344" font-size="12" fill="#9aa7b8">only needed rows fetched</text>
+<text x="330" y="326" font-size="13" fill="#e6edf3">Weights fill the GPUs, leaving only a sliver for context.</text>
+<text x="330" y="344" font-size="13" fill="#9aa7b8">Layer weights stay on GPU; context history lives in host RAM.</text>
+<text x="32" y="412" font-size="16" font-weight="700" fill="#e6edf3">Room for model and context</text>
+<rect x="32" y="422" width="178" height="22" rx="11" fill="#21262d"/>
+<text x="41" y="437" font-size="12" font-weight="600" fill="#c9d1d9">Stock engines, e.g. vLLM</text>
+<rect x="330" y="396" width="460" height="40" rx="4" fill="#161b22" stroke="#30363d"/>
+<rect x="330.0" y="396" width="161.0" height="40" fill="#f0b443"/>
+<rect x="491.0" y="396" width="230.0" height="40" fill="#6f93c8"/>
+<text x="606.0" y="421" font-size="13" font-weight="600" text-anchor="middle" fill="#ffffff">model weights</text>
+<text x="410.5" y="421" font-size="13" font-weight="600" text-anchor="middle" fill="#1b2330">KV cache</text>
+<text x="330" y="458" font-size="13" fill="#e6edf3">Plenty of memory for weights and a large KV cache.</text>
+<text x="330" y="476" font-size="13" fill="#9aa7b8">The easy case, but it needs more or bigger GPUs.</text>
+<line x1="790" y1="118" x2="790" y2="496" stroke="#e6edf3" stroke-width="2" stroke-dasharray="5 4"/>
+<text x="784" y="512" font-size="11" text-anchor="end" fill="#9aa7b8">GPU memory limit</text>
+<rect x="32" y="527" width="14" height="14" rx="3" fill="#6f93c8" stroke="#30363d"/>
+<text x="52" y="538" font-size="12" fill="#9aa7b8">model weights</text>
+<rect x="159.8" y="527" width="14" height="14" rx="3" fill="#f0b443" stroke="#30363d"/>
+<text x="179.8" y="538" font-size="12" fill="#9aa7b8">KV cache (context)</text>
+<rect x="320.6" y="527" width="14" height="14" rx="3" fill="#161b22" stroke="#30363d"/>
+<text x="340.6" y="538" font-size="12" fill="#9aa7b8">free</text>
+<rect x="389.0" y="527" width="14" height="14" rx="3" fill="url(#spill)" stroke="#30363d"/>
+<text x="409.0" y="538" font-size="12" fill="#9aa7b8">weights outside GPU memory</text>
+<rect x="602.6" y="527" width="14" height="14" rx="3" fill="url(#spillkv)" stroke="#30363d"/>
+<text x="622.6" y="538" font-size="12" fill="#9aa7b8">context outside GPU memory</text>
+</svg>

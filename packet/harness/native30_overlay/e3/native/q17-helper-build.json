@@ -1,0 +1,36 @@
+{
+  "abi_basis": "source contract; loaded binary ABI rechecked at engine startup",
+  "cupti_library_sha256": "e2f9ed861fe27c492b8bb52b5e3220ef5120f3edcda36312e96b7fd8a186be3e",
+  "declared_abi": {
+    "green": 1,
+    "observer": 1
+  },
+  "files": {
+    "flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
+    "flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
+    "flash_s5_green.so": "e06b062263dcc315dec1ab279f1c08abc8f627e4c6f901ef5a740ec307cba41b",
+    "flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
+    "flash_s5_replay_observer.so": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d"
+  },
+  "gpu_work": false,
+  "image": "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+  "needed": {
+    "flash_s5_green.so": [
+      "libcuda.so.1",
+      "libcudart.so.13",
+      "libstdc++.so.6",
+      "libgcc_s.so.1",
+      "libc.so.6"
+    ],
+    "flash_s5_replay_observer.so": [
+      "libcupti.so.13",
+      "libcuda.so.1",
+      "libstdc++.so.6",
+      "libgcc_s.so.1",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ]
+  },
+  "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Aug_20_01:58:59_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.88\nBuild cuda_13.0.r13.0/compiler.36424714_0\n",
+  "schema": 1
+}

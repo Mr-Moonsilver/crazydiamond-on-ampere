@@ -1,0 +1,2 @@
+[vllm.general_plugins]
+native34_diagnostic = native34_diag:install

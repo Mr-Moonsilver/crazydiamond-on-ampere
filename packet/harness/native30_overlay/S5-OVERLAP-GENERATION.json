@@ -1,0 +1,763 @@
+{
+  "allocation_budget": {
+    "by_category": {
+      "arena": [
+        0,
+        99483648
+      ],
+      "graph_pool": [
+        150323856,
+        150323856
+      ],
+      "hc": [
+        26222592,
+        0
+      ],
+      "host_metadata": [
+        434176,
+        0
+      ],
+      "metadata": [
+        24780,
+        0
+      ],
+      "ple": [
+        0,
+        0
+      ],
+      "pp_handoff": [
+        62914560,
+        0
+      ],
+      "qsa_history": [
+        0,
+        1243545600
+      ],
+      "qsa_scratch": [
+        21086208,
+        0
+      ],
+      "weights": [
+        0,
+        0
+      ],
+      "workspace": [
+        0,
+        0
+      ]
+    },
+    "entries": [
+      {
+        "basis": "unmeasured",
+        "category": "weights",
+        "name": "shared_weights",
+        "nbytes": 0,
+        "new_allocation": false,
+        "owner": "model",
+        "reuse_condition": "immutable, shared by both lanes"
+      },
+      {
+        "basis": "existing",
+        "category": "arena",
+        "name": "qsa_arena",
+        "nbytes": 99483648,
+        "new_allocation": false,
+        "owner": "prefill",
+        "reuse_condition": "existing 24-page E2 arena; no new window"
+      },
+      {
+        "basis": "existing",
+        "category": "qsa_history",
+        "name": "qsa_histories_200k",
+        "nbytes": 1243545600,
+        "new_allocation": false,
+        "owner": "model.qsa_host_kv",
+        "reuse_condition": "six independent histories; lease held until completion proof"
+      },
+      {
+        "basis": "estimate",
+        "category": "metadata",
+        "name": "prefill_metadata",
+        "nbytes": 24780,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "private chunk; recopied at admission"
+      },
+      {
+        "basis": "estimate",
+        "category": "hc",
+        "name": "prefill_hc",
+        "nbytes": 26222592,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "materialize once at PP handoff"
+      },
+      {
+        "basis": "estimate",
+        "category": "qsa_scratch",
+        "name": "prefill_qsa_scratch",
+        "nbytes": 21086208,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "one active prefill; consumer proof before reuse"
+      },
+      {
+        "basis": "estimate",
+        "category": "pp_handoff",
+        "name": "prefill_pp_handoff",
+        "nbytes": 20971520,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "send storage released after consumption"
+      },
+      {
+        "basis": "measured",
+        "category": "graph_pool",
+        "name": "decode_full_graph_pool",
+        "nbytes": 150323856,
+        "new_allocation": false,
+        "owner": "decode",
+        "reuse_condition": "ordinary full-GPU decode graph"
+      },
+      {
+        "basis": "estimate",
+        "category": "graph_pool",
+        "name": "decode_split_graph_bank",
+        "nbytes": 150323856,
+        "new_allocation": true,
+        "owner": "decode",
+        "reuse_condition": "fixed split bank; measure and fund before arming"
+      },
+      {
+        "basis": "declared-zero",
+        "category": "qsa_history",
+        "name": "extra_history_window",
+        "nbytes": 0,
+        "new_allocation": false,
+        "owner": "prefill",
+        "reuse_condition": "no additional history-sized window"
+      },
+      {
+        "basis": "declared-zero",
+        "category": "ple",
+        "name": "ple_prefetch",
+        "nbytes": 0,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "initial prefill does inline UVA lookup; decode keeps captured path"
+      },
+      {
+        "basis": "unmeasured",
+        "category": "workspace",
+        "name": "marlin_workspace",
+        "nbytes": 0,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "measure at startup before arming"
+      },
+      {
+        "basis": "unmeasured",
+        "category": "workspace",
+        "name": "green_context",
+        "nbytes": 0,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "measure at startup before arming"
+      },
+      {
+        "basis": "unmeasured",
+        "category": "workspace",
+        "name": "communicator_buffers",
+        "nbytes": 0,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "measure at startup before arming"
+      },
+      {
+        "basis": "estimate",
+        "category": "pp_handoff",
+        "name": "prefill_pp_send_recv",
+        "nbytes": 41943040,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "independent prefill PP buffers; released after PP consumer proof"
+      },
+      {
+        "basis": "estimate",
+        "category": "host_metadata",
+        "name": "command_metadata",
+        "nbytes": 40960,
+        "new_allocation": true,
+        "owner": "executor",
+        "reuse_condition": "bounded command ring; fixed slot count"
+      },
+      {
+        "basis": "estimate",
+        "category": "host_metadata",
+        "name": "telemetry_ring",
+        "nbytes": 393216,
+        "new_allocation": true,
+        "owner": "executor",
+        "reuse_condition": "metadata-only, bounded ring"
+      },
+      {
+        "basis": "unmeasured",
+        "category": "metadata",
+        "name": "prefill_uid_buffer",
+        "nbytes": 0,
+        "new_allocation": true,
+        "owner": "prefill",
+        "reuse_condition": "C-supplied native QSA batch UID storage; measure before arming"
+      }
+    ],
+    "existing_bytes": 1493353104,
+    "funding": "no claim on the unmet 512-MiB reserve or the existing arena",
+    "new_bytes": 261006172,
+    "total_bytes": 1754359276,
+    "unmeasured": [
+      "shared_weights",
+      "marlin_workspace",
+      "green_context",
+      "communicator_buffers",
+      "prefill_uid_buffer"
+    ]
+  },
+  "armable": true,
+  "base_core_manifest_sha256": "4609892b0423ad4805f4fa67edeb32cf09a8f7400f5ffee501f7d8951b0b9706",
+  "base_e2_record": {
+    "base_files": {
+      "core/block_pool.py": "7f781378710e616624f87d95ccc7b245e1e741c85f3751268e672c2a262038e8",
+      "core/scheduler.py": "4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87",
+      "core/single_type_kv_cache_manager.py": "c6b8ed3235f5db9110c44f5de0991d796a97a9aafa6cb2706df134fca18d7f18",
+      "model_runner_v2.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+      "ops_qsa.py": "5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b",
+      "qsa.py": "4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69",
+      "vision/model.py": "67a33b190c7466be079dd87a0517004959d2aec0dc8cdbdc191faccbf22ed067"
+    },
+    "base_manifest_sha256": "eb5c797fffcb29ac1f1069573a9e2f4eb87534687a41304c5d540f791df7f0d8",
+    "changed_source_pins": {
+      "core/block_pool.py": "7f781378710e616624f87d95ccc7b245e1e741c85f3751268e672c2a262038e8",
+      "core/scheduler.py": "4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87",
+      "model_runner_v2.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+      "ops_qsa.py": "5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b",
+      "qsa.py": "4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69"
+    },
+    "core_manifest_sha256": "fea444758f487c78f38e82a426d4cf2fd52125bb4a32faf90192b03256414de5",
+    "default_feature": "FLASH_E2_ARENA=0",
+    "experiment": "serial dense arena DMA; sparse arithmetic unchanged; no S5 overlap",
+    "generated_files": [
+      "core/block_pool.py",
+      "core/scheduler.py",
+      "e2/__init__.py",
+      "e2/arena_contract.py",
+      "e2/arena_dma.py",
+      "e2/block_mirror.py",
+      "e2/exactness.py",
+      "e2/retention_contract.py",
+      "e2/runner_lifecycle.py",
+      "e2/serial_dma.py",
+      "e2/startup.py",
+      "e2_sources/block_table.py",
+      "e2_sources/scheduler_output.py",
+      "model_runner_v2.py",
+      "ops_qsa.py",
+      "qsa.py",
+      "run-flash-e2-test.sh"
+    ],
+    "incremental_kv_bytes": 0,
+    "preserved_submanifests": {
+      "vision/SHA256SUMS": "03b69d278b4a54a1efb75db3ffae8998be725fb25f5427a5702f6198639a47d8"
+    },
+    "reference_source_pins": {
+      "config/__init__.py": "56fb0cb1598d297e4f95a97e5d86dc624145d1532f5faa432b7d2834d7155bd5",
+      "config/compilation.py": "c9cec5c7200e8e559810ec8c30113ad61dab6780f9f7fb3c116bd0d9b5a43065",
+      "config/model.py": "f4168b67cc93ce72ff2a6d4c66974223e32fd0f1fab4c05e44bd68a275e18d69",
+      "v1/core/sched/output.py": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c",
+      "v1/worker/gpu/block_table.py": "61c004315d5af7e7eae4e2a9e6be92ea82c520327690a7f55a73bb9ce95f520a"
+    },
+    "schema": 1,
+    "status": "offline-generated; owner gates required",
+    "telemetry_generator_sha256": "2c22709970bcff8123f43ee7724441cf430c17f1da02963d88d48168e80b9086",
+    "vision_manifest_sha256": "03b69d278b4a54a1efb75db3ffae8998be725fb25f5427a5702f6198639a47d8"
+  },
+  "base_generation_sha256": "216c1b9e2152b145e18cf08f97cefa172685278adb3b916329c9dc06413c3366",
+  "base_manifest_sha256": "da561411fadbb82922eeb8eafbe9424bc9703aaf8c2030bd813743c692b641a5",
+  "candidate_profile": "q18a-native-performance",
+  "default_feature": "FLASH_S5_OVERLAP=0",
+  "diagnostic_modes": {
+    "decode_only": {
+      "constructs": [
+        "green split (worker_hooks.after_runner_init)",
+        "split decode graph bank, own pool (split_bank)",
+        "drained RouteController"
+      ],
+      "declared": true,
+      "diagnostic_only": true,
+      "enabled_by": {
+        "FLASH_S5_DECODE_ONLY_PROBE": "1",
+        "FLASH_S5_DECODE_SMS": "<explicit, no default>",
+        "FLASH_S5_GREEN_LIB_SHA256": "<compiled artifact pin, required>",
+        "FLASH_S5_OVERLAP": "0"
+      },
+      "evidence": {
+        "build_only_source_shas": {
+          "operation_source": "bd48cef3e959f39f6a513f7ac8b9782b59f614e66f8d8a48a0b378446615a11f"
+        },
+        "generated_source_shas": {
+          "activity_accounting": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
+          "admission_metadata": "ca6da7184c09c48e24601943d912f70c3c8d751ddecbadf50ba55d959de232e6",
+          "async_handoff": "0bf965d34f09cc3ea68de57195922c34409783b21c7893fae7882e5978e4f452",
+          "attn_meta_batch": "5cc717a2e0c2fc48520dc5c0348268b51f7c81b57e223f0d151b93061717b36e",
+          "attn_meta_select": "5e245383e45247d38b1fe0b720441721e3c52edb4f63387fe8bdf812eec4140e",
+          "capture_streams": "46181a6f4ee4650244f0de9cfa54a663be95347083accaf82297f53de9dea4c2",
+          "decode_overlap": "18af01d30856cb9a5471224fc1314f1b437b402045b17beb7fca0e671433a6d3",
+          "decode_probe": "3edfa9438da2ba3df3a9f984fd9789a0b8232e8449fc9bc02d42a4a6f241822f",
+          "decode_step": "eb035eb771e797c3464e19f9374f111aff6f754addba02d6d531c63948a34d1c",
+          "decode_timeline": "e3f6a255d7b8b69f27a092086c9e6f3b89205ae9d12c87a57a8f4c92bd203afd",
+          "e3_types": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
+          "engine_driver": "07c41b8baf2cbb3293ddfc12f3cd17078e0c6d2cea196ce89d701b590562f8ff",
+          "engine_offers": "d5da1d96289b1fccdfe7d72a3e209dd37a34273a4b49f3bba78c0692def12f39",
+          "executor_hooks": "c25ba704e518346523631a946dd6e6c0eaf61854f2ac3c3582c8977ed1718abb",
+          "graph_hooks": "a15ef4e68c7d63c5a9a9c5f425c1baee44f6629a41d1c797fd81ca41645a2221",
+          "graph_router": "9545c5d7d9346872a89a5c89e0b12aac6de914b57affd6d71e641d0c2235dc8c",
+          "green_context": "e875f26b3a7d4b9e20e8e2b5ab4d1b7a4ebfce6d6b15e7301da1c831abee8847",
+          "handler_anatomy": "2c2a738a277064d94de3de41763c90ce7845d96bb60ffd415818f688177eb569",
+          "ingress_incremental": "bfa6bcf449abdd2ad8d4463e634efab51c2f39c0cf353831886902b717b9ff65",
+          "lane_chunk": "a08bb8efbee827dc5324504145788ad39ae3567a041d3d461ed7135d4898cbc2",
+          "lane_comm": "b4393ed134204eb813c8b907b971f0412e326b34862d52a0fb98d944e182e93e",
+          "lane_dispatch": "b15015fa285a332418468692575148536aa39acf0e5c1552f969518fbfe54a78",
+          "lane_hooks": "0a0a03ef2784f15ca173c1a54a15900bdd9cc85e1b6fb5cede794ed956308d71",
+          "lane_private": "6e8fe442e8665fbc2a8cfd3fd325fce2f6d8cd46548572406d7150d80fc9d99b",
+          "lane_state": "8918e2a3d1db1427facdeea351bd8fc9f9b2779e52cd2f321e4a1d0626919c12",
+          "launch_diagnostic": "29925d2946217906d8a4134a69ad41d408d9c09de670a677df80534608e0fff7",
+          "model_hooks": "a5c586ffb718c21d1457b4bb11222cb87e1e654ef21b469ec9665cbe2565ff3a",
+          "native_auto_arm": "7a92da807ef569cf124e112bb09361d08ff33c6c64c8c89f6f3348fc1f586d4e",
+          "native_backend": "9547ccea32e56e7266199a411a65067900cfed6d5697697b5fb03886145aaaa3",
+          "native_graph_placement": "51544880fee8c7b8a3fe9da65a25e609179911d7c77cc6a9fff3a0f7e7168435",
+          "native_measurement": "9253d42a9efa73814069888f16a651cb28ca5afe5df4f4fb0a9022ef8c12eb07",
+          "native_observation": "e06c1a9a924bb17473668633e2aa865a2eb075131d32070db94140fc4550f659",
+          "native_overlap_control": "2db78f022e37819f73643ff9342f8fce7da31e329c1bf6acf2d3024e086d489a",
+          "native_overlap_metrics": "17d3f5de2db7db8acc4cb5a130351ce169d7b5b76f052a03fd9a0315430827fa",
+          "native_overlap_session": "54e2d03d0ce94fa62a99d608735fb67ecb2e7acd3f64f03184f3fb5de4b58758",
+          "native_overlap_worker": "eae2e29e034c4a7af94841d19c78d4089696dc42b03ded25b7336e1a40c65ad8",
+          "native_placement": "0f243688dcde5c72b8338fd2bbc1755b002050a76e5f044661cee146a8afe17e",
+          "native_prefill_offers": "711b175772276603985572e4ee2e7352c31e46ec9929620ef12b400e4a652e56",
+          "native_qualification": "5237b92ea4b073d082e43fe188c6a6148236bf7d628eda266de6b815415bc250",
+          "native_qualification_frontend": "069725fa7c3732021194010e81885a2d27c6aad211ff81d90b8dae265ebf955c",
+          "native_readiness": "e6fb9a28599a3206b14d2e9d35af68d108eeda02599f219b81bec5139d88f082",
+          "native_resources": "0022e1845ed66ea1f1b70e379f29a56d016b39a9adb3c7cd0707a66e6b607652",
+          "native_source": "a5172076b061fa4dbbb473399cb8357372f8edf53676735ee60a972d1e2a5361",
+          "native_startup": "94ad562c7369616fb676bc89445989aaf42fe0456ce8205d1ec078f6874746e3",
+          "native_uva": "766b084cd85c6ff89191c9e6c453937ff8d97c6e3ce1837974cf558d9bc1e532",
+          "observer_runtime": "277ad3ad74a8ba496482326cb09a457073dba192ab5d31e47e07481e8f5936e0",
+          "probe_control": "fef379c4242e8067e6b2e6c7ad5a7d1bc18626481df82d40d8819c722937db40",
+          "probe_control_hooks": "4e3f298a67d013a74822d1e6a1c3e84c807a5e6eef8e2c8f861f19afbe154301",
+          "probe_session": "d5e25b0772b1f77b2a672df2b83df9c37078ed837c786f46bd82eb4427bf731c",
+          "qsa_driver": "4331a6cdd6e030550bec3307da36355b2bf1e71961d71edca7d4db69e4384423",
+          "qsa_operation": "5a50b287ff554c064bd4f02b3d5aa12178c05bc6eb19fc3b4a1295672f1a2c17",
+          "replay_observer": "214342376ed6fb054940a85e2363f1817f260b9ed26a921c0b8af40c4651edbd",
+          "reply_transport": "e5fd79f86e816d424484697acb46c5151f509c8f95455347e3b23fc1dd6478ad",
+          "route_invariant": "e20333e2a4e104cf2fe24aad2b3ef1d91a75effc2ee47b7a763f595a66ff6884",
+          "row1_exactness": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
+          "row1_oracle": "b8cde4242d5e80691a4c5427a4e38ccca531b56a8ba5e780d7cb8f0d17d3feea",
+          "s5_startup": "fd13d13e91fbcc6f3ec99691ff559fd7f524b7f1d81c143f4e1ea5bde030d9e6",
+          "scheduler_hooks": "3142fa5124dca883bb1125acbc423f5c5145f1c38a237ebd3a01b0ba04bf4841",
+          "small_piece_batch": "3e2e24995c156db639c6be447274de9bc7374b9a8afdb2349781d695a6a5f9dd",
+          "sparse_history_dma": "fd758a38890ed98d91cb74fe6d9d544e3d63b304c28a663372e7f0edc5c21cac",
+          "split_bank": "f504a07ff2b56c1f9ba5ec3ea371ec0fdce51bc06a42ae9c9ea5ea8522b7c50d",
+          "stage_overlap": "d4f0eb8ad0b328e2fe34a1c8434d32a13a75e3be4266f14e353d2d899b6191f3",
+          "stage_progress": "e60e2ce20b0929ffb654dad6587be2ec6de57cf9c044d8ddc71022411b3d6d87",
+          "stage_wire": "995d91db9fc14956a2587eba742ce63ead5fa0b0ee7283748e81d8a323cef60b",
+          "teacher_decode": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
+          "wire_v1": "2937a140728b9ec73e73d58127b809cd5d826a780d6abbceda8e75cd1f0173d3",
+          "worker_bridge": "c7494a3126da93b3b415d813c3624b10692d3573fcaf12260356606a502b64a9",
+          "worker_hooks": "4d0a95acb26a07ac0323a157652eadb5bde1bc6b56f0a304500c8f08193aafed"
+        },
+        "helper_source_sha256": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
+        "pins": {
+          "entrypoints/launchers/api_server/routers.py": "c2f1bb2708f44f0fe24f3d8ab8f884c7262e551c6557ebc606263abc4d7b1db1",
+          "entrypoints/serve/middleware/authenticate.py": "0633540cb788738dfee5a69075fbdc30eb98a510e26f69a0b43c57c50d9ef5ab",
+          "sampling_params.py": "75e0f4b7e6702fd211340b87e6835598c5dce05b30bb2ea0ad834418fd626967",
+          "utils/torch_utils.py": "eec8b1e3c7c673d3d171b92530f8b07acabdad5b0e3ab07cc0e717f827af8e5a",
+          "v1/core/sched/output.py": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c",
+          "v1/engine/async_llm.py": "32ab1c7b43bfa7e5fcada335f49627d3c540a43bb8376b4845006792c3415fb4",
+          "v1/engine/core_client.py": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8",
+          "v1/engine/input_processor.py": "91dde56a548c09613ee9aaef8c43631481d12dc1bd439fddc12c6569f5e2e799",
+          "v1/engine/output_processor.py": "1a96ed5e41bf3df9f16ccba6e721a0bbda5baa500b3ff3117fe75679292b3bfc",
+          "v1/worker/gpu/async_utils.py": "77e17a4570ead2be30ae9b00888cf077a3b873018c12ca0549b853bfda02c1ba",
+          "v1/worker/gpu/buffer_utils.py": "f81fd26a5faabf614b2c0d0a2aaa55a6664e35eeb5deada51bc657172963b596",
+          "v1/worker/gpu/cudagraph_utils.py": "b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384",
+          "v1/worker/gpu/model_runner.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+          "v1/worker/gpu/sample/sampler.py": "832c9945d201a1e730ff9b4b52076aa83bd4a5064e1e4cfea952cf84d4a8d1f0",
+          "v1/worker/gpu/sample/trace_replay.py": "d2a7d3b3b55379efabe4740a4b7f14030126dc11be36f6ea974164ce42316a50",
+          "v1/worker/gpu_worker.py": "596f5b6e97be754f84b04c17bc0b96fd92d2f05ee86e0459aa515ffa48d8c5cb"
+        },
+        "tests": [
+          "FlagTests.test_both_flags_refused_before_allocation",
+          "GateTests.test_require_decode_probe_ready_requires_complete_evidence",
+          "RouteGuardTests.test_no_prefill_guard_and_captured_descriptor_routing",
+          "RouteGuardTests.test_unsupported_descriptor_invalidates_without_fallback",
+          "BankWiringTests.test_separate_pool_and_measured_bytes",
+          "TransitionTests.test_drained_transitions_and_refusal_while_unresolved",
+          "TransitionTests.test_failed_transition_quarantines_and_keeps_route",
+          "ShutdownTests.test_inventory_helper_sha_and_shutdown_order",
+          "BytePathTests.test_default_off_generated_sources_are_probe_free",
+          "CaptureObservationTests.test_generated_graph_stream_argument_executes_the_guard",
+          "CaptureObservationTests.test_each_observed_stream_must_match_the_owner",
+          "MemoryObservationTests.test_status_samples_labeled_memory_without_sync_or_reset"
+        ]
+      },
+      "excluded": [
+        "prefill lane",
+        "lane dispatcher",
+        "chunk admission",
+        "async reply collector",
+        "source leases",
+        "prefill communicators",
+        "PLE scratch",
+        "lane forward"
+      ],
+      "gate": "s5_startup.require_decode_probe_ready",
+      "module_inventory": {
+        "basis": "build-only sources generate runtime text and are shipped/checksummed for the builder; they are not imported by the runtime package",
+        "build_only": [
+          "operation_source"
+        ],
+        "runtime": [
+          "wire_v1",
+          "e3_types",
+          "lane_state",
+          "reply_transport",
+          "native_backend",
+          "lane_hooks",
+          "async_handoff",
+          "native_resources",
+          "engine_driver",
+          "executor_hooks",
+          "scheduler_hooks",
+          "s5_startup",
+          "native_auto_arm",
+          "admission_metadata",
+          "worker_bridge",
+          "graph_router",
+          "graph_hooks",
+          "qsa_operation",
+          "sparse_history_dma",
+          "native_source",
+          "row1_oracle",
+          "row1_exactness",
+          "green_context",
+          "capture_streams",
+          "split_bank",
+          "worker_hooks",
+          "model_hooks",
+          "lane_private",
+          "qsa_driver",
+          "lane_comm",
+          "native_startup",
+          "native_uva",
+          "lane_chunk",
+          "lane_dispatch",
+          "decode_probe",
+          "probe_control",
+          "probe_control_hooks",
+          "probe_session",
+          "launch_diagnostic",
+          "route_invariant",
+          "teacher_decode",
+          "replay_observer",
+          "observer_runtime",
+          "activity_accounting",
+          "engine_offers",
+          "native_overlap_metrics",
+          "native_overlap_worker",
+          "native_overlap_control",
+          "native_overlap_session",
+          "native_prefill_offers",
+          "native_placement",
+          "native_measurement",
+          "native_qualification",
+          "native_qualification_frontend",
+          "native_observation",
+          "native_graph_placement",
+          "native_readiness",
+          "stage_wire",
+          "stage_progress",
+          "handler_anatomy",
+          "stage_overlap",
+          "attn_meta_batch",
+          "attn_meta_select",
+          "small_piece_batch",
+          "ingress_incremental",
+          "decode_step",
+          "decode_timeline",
+          "decode_overlap"
+        ]
+      },
+      "qualifies": "diagnostic_modes.decode_only",
+      "replay_observation": {
+        "build": "e3/native/build_q17_helpers.sh; final manifest after e3_finalize_package.py",
+        "cupti_library_sha256": "e2f9ed861fe27c492b8bb52b5e3220ef5120f3edcda36312e96b7fd8a186be3e",
+        "helper_library": "e3/native/flash_s5_replay_observer.so",
+        "helper_source": "e3/native/flash_s5_replay_observer.cpp",
+        "library_pin_env": "FLASH_S5_REPLAY_LIB_SHA256",
+        "opt_in": "FLASH_S5_REPLAY_OBSERVER=1",
+        "scope": "first split correctness window only; owned stop required before W1"
+      },
+      "requires": {
+        "decode_sms": "FLASH_S5_DECODE_SMS must be declared; code supplies no default",
+        "flag_conflict": "probe=1 with overlap=1 refuses before any allocation",
+        "route": "drained RouteController transitions; unsupported dispatch invalidates the interval",
+        "storage_epoch": 1
+      },
+      "scope": "separately declared diagnostic mode; it does not qualify the full FLASH_S5_OVERLAP package, which stays armable:false",
+      "startup": "native_startup.install_decode_probe"
+    }
+  },
+  "e2_composed_pins": {
+    "core/block_pool.py": "3f2d030c0ff7217ed796080ad2588c07692b8b0970ab8018d7fb748c06d5dfb1",
+    "core/scheduler.py": "c767a87918d48a4dced38d42367a958e5c9f81b18737ba385f9d88b7019cf6eb",
+    "model_runner_v2.py": "65f1c6da7918159bd360a7fda4de6f8d24b53e27af706adf6ec3b9c127a027c6"
+  },
+  "e2_worker_composed_pins": {
+    "ops_qsa.py": "aab7f8d83426f9c7c097347330102dbef991fd5403916107d52cd4d883b8f190",
+    "qsa.py": "3dc7e447d174eaa0463865edfe978af08e75d1fd8bc5de86810c4aa914281ad7"
+  },
+  "engine_offer_composition": {
+    "cudagraph_input_sha256": "283a654aa858fce0f29b1cbd761685dfee32bc3a02de731305452ddeadafc584",
+    "enabled_by": "FLASH_S5_ENGINE_OFFERS",
+    "outputs": {
+      "e3_sources/async_utils.py": "f0577568ee7aa6c808bbb60316652fb043a9f6dc06333ccbfafa94b458040c51",
+      "e3_sources/cudagraph_utils.py": "24684b762098023e3bbaac2399018966903c98b9e4679075c773916b30bc77fd",
+      "e3_sources/sampler.py": "8acd8a7b33f5d4c5ba9865f5e1392fa78e3d4e7643368d48e57e78038ca6d0e4",
+      "model_runner_v2.py": "2cfb93a35382db30bb6b09d62ea787ad4058621954c6ddf97dc0d258b34fafb4"
+    },
+    "reference_pins": {
+      "v1/worker/gpu/async_utils.py": "77e17a4570ead2be30ae9b00888cf077a3b873018c12ca0549b853bfda02c1ba",
+      "v1/worker/gpu/cudagraph_utils.py": "b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384",
+      "v1/worker/gpu/model_runner.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+      "v1/worker/gpu/sample/sampler.py": "832c9945d201a1e730ff9b4b52076aa83bd4a5064e1e4cfea952cf84d4a8d1f0"
+    },
+    "runner_input_sha256": "f876a138b106bfb854c158238b2b77551a4226bd18e2c9994c401795ffd92eb3",
+    "window": "short placement window only; inactive before and after"
+  },
+  "generated_files": [
+    "S5-OVERLAP-GENERATION.json",
+    "SHA256SUMS",
+    "core/SHA256SUMS",
+    "core/block_pool.py",
+    "core/scheduler.py",
+    "e3/__init__.py",
+    "e3/activity_accounting.py",
+    "e3/admission_metadata.py",
+    "e3/async_handoff.py",
+    "e3/attn_meta_batch.py",
+    "e3/attn_meta_select.py",
+    "e3/capture_streams.py",
+    "e3/decode-probe-evidence.json",
+    "e3/decode_overlap.py",
+    "e3/decode_probe.py",
+    "e3/decode_step.py",
+    "e3/decode_timeline.py",
+    "e3/e3_types.py",
+    "e3/engine_driver.py",
+    "e3/engine_offers.py",
+    "e3/executor_hooks.py",
+    "e3/graph_hooks.py",
+    "e3/graph_router.py",
+    "e3/green_context.py",
+    "e3/handler_anatomy.py",
+    "e3/ingress_incremental.py",
+    "e3/lane_chunk.py",
+    "e3/lane_comm.py",
+    "e3/lane_dispatch.py",
+    "e3/lane_hooks.py",
+    "e3/lane_private.py",
+    "e3/lane_state.py",
+    "e3/launch_diagnostic.py",
+    "e3/model_hooks.py",
+    "e3/native-implementation-closure.json",
+    "e3/native-overlap-readiness.json",
+    "e3/native/build_green_helper.sh",
+    "e3/native/build_q17_helpers.sh",
+    "e3/native/flash_s5_graph_bytes.cpp",
+    "e3/native/flash_s5_green.cu",
+    "e3/native/flash_s5_green.so",
+    "e3/native/flash_s5_replay_observer.cpp",
+    "e3/native/flash_s5_replay_observer.so",
+    "e3/native/q17-helper-build.json",
+    "e3/native_auto_arm.py",
+    "e3/native_backend.py",
+    "e3/native_graph_placement.py",
+    "e3/native_measurement.py",
+    "e3/native_observation.py",
+    "e3/native_overlap_control.py",
+    "e3/native_overlap_metrics.py",
+    "e3/native_overlap_session.py",
+    "e3/native_overlap_worker.py",
+    "e3/native_placement.py",
+    "e3/native_prefill_offers.py",
+    "e3/native_qualification.py",
+    "e3/native_qualification_frontend.py",
+    "e3/native_readiness.py",
+    "e3/native_resources.py",
+    "e3/native_source.py",
+    "e3/native_startup.py",
+    "e3/native_uva.py",
+    "e3/observer_runtime.py",
+    "e3/operation_source.py",
+    "e3/probe_control.py",
+    "e3/probe_control_hooks.py",
+    "e3/probe_session.py",
+    "e3/qsa_driver.py",
+    "e3/qsa_operation.py",
+    "e3/replay_observer.py",
+    "e3/reply_transport.py",
+    "e3/route_invariant.py",
+    "e3/row1_exactness.py",
+    "e3/row1_oracle.py",
+    "e3/s5_startup.py",
+    "e3/scheduler_hooks.py",
+    "e3/small_piece_batch.py",
+    "e3/sparse_history_dma.py",
+    "e3/split_bank.py",
+    "e3/stage_overlap.py",
+    "e3/stage_progress.py",
+    "e3/stage_wire.py",
+    "e3/teacher_decode.py",
+    "e3/wire_v1.py",
+    "e3/worker_bridge.py",
+    "e3/worker_hooks.py",
+    "e3_sources/api_routers.py",
+    "e3_sources/async_utils.py",
+    "e3_sources/core.py",
+    "e3_sources/cudagraph_utils.py",
+    "e3_sources/executor.py",
+    "e3_sources/model.py",
+    "e3_sources/sampler.py",
+    "e3_sources/worker.py",
+    "model_runner_v2.py",
+    "ops_qsa.py",
+    "ops_qsa_indexer.py",
+    "qsa.py",
+    "run-flash-s5-test.sh"
+  ],
+  "graph_composition": {
+    "module": "graph_hooks.py",
+    "router_sha256": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
+    "sha256": "52bea0171355a855e090d9fa955f06962beab163eaca02690a3722a58f62e94e",
+    "source_pins": {
+      "e3": "761e67eaa8a107739846810307f2b7a1f77d3775036a20ede19c6c27be82e0c7",
+      "e3-e2-exec": "40b24aee9e446d188cabe5e88aedea1efe7813960231d019ab46fbb245a87064",
+      "e3-e2-startup": "08c0efde0b7a133b553ad2a40d44c44fec44066d0cc53d3fc3509ebeb7335918"
+    }
+  },
+  "implementation_review_sha256": "7b67b50d6094c6d61407de7ee33be01237e3e4f93d5a68d6bb554f3cc41e4d3d",
+  "incremental_kv_bytes": 0,
+  "installed_settings": {
+    "FLASH_S5_ACK_TIMEOUT_S": "30.0",
+    "FLASH_S5_CHUNK_TOKENS": "1024",
+    "FLASH_S5_COMMAND_SLOTS": "10",
+    "FLASH_S5_COMPLETION_BACKEND": "native",
+    "FLASH_S5_DECODE_ONLY_PROBE": "0",
+    "FLASH_S5_OVERLAP": "0",
+    "FLASH_S5_REPLY_TIMEOUT_S": "300.0",
+    "FLASH_S5_SPARSE_OVERLAP": "0",
+    "FLASH_S5_TRANSPORT": "dense_dma"
+  },
+  "kind": "e3-s5-overlap",
+  "launcher": {
+    "e2_launcher_preserved": "run-flash-e2-test.sh",
+    "mounts_require": "S5=1",
+    "name": "run-flash-s5-test.sh",
+    "status": "offline-generated; not mounted or started"
+  },
+  "native_build": {
+    "receipt": {
+      "abi_basis": "source contract; loaded binary ABI rechecked at engine startup",
+      "cupti_library_sha256": "e2f9ed861fe27c492b8bb52b5e3220ef5120f3edcda36312e96b7fd8a186be3e",
+      "declared_abi": {
+        "green": 1,
+        "observer": 1
+      },
+      "files": {
+        "flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
+        "flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
+        "flash_s5_green.so": "e06b062263dcc315dec1ab279f1c08abc8f627e4c6f901ef5a740ec307cba41b",
+        "flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
+        "flash_s5_replay_observer.so": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d"
+      },
+      "gpu_work": false,
+      "image": "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+      "needed": {
+        "flash_s5_green.so": [
+          "libcuda.so.1",
+          "libcudart.so.13",
+          "libstdc++.so.6",
+          "libgcc_s.so.1",
+          "libc.so.6"
+        ],
+        "flash_s5_replay_observer.so": [
+          "libcupti.so.13",
+          "libcuda.so.1",
+          "libstdc++.so.6",
+          "libgcc_s.so.1",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Aug_20_01:58:59_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.88\nBuild cuda_13.0.r13.0/compiler.36424714_0\n",
+      "schema": 1
+    },
+    "receipt_sha256": "9ab2ad4702b4abdc527fb094dee1ca6d269f010496e58d8b3c8fdfa4272cf908",
+    "source_generation_sha256": "0949e5c775916a7d377b085bca76dbf51c5ed82b78e62c12dca9611d7526ba2d",
+    "source_manifest_sha256": "08c94f4a734c650d97343ddf30f4c5d30123a7a81e3dc4027866d2dc7e8ade8a"
+  },
+  "native_gaps": [],
+  "native_overlap": {
+    "enabled": true,
+    "scope": "implemented source path; not a hardware qualification",
+    "sparse_dma_lease": true,
+    "stock_forward_fallback_hidden": false
+  },
+  "package_identity_basis": "runtime payload excluding generation/readiness/manifest",
+  "package_sha256": "00a28ab03918e8ca199e864dcd34a741cd2a730e628a17d5b57da0dc593daa88",
+  "qualification_pending": [
+    "row1 byte oracle",
+    "rule4 same-instrument numerics",
+    "raw graph plus decode/prefill placement",
+    "W1 and W2 performance",
+    "memory/pressure/lifetime/leak/real-route canary"
+  ],
+  "reference_source_pins": {
+    "entrypoints/launchers/api_server/routers.py": "c2f1bb2708f44f0fe24f3d8ab8f884c7262e551c6557ebc606263abc4d7b1db1",
+    "entrypoints/serve/middleware/authenticate.py": "0633540cb788738dfee5a69075fbdc30eb98a510e26f69a0b43c57c50d9ef5ab",
+    "model_executor/layers/fused_moe/runner/shared_experts.py": "d89e4c79c46f6fe61262c51f3facf102e71ce1e4eb3db67f72b6bd8470937be9",
+    "models/qwen4_exp/nvidia/model.py": "ae72d95610b80188df2ee54a8649329a2a5601c4c31cbc7b60bbda9c6dcff9c4",
+    "models/qwen4_exp/nvidia/ngram_embedding.py": "40320647b13c31e4f94bf611b4bed386292a5b3bf97ed138249d710493501b17",
+    "models/qwen4_exp/nvidia/ops/qsa_indexer.py": "2c34883a6396bac0238f6308196854b653eadab8bbebbe7dd2d558e30d065cbb",
+    "sampling_params.py": "75e0f4b7e6702fd211340b87e6835598c5dce05b30bb2ea0ad834418fd626967",
+    "utils/torch_utils.py": "eec8b1e3c7c673d3d171b92530f8b07acabdad5b0e3ab07cc0e717f827af8e5a",
+    "v1/core/sched/output.py": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c",
+    "v1/engine/async_llm.py": "32ab1c7b43bfa7e5fcada335f49627d3c540a43bb8376b4845006792c3415fb4",
+    "v1/engine/core.py": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5",
+    "v1/engine/core_client.py": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8",
+    "v1/engine/input_processor.py": "91dde56a548c09613ee9aaef8c43631481d12dc1bd439fddc12c6569f5e2e799",
+    "v1/engine/output_processor.py": "1a96ed5e41bf3df9f16ccba6e721a0bbda5baa500b3ff3117fe75679292b3bfc",
+    "v1/executor/multiproc_executor.py": "3ed0149a8a8e1550c4f062af40e645d1b734e70f99981bc5bf15f0360507648a",
+    "v1/worker/gpu/async_utils.py": "77e17a4570ead2be30ae9b00888cf077a3b873018c12ca0549b853bfda02c1ba",
+    "v1/worker/gpu/buffer_utils.py": "f81fd26a5faabf614b2c0d0a2aaa55a6664e35eeb5deada51bc657172963b596",
+    "v1/worker/gpu/cudagraph_utils.py": "b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384",
+    "v1/worker/gpu/model_runner.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+    "v1/worker/gpu/sample/sampler.py": "832c9945d201a1e730ff9b4b52076aa83bd4a5064e1e4cfea952cf84d4a8d1f0",
+    "v1/worker/gpu/sample/trace_replay.py": "d2a7d3b3b55379efabe4740a4b7f14030126dc11be36f6ea974164ce42316a50",
+    "v1/worker/gpu_worker.py": "596f5b6e97be754f84b04c17bc0b96fd92d2f05ee86e0459aa515ffa48d8c5cb"
+  },
+  "require_native_ready": true,
+  "route": {
+    "admitted": "dense_dma",
+    "serial_fallback": "sparse-UVA and unqualified transports are counted, not overlapped"
+  },
+  "schema": 1,
+  "status": "reviewed native implementation candidate; CPU helper build/finalization and all same-queue hardware gates pending"
+}
