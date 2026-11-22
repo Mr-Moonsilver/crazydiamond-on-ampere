@@ -1,12 +1,18 @@
 # crazydiamond-on-ampere
 
-This repository holds the working version of our inference engine for **Qwen3.8-Flash-Next**, a large mixture-of-experts language model. It runs on one server with **four NVIDIA RTX 3090 cards** (Ampere generation, 24 GB each), a box we call *crazydiamond*. The engine is an **overlay on vLLM**: it keeps the stock vLLM container image and mounts its own Python modules and two small CUDA helpers over it. It serves up to **8 agent sessions at once, each with up to 200,000 tokens of context**. The release published here is **build-6**, the current stable release on that box.
+This repository holds the working version of our inference engine for **Qwen3.8-Flash-Next**, a large mixture-of-experts language model, running on **four NVIDIA RTX 3090 cards** (Ampere generation, 24 GB each) split as **TP2 × PP2**: two pipeline stages of 24 layers each, and each stage a tensor-parallel pair of GPUs. A **fifth RTX 3090** runs the vision encoder for images. The engine is an **overlay on vLLM**: it keeps the stock vLLM container image and mounts its own Python modules and two small CUDA helpers over it. It serves up to **8 agent sessions at once, each with up to 200,000 tokens of context**. The release published here is **build-6**, our current stable release.
+
+**Performance**, from our own records against stock vLLM on the same box (details and caveats under [Results](#results)):
+
+- **1.11× the agent turns per hour of stock vLLM** in closed-loop replay of 8 live coding-agent sessions (interval 1.10–1.12; 1.22× on cold starts), with every prefill on our native path. Measured on build-6's direct predecessor with the same engine settings, at 262k context and 10 sequences.
+- **1.12× turns per stream-hour** on 8 real coding tasks in an A/B run (90 % interval 1.04–1.21; recorded as inconclusive).
+- **8 conversations × 200k tokens fit** on the four cards, with 0 out-of-memory errors and 0 preemptions.
 
 ## Our approach in one picture
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/approach-dark.svg">
-  <img alt="Three bars comparing GPU memory: a model too big for the GPUs (offloading engines), a model that just fits, with its attention history kept in host RAM (this engine), and a model with room for a large KV cache (stock engines)." src="docs/img/approach-light.svg">
+  <img alt="Three rows with the same model weights and the same KV cache, where only the GPU memory limit moves: offloading engines (the limit falls inside the weights), this engine (the weights just fit and most of the KV cache lives in host RAM) and stock engines (everything fits)." src="docs/img/approach-light.svg">
 </picture>
 
 A model on GPUs needs memory for two things: its **weights** and its **KV cache**, the working memory that holds each request's context.
