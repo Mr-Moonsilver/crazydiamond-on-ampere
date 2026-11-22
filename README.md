@@ -10,10 +10,10 @@ Measured on our box (4 × RTX 3090) against stock vLLM with the same image, mode
 |---|---|---|---|
 | **Agent turns per hour** | **1.11×** stock (interval 1.10–1.12) | 1.0 | Closed-loop replay of 8 live coding-agent sessions (predecessor, 262k context × 10 sequences) |
 | **Concurrency** | **8 sessions × 200,000 tokens** | same limits | Build-6: 8 conversations at ≥ 196,850 tokens each, all at once; 0 out-of-memory errors, 0 preemptions |
-| **Decode, 1 stream** | **78.4 tok/s** | not measured | Build-6, short context |
-| **Decode, 8 streams, short context** | **60.1 tok/s** per stream | not measured | Build-6, probe stream with 7 others decoding beside it |
-| **Decode, 8 streams at ~190k context** | **36.5–37.1 tok/s** per stream, **270 tok/s** total | 25.6–30.0 tok/s per stream, 199 tok/s total | While a fresh 190k prefill runs beside them; build-6 memory-fit run vs the matched stock run |
-| **Decode in live 8-agent replay** | **38.7 tok/s** per stream, p95 gap between tokens 36–39 ms | 30.1 tok/s, p95 131–141 ms | Predecessor; histories 60k–131k |
+| **Decode, live, 1 request** | **72.6 tok/s** (median; up to 79.5) | — | Production traffic, 1-minute rates from the engine's own metrics, 15–22 Nov (build-6 and its predecessor) |
+| **Decode, live, 3–4 requests** | **58 tok/s** per request, **181 tok/s** total | — | same |
+| **Decode, live, 8 requests** | **56 tok/s** per request, **443 tok/s** total (peak 471) | — | same; requests still in prefill count as running, so per-request figures are conservative |
+| **Decode, controlled** | **78.4 tok/s** for 1 stream, **60.1 tok/s** per stream with 8 | not measured | Build-6 speed probe, short context |
 | **Prefill, one turn alone** | **7,107–7,261 tok/s** at 150k (21 s), **6,779–6,909 tok/s** at 200k (29 s) | not measured | Build-6 + unused tables dropped (measured speed-neutral vs build-6) |
 | **Prefill, fresh 190k beside 7 decoding streams** | **5,121 tok/s** (first token 37.1 s) | 4,121 tok/s (46.1 s) | Build-6 memory-fit run vs the matched stock run |
 | **Prefill, 8 fresh 60k prompts at once (aggregate)** | **6,236 tok/s** | 4,943 tok/s | Predecessor, text (build-6 with one image per prompt: 5,237 tok/s) |
@@ -21,7 +21,7 @@ Measured on our box (4 × RTX 3090) against stock vLLM with the same image, mode
 
 Where stock is faster: a fresh long prompt with nothing else queued (first of 8 simultaneous 60k prompts: 6,852 vs 7,168 tok/s), and the mean wait for a fresh turn in the live replay (51.7 s vs 40.1 s), because the engine serves returning agents' short turns ahead of bulk prefill. The engine wins on decode under load and on turns per hour.
 
-Records: build-6 speed probe `fri20-n7/decide-m2.stdout` (`40fb56bb`), build-6 fit run `g4/arm-result.json` (`fe789e09`), matched stock fit `w23-fit-result.json` (`9ed2507f`), replay `cxfx42-read/cx.json` (`871227cb`) and `registered.txt` (`35bb6148`), solo prefill `m3a/decide.stdout` (`6b948c44`).
+Records: live decode from the engine's Prometheus metrics on the serving port (`vllm:generation_tokens_total`, `vllm:num_requests_running`), build-6 speed probe `fri20-n7/decide-m2.stdout` (`40fb56bb`), build-6 fit run `g4/arm-result.json` (`fe789e09`), matched stock fit `w23-fit-result.json` (`9ed2507f`), replay `cxfx42-read/cx.json` (`871227cb`) and `registered.txt` (`35bb6148`), solo prefill `m3a/decide.stdout` (`6b948c44`).
 
 ## What this is
 
@@ -286,6 +286,8 @@ All numbers come from our own records, on this box, against stock vLLM (same ima
 | Closed-loop live replay of 8 coding-agent sessions, 4 matched blocks, engine settings `cxfx42` on a build-6 predecessor, at older settings (262,144 context, 10 sequences) (15 Nov 2026) | **1.111× stock turns/h**, interval 1.1025–1.1202; warm turns only 1.081×; cold starts 1.220×. Native prefill share 1.0 graded (0.9988–0.9991 strict). | `w16 cxfx42-read/registered.txt` (sha256 `35bb6148…`) |
 | Real coding workflows A/B, 8 fixed tasks × 2 repetitions (15 Nov 2026) | **1.121× turns per stream-hour** (90 % interval 1.041–1.208); total completed turns 1.041×. Verdict recorded as **INCONCLUSIVE**. | `rw-ab-final … AB-TABLE.md` (sha256 `ddf445e3…`) |
 | Memory fit, 8 conversations grown to 200k tokens with a fresh 190k prefill (15 Nov 2026) | **Fits.** Minimum free VRAM 232.9–348.9 MiB per GPU, 0 out-of-memory errors, 0 preemptions. | `w23 q18a-fit-8x200k-d`, release record of 16 Nov 2026 |
+| Decode under heavy load: 8 streams at ~190k context while a fresh 190k prompt prefills beside them | 36.5–37.1 tok/s per stream, 270 tok/s total; stock 25.6–30.0 per stream, 199 total | build-6 fit run `g4/arm-result.json` (`fe789e09`), stock `w23-fit-result.json` (`9ed2507f`) |
+| Decode in the live 8-agent replay (histories 60k–131k, prefill interleaved) | 38.7 tok/s per stream, p95 gap between tokens 36–39 ms; stock 30.1 tok/s, 131–141 ms | `cxfx42-read/cx.json` (`871227cb`) |
 
 What these numbers do and do not cover:
 
