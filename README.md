@@ -21,6 +21,8 @@ Measured on our box (4 × RTX 3090) against stock vLLM with the same image, mode
 
 Where stock is faster: a fresh long prompt with nothing else queued (first of 8 simultaneous 60k prompts: 6,852 vs 7,168 tok/s), and the mean wait for a fresh turn in the live replay (51.7 s vs 40.1 s), because the engine serves returning agents' short turns ahead of bulk prefill. The engine wins on decode under load and on turns per hour.
 
+Against [Strata](https://github.com/Niko1221/Strata) 0.2.20 on the same box and the same 8-agent replay: **1,005 vs 225 agent turns per hour** (285 in Strata's concurrent-prefill mode). Strata decodes a single request faster (83–96 vs 76–78 tok/s). See [Measured against Strata](#measured-against-strata-on-the-same-box).
+
 Records: live decode from the engine's Prometheus metrics on the serving port (`vllm:generation_tokens_total`, `vllm:num_requests_running`), build-6 speed probe `fri20-n7/decide-m2.stdout` (`40fb56bb`), build-6 fit run `g4/arm-result.json` (`fe789e09`), matched stock fit `w23-fit-result.json` (`9ed2507f`), replay `cxfx42-read/cx.json` (`871227cb`) and `registered.txt` (`35bb6148`), solo prefill `m3a/decide.stdout` (`6b948c44`).
 
 ## What this is
@@ -61,7 +63,56 @@ What this repository adds is engineering, not a new idea:
 - vLLM's decode CUDA graphs captured a second time inside the decode green context (the "split bank").
 - Measurements against stock vLLM on the same box, under concurrent agent load.
 
-Strata aims at a different point: one consumer GPU with expert offload, layer split only across GPUs, a few slots. Throughput numbers between the two engines are not comparable.
+Strata is built for a different case: one consumer GPU with expert offload, splitting by layer when it runs on several. To see how the two compare for our use, we ran it on our box with 8 slots; the results follow.
+
+### Measured against Strata on the same box
+
+On 24 Nov 2026 we ran [Strata](https://github.com/Niko1221/Strata) 0.2.20 (image `ghcr.io/niko1221/strata@sha256:ca619664…`, engine 0.1.66) on the same 4 × RTX 3090 box as build-6, with the same test client, prompts and agent replay. Strata ran Unsloth's `UD-IQ4_XS` GGUF of the same model across all four GPUs, with 8 slots, 200,000 tokens of context, fp16 KV, drafting off and images off, plus `--kv-resident 32768` (its VRAM cache of selected KV blocks) and `--ple-io ram`. "Piped" is Strata's `STRATA_PIPED_CONCURRENT=1` mode, which prefills beside running decodes.
+
+**8 agents, closed-loop replay** (8 coding-agent sessions × 480 s, seed 1; each agent sends its next turn when its last one finishes):
+
+| | Build-6 | Strata | Strata, piped |
+|---|---|---|---|
+| Agent turns per hour | **1,005** | 225 | 285 |
+| Turns completed, whole run | **141** | 38 | 46 (+2 unfinished) |
+| Output tokens/s, all agents | **163.4** | 34.3 | 45.3 |
+| Decode tok/s per request, median | **35.7** | 8.2 | 26.5 |
+| Follow-up turn, time to first token, median / p95 | **2.17 / 4.04 s** | 16.8 / 35.0 s | 46.2 / 156.8 s |
+| Follow-up prompt tokens served from cache | **97 %** | 45 % | 50 % |
+| New conversation, time to first token, median | **37.3 s** | 39.7 s | 54.1 s |
+
+**One request alone** (512 output tokens forced; each engine counts prompt tokens with its own tokenizer):
+
+| Prompt | Build-6 time to first token | Strata time to first token | Build-6 prefill | Strata prefill | Build-6 decode | Strata decode |
+|---|---|---|---|---|---|---|
+| ~50k | **7.0 s** | 8.8 s | **7,380 tok/s** | 5,554 tok/s | 77.5 tok/s | **91.3 tok/s** |
+| ~100k | **13.8 s** | 15.1 s | **7,440** | 6,537 | 76.8 | **86.9** |
+| ~150k | **21.3 s** | 24.3 s | **7,227** | 6,115 | 76.2 | **95.9** |
+| ~200k | not run¹ | 29.8 s | not run¹ | 6,584 | not run¹ | 83.2 |
+
+¹ Build-6's 200k test prompt plus 512 output tokens came to more than its 200,000-token limit, so the request was refused. An earlier build-6 run measured 29 s and 6,779–6,909 tok/s at 200k (see [Performance](#performance)).
+
+**One fresh ~188k-token prompt beside 7 decoding conversations:**
+
+- **Strata:** its 7 decoders ran at 48.9 tok/s each before the new prompt arrived and at **0.3 tok/s each while it was read** (piped mode: 49.4 → 12.9 tok/s). It read the new prompt at 7,239 tok/s, first token after 26.0 s (piped: 6,024 tok/s, 31.1 s).
+- **Build-6** (an earlier run of the same shape, not from this session): it read a fresh 190k prompt at 5,121 tok/s, first token after 37.1 s. Its 7 companions averaged 36.5–37.1 tok/s over their whole 221–224 s decode, a window that contains that 37 s prefill. That run did not record a separate rate for the prefill window itself.
+
+**Where the gap comes from.** Prefill speed is not it: beside 7 running conversations, Strata read a fresh prompt faster than build-6 (7,239 vs 5,121 tok/s), by pausing the other seven. Two other things add up:
+
+1. **Strata re-reads much of each conversation.** It sized its conversation cache from free RAM at 8 GiB "for up to 4 parked conversations", and one parked 120k–130k-token conversation took 6–7.5 GB of it. With 8 agents taking turns, only about half of the follow-up prompt tokens came from that cache, and the rest of each history had to be read again. Build-6 keeps every conversation's history in host RAM and served 97 % of follow-up prompt tokens from it.
+2. **In its default mode, Strata stops decoding while it reads a prompt.** Each of those re-reads froze the other agents, and because every agent waits for its reply before sending its next turn, the freezes queued up. Build-6 keeps decoding while it prefills, through the native prefill lane and the green-context split described above.
+
+**Where Strata is ahead:** single-request decode, 83–96 vs 76–78 tok/s. With drafting off, Strata still guesses ahead from text already in the conversation (prompt lookup, `--spec 4`); we did not measure how much of its lead that accounts for. Build-6 has no speculative decoding yet (see [Status and limitations](#status-and-limitations)).
+
+**Caveats:**
+
+- **Different quantizations of the same model:** Unsloth `UD-IQ4_XS` GGUF for Strata, Intel AutoRound W4A16 for build-6. We did not check output quality on either engine in this comparison.
+- **Strata ran close to its defaults.** We did not run its autotuner or enlarge its conversation cache (`--conversation-cache-mib`). A larger cache would raise its hit rate; we have not measured by how much.
+- **Two workarounds for our box.** Strata 0.2.20 fails on RTX 30-series cards in its Q8 hyper-connection kernels (a known bug, Strata #6713; the fix is due in 0.2.21), so we ran it with the workaround that its maintainer tested, `STRATA_HC_Q8_TC=0 STRATA_HC_Q8_BF16TC=0`. Our container also cannot lock memory, which Strata documents as costing up to 6 % decode speed for its n-gram table.
+- **Output lengths** were forced to the recorded turn lengths: with `min_tokens` on build-6 and an end-of-sequence logit bias on Strata.
+- **One run of each** (seed 1), no repeats.
+
+Record: comparison report `strata-cmp-20261124/REPORT.md` (`b671dd4c`).
 
 ## How it works
 
