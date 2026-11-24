@@ -26,16 +26,16 @@ FONT = "-apple-system, 'Segoe UI', Inter, Helvetica, Arial, sans-serif"
 
 # Each row: segments (x0, x1, kind, on_gpu) and the GPU memory box (x0, x1).
 ROWS = [
-    dict(title='Model bigger than the GPUs', tag='Weight-offloading engines', sub='few or small GPUs', ours=False,
+    dict(title='Model bigger than the GPUs', tag='Offloading engines', sub='few or small GPUs', ours=False,
          segs=[(X0, X0 + 240, 'w', False), (X0 + 240, KX, 'w', True), (KX, END, 'k', True)],
          gpu=(X0 + 240, END),
-         note=['Most of the weights live in CPU RAM; the KV cache stays on the GPU.',
-               'Weights are streamed in for every token, so each token waits on the transfer.']),
+         note=['Part of the weights lives in CPU RAM; some engines also move the KV cache.',
+               'Weight traffic over PCIe, or CPU compute, costs time on every token.']),
     dict(title='Model just fits', tag='This repo', sub='4 × RTX 3090 · 8 agents × 200k', ours=True,
          segs=[(X0, KX, 'w', True), (KX, KX + 24, 'k', True), (KX + 24, END, 'k', False)],
          gpu=(X0, KX + 24),
          note=['The weights fill the GPUs, so the KV cache moves to host RAM.',
-               'Each decode step fetches only the attention rows it needs over PCIe.']),
+               'Decode reads only the selected rows over PCIe (vLLM\'s QSA host-KV mode).']),
     dict(title='Room for model and context', tag='Stock engines, e.g. vLLM', sub='more or bigger GPUs', ours=False,
          segs=[(X0, KX, 'w', True), (KX, END, 'k', True)],
          gpu=(X0, END + 70),
@@ -54,9 +54,9 @@ def svg(t):
     a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
       f'font-family="{FONT}" role="img" aria-labelledby="t d">')
     a('<title id="t">Same model, same context, different GPU memory</title>')
-    a('<desc id="d">Three rows with the same model weights and the same KV cache. Weight-offloading engines keep '
-      'most weights in CPU RAM and the KV cache on the GPU. This engine keeps all weights on the GPUs and moves the '
-      'KV cache to host RAM, fetching only the rows attention needs. Stock engines need GPUs big enough for both.</desc>')
+    a('<desc id="d">Three rows with the same model weights and the same KV cache. Offloading engines keep '
+      'part of the weights, and in some engines the KV cache, in CPU RAM. This engine keeps all weights on the GPUs and '
+      'the KV cache in host RAM, fetching only the rows attention needs. Stock engines without host KV need GPUs big enough for both.</desc>')
     a('<defs>')
     for pid, col in (('hw', t['weights']), ('hk', t['kv'])):
         a(f'<pattern id="{pid}" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'

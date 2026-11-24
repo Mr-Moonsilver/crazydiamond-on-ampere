@@ -4,7 +4,7 @@
 
 ## Performance
 
-Measured on our box (4 × RTX 3090) against stock vLLM with the same image, model, GPUs and limits. **Build-6** is the release published here. **Predecessor** is build-6's direct predecessor with the same engine settings. Details and caveats are under [Results](#results).
+Measured on our box (4 × RTX 3090) against stock vLLM with the same image, model, GPUs and limits. The stock arm runs vLLM's own QSA host-KV mode (`VLLM_QSA_KV_OFFLOAD=1`) and its launcher (`packet/run-flash-stock-keyed.sh`) also mounts our QSA row-cache files (`qsa.py`, `ops_qsa.py`). These comparisons therefore measure the rest of the overlay (the native prefill lane, the prefill/decode split and the scheduling), not host KV. **Build-6** is the release published here. **Predecessor** is build-6's direct predecessor with the same engine settings. Details and caveats are under [Results](#results).
 
 | Metric | This engine | Stock vLLM | Conditions |
 |---|---|---|---|
@@ -29,20 +29,39 @@ This repository holds the working version of our inference engine for **Qwen3.8-
 
 **Quantization.** The checkpoint is `Intel/Qwen3.8-Flash-Next-W4A16-AutoRound`: 4-bit integer weights made with AutoRound 0.15.0 (group size 128, symmetric, GPTQ packing), with the embeddings and a set of sensitive projections (2,340 per-layer overrides, e.g. the hyper-connections and the linear-attention `in_proj_a`/`in_proj_b`) kept in 16-bit. Activations run in BF16 (`--dtype bfloat16`) and the KV cache is BF16 (`--kv-cache-dtype auto`). The expert layers run on vLLM's Marlin INT4 kernels.
 
-**The idea: the KV cache lives in host RAM.** The model's weights only just fit on the four 24 GB cards, which leaves almost no GPU memory for the KV cache, the per-conversation attention history that grows with every token of context. Instead of shrinking the context or buying bigger GPUs, the engine keeps each conversation's attention history in pinned host RAM and, at every step, fetches only the rows that sparse attention selects over PCIe. A small row cache on each GPU holds the hot rows. That is how 8 sessions × 200,000 tokens of context run on cards whose memory is already filled by the weights.
+**The setting: the KV cache lives in host RAM.** The model's weights only just fit on the four 24 GB cards, which leaves almost no GPU memory for the KV cache, the per-conversation attention history that grows with every token of context. So the QSA layers' attention history lives in pinned host RAM, and each step reads only the rows that sparse attention selects over PCIe. **That mechanism is not ours.** vLLM ships it as an experimental QSA host-KV mode (`VLLM_QSA_KV_OFFLOAD=1`), and [Strata](https://github.com/Niko1221/Strata) does the same for this model in its own engine. What this repository adds is a VRAM cache for the hot rows and, above all, a different way to run prefill and decode side by side on four GPUs, so that 8 sessions × 200,000 tokens stay fast under load. See [Prior art and what is ours](#prior-art-and-what-is-ours).
 
 ## Our approach in one picture
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/approach-dark.svg">
-  <img alt="Three rows with the same model weights and the same KV cache. Weight-offloading engines keep most weights in CPU RAM and the KV cache on the GPU; this engine keeps all weights on the GPUs and moves the KV cache to host RAM; stock engines need GPUs big enough for both." src="docs/img/approach-light.svg">
+  <img alt="Three rows with the same model weights and the same KV cache. Offloading engines keep part of the weights, and in some engines the KV cache, in CPU RAM; this engine keeps all weights on the GPUs and the KV cache in host RAM; stock engines without host KV need GPUs big enough for both." src="docs/img/approach-light.svg">
 </picture>
 
 A model on GPUs needs memory for two things: its **weights** and its **KV cache**, the working memory that holds each request's context.
 
-- **Weight-offloading engines** run models that are *bigger* than your GPUs by keeping part of the weights in CPU RAM or on disk, while the KV cache stays on the GPU. It works, but every token waits for the weight transfers.
+- **Offloading engines** run models that are *bigger* than your GPUs by keeping part of the weights in CPU RAM or on disk. Some also move the KV cache: [Strata](https://github.com/Niko1221/Strata), for example, offloads experts *and* keeps this model's QSA KV in host RAM, fetching only the selected blocks into a VRAM cache. The weight traffic costs time on every token.
 - **Stock engines** (e.g. vLLM) are at their best when there's *room to spare* for weights and a large KV cache. That usually means more or bigger GPUs.
-- **This engine** covers the case in between: the model *just fits* on four 24 GB RTX 3090s, leaving almost nothing for context. The layer weights stay on the GPUs; what moves is the *context*. The attention history and the large n-gram embedding tables live in host RAM. Decode fetches only the rows each step needs over PCIe; prefill streams the history over in bounded pieces. That lets the sliver serve up to 8 concurrent agents × 200k tokens.
+- **This engine** covers the case in between: the model *just fits* on four 24 GB RTX 3090s, leaving almost nothing for context. The layer weights stay on the GPUs; what moves is the *context*. The attention history and the large n-gram embedding tables live in host RAM. Decode fetches only the rows each step needs over PCIe; prefill streams the history over in bounded pieces. That lets the sliver serve up to 8 concurrent agents × 200k tokens. The host-KV part is vLLM's own; what we added is listed below.
+
+## Prior art and what is ours
+
+We did not invent the main mechanisms this engine relies on, and we should have said so from the start.
+
+| Mechanism used here | Earlier or parallel work |
+|---|---|
+| QSA KV in pinned host RAM, read through a unified-address view; each step fetches only the indexer-selected rows; prefill history staged through an arena | **vLLM itself**: the pinned image's experimental QSA host-KV mode (`VLLM_QSA_KV_OFFLOAD=1`, `VLLM_QSA_KVO_ARENA`, the `_qsa_gather_selected_host_rows` kernel). **[Strata](https://github.com/Niko1221/Strata)** (MIT) shipped the same idea for Qwen3.8-Flash-Next in its own engine on 27 Sep 2026, with a VRAM cache of selected blocks and CLOCK eviction (`--kv-resident`). More general earlier work: [SGLang HiSparse](https://www.lmsys.org/blog/2026-04-10-sglang-hisparse) (2026), [InfLLM](https://arxiv.org/abs/2402.04617) (2024), [InfiniGen](https://usenix.org/conference/osdi24/presentation/lee) (OSDI 2024), [ShadowKV](https://arxiv.org/abs/2410.21465), [ArkVale](https://proceedings.neurips.cc/paper_files/paper/2024/file/cd4b49379efac6e84186a3ffce108c37-Paper-Conference.pdf). |
+| A VRAM cache of recently selected rows | Strata's resident block cache and HiSparse's device buffer do the same job. Our implementation (the `_qsa_rowcache_*` kernels, a changed `_qsa_sparse_paged_gqa_splitk_kernel` that reads cached rows from VRAM and the rest from host memory, and five `_s6_*` index helpers in `ops_qsa.py`) was written for this overlay. |
+| Prefill and decode at the same time on one GPU by splitting its SMs with CUDA green contexts | [Nexus](https://arxiv.org/abs/2507.06608) (2025, on vLLM) and [MuxWise / PD-Multiplexing](https://arxiv.org/abs/2504.14489) (2025, on SGLang). Related: [semi-PD](https://arxiv.org/abs/2504.19867) (MPS), [POD-Attention](https://arxiv.org/abs/2410.18038), [NanoFlow](https://arxiv.org/abs/2408.12757). |
+
+What this repository adds is engineering, not a new idea:
+
+- These mechanisms working together in a vLLM deployment on 4 × RTX 3090 (TP2 × PP2) with **all weights in VRAM**, aimed at **8 concurrent agent sessions × 200,000 tokens**.
+- A native prefill lane: prefill chunks leave vLLM's scheduler step and run on private buffers and their own NCCL communicators while decode keeps stepping, with the two pipeline stages progressing independently.
+- vLLM's decode CUDA graphs captured a second time inside the decode green context (the "split bank").
+- Measurements against stock vLLM on the same box, under concurrent agent load.
+
+Strata aims at a different point: one consumer GPU with expert offload, layer split only across GPUs, a few slots. Throughput numbers between the two engines are not comparable.
 
 ## How it works
 
@@ -141,10 +160,10 @@ The overlay's main change is to take that prefill out of the stock engine step a
 - Two chunks of the same prompt can be in flight: stage 0 runs chunk n+1 while stage 1 still runs chunk n.
 - Each GPU still receives its commands in the same order as before, so the numbers computed do not change.
 
-**d. Host KV and the VRAM row cache** (`qsa.py`, `ops_qsa.py`, `model_runner_v2.py`)
+**d. Host KV (vLLM's) and the VRAM row cache (ours)** (`qsa.py`, `ops_qsa.py`, `model_runner_v2.py`)
 
-- All of the QSA layers' key/value history, new tokens included, lives in pinned host RAM, and the GPUs read it through a unified-address view (`bind_kv_cache` in `qsa.py`). The indexer that picks the rows keeps its keys on the GPU. This is what makes 8 × 200k contexts possible on 24 GB cards.
-- Rows read over PCIe are slower than VRAM. So each request also gets a VRAM cache of recently selected rows: 6,144 slots per request, for 8 requests (`QSA_ROWCACHE_SLOTS`). Repeated selections are then served from VRAM.
+- All of the QSA layers' key/value history, new tokens included, lives in pinned host RAM, and the GPUs read it through a unified-address view (`bind_kv_cache` in `qsa.py`). The indexer that picks the rows keeps its keys on the GPU. This is vLLM's own experimental QSA host-KV mode (`VLLM_QSA_KV_OFFLOAD=1`); we turn it on, size it and extend it. It is what makes 8 × 200k contexts possible on 24 GB cards.
+- Rows read over PCIe are slower than VRAM. So our overlay also gives each request a VRAM cache of recently selected rows: 6,144 slots per request, for 8 requests (`QSA_ROWCACHE_SLOTS`). Repeated selections are then served from VRAM.
 - Our October tuning notes measured that such a cache served 67–85 % of row reads, in an older configuration.
 
 **e. Scheduling** (`core/scheduler.py`, `e3/scheduler_hooks.py`, `core/block_pool.py`)

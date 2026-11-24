@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 672" width="1000" height="672" font-family="-apple-system, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
 <title id="t">Same model, same context, different GPU memory</title>
-<desc id="d">Three rows with the same model weights and the same KV cache. Weight-offloading engines keep most weights in CPU RAM and the KV cache on the GPU. This engine keeps all weights on the GPUs and moves the KV cache to host RAM, fetching only the rows attention needs. Stock engines need GPUs big enough for both.</desc>
+<desc id="d">Three rows with the same model weights and the same KV cache. Offloading engines keep part of the weights, and in some engines the KV cache, in CPU RAM. This engine keeps all weights on the GPUs and the KV cache in host RAM, fetching only the rows attention needs. Stock engines without host KV need GPUs big enough for both.</desc>
 <defs>
 <pattern id="hw" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#ffffff"/><rect width="3.5" height="8" fill="#3f5f8f"/></pattern>
 <pattern id="hk" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#ffffff"/><rect width="3.5" height="8" fill="#e0a02a"/></pattern>
@@ -16,16 +16,16 @@
 <line x1="860" y1="140" x2="860" y2="146" stroke="#c9d1dc" stroke-width="1.5"/>
 <line x1="340" y1="143" x2="860" y2="143" stroke="#c9d1dc" stroke-width="1.5"/>
 <text x="32" y="192" font-size="16" font-weight="700" fill="#1b2330">Model bigger than the GPUs</text>
-<rect x="32" y="202" width="185" height="22" rx="11" fill="#e7ecf2"/>
-<text x="41" y="217" font-size="12" font-weight="600" fill="#334155">Weight-offloading engines</text>
+<rect x="32" y="202" width="139" height="22" rx="11" fill="#e7ecf2"/>
+<text x="41" y="217" font-size="12" font-weight="600" fill="#334155">Offloading engines</text>
 <text x="34" y="244" font-size="12" fill="#5b6677">few or small GPUs</text>
 <text x="580" y="178" font-size="11" font-weight="600" fill="#5b6677">GPU memory</text>
 <rect x="574" y="184" width="292" height="54" rx="6" fill="#e9f0f8" stroke="#7f95b3" stroke-width="1.5"/>
 <rect x="340" y="192" width="240" height="38" fill="url(#hw)" stroke="#3f5f8f" stroke-width="1.5"/>
 <rect x="580" y="192" width="80" height="38" fill="#3f5f8f"/>
 <rect x="660" y="192" width="200" height="38" fill="#e0a02a"/>
-<text x="340" y="260" font-size="13" fill="#1b2330">Most of the weights live in CPU RAM; the KV cache stays on the GPU.</text>
-<text x="340" y="278" font-size="13" fill="#5b6677">Weights are streamed in for every token, so each token waits on the transfer.</text>
+<text x="340" y="260" font-size="13" fill="#1b2330">Part of the weights lives in CPU RAM; some engines also move the KV cache.</text>
+<text x="340" y="278" font-size="13" fill="#5b6677">Weight traffic over PCIe, or CPU compute, costs time on every token.</text>
 <rect x="18" y="314" width="964" height="148" rx="10" fill="#fbf6ea" stroke="#e0a02a" stroke-width="1.5"/>
 <text x="32" y="352" font-size="16" font-weight="700" fill="#1b2330">Model just fits</text>
 <rect x="32" y="362" width="79" height="22" rx="11" fill="#e7ecf2"/>
@@ -37,7 +37,7 @@
 <rect x="660" y="352" width="24" height="38" fill="#e0a02a"/>
 <rect x="684" y="352" width="176" height="38" fill="url(#hk)" stroke="#e0a02a" stroke-width="1.5"/>
 <text x="340" y="420" font-size="13" fill="#1b2330">The weights fill the GPUs, so the KV cache moves to host RAM.</text>
-<text x="340" y="438" font-size="13" fill="#5b6677">Each decode step fetches only the attention rows it needs over PCIe.</text>
+<text x="340" y="438" font-size="13" fill="#5b6677">Decode reads only the selected rows over PCIe (vLLM's QSA host-KV mode).</text>
 <text x="32" y="512" font-size="16" font-weight="700" fill="#1b2330">Room for model and context</text>
 <rect x="32" y="522" width="178" height="22" rx="11" fill="#e7ecf2"/>
 <text x="41" y="537" font-size="12" font-weight="600" fill="#334155">Stock engines, e.g. vLLM</text>
